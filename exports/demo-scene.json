@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "units": "meters",
+  "upAxis": "Y",
+  "note": "Placeholder kit — replace meshes in Blender before Studio compile if needed.",
+  "objects": [
+    {
+      "id": "mesh_demo_pad",
+      "kind": "mesh",
+      "libraryId": "flat_pad",
+      "name": "flat_pad",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "sk8": {
+        "collision_mode": "triangle_mesh",
+        "hide_from_pause_map": false
+      }
+    },
+    {
+      "id": "mesh_demo_ledge",
+      "kind": "mesh",
+      "libraryId": "ledge",
+      "name": "ledge",
+      "position": [0, 0, -1.2],
+      "rotation": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "sk8": {
+        "collision_mode": "triangle_mesh",
+        "hide_from_pause_map": false
+      }
+    },
+    {
+      "id": "mesh_demo_kicker",
+      "kind": "mesh",
+      "libraryId": "kicker",
+      "name": "kicker",
+      "position": [2.5, 0, 0.5],
+      "rotation": [0, -0.6, 0],
+      "scale": [1, 1, 1],
+      "sk8": {
+        "collision_mode": "triangle_mesh",
+        "hide_from_pause_map": false
+      }
+    },
+    {
+      "id": "grind_demo",
+      "kind": "grind",
+      "name": "grind_ledge",
+      "points": [
+        [-1.2, 0.36, -1.2],
+        [1.2, 0.36, -1.2]
+      ],
+      "radius": 0.03,
+      "surface": "material_37227424"
+    },
+    {
+      "id": "spawn_demo",
+      "kind": "spawn",
+      "name": "spawn",
+      "position": [0, 0.1, 3],
+      "rotation": [0, 3.1416, 0]
+    }
+  ]
+}
