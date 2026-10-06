@@ -13,7 +13,9 @@
   --font-body: 'IBM Plex Sans', 'Segoe UI', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background:
@@ -25,9 +27,12 @@
 }
 
 .topbar {
+  position: relative;
+  z-index: 40;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 1rem;
   padding: 1rem 1.25rem 0.85rem;
   border-bottom: 1px solid var(--line);
@@ -56,6 +61,23 @@
   vertical-align: baseline;
 }
 
+.brand-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.file-row button.ghost {
+  padding: 0.15rem 0.55rem;
+}
+
 .brand {
   margin: 0;
   font-family: var(--font-display);
@@ -77,6 +99,118 @@
   display: flex;
   gap: 0.55rem;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+.file-menu {
+  position: relative;
+}
+
+.file-input {
+  display: none;
+}
+
+.file-menu-panel {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  z-index: 30;
+  min-width: 12.5rem;
+  padding: 0.3rem;
+  background: #1a1e24;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+}
+
+.file-menu-panel button {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.25rem;
+  text-align: left;
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  border-radius: 4px;
+  padding: 0.45rem 0.6rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.file-menu-panel button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.file-menu-panel kbd {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.scene-name {
+  color: var(--muted);
+  font-size: 0.82rem;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.snap-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.snap-field {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.snap-field button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 0.32rem 0.6rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.snap-field button.on {
+  background: var(--accent);
+  border-color: #f0b45a;
+  color: #1a1208;
+  font-weight: 650;
+}
+
+.snap-field input {
+  width: 4.4rem;
+  padding: 0.28rem 0.4rem;
+}
+
+.snap-field input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+.snap-field .unit {
+  min-width: 1.7rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
 }
 
 .workspace {
@@ -84,6 +218,7 @@
   display: grid;
   grid-template-columns: minmax(220px, 280px) 1fr minmax(220px, 280px);
   min-height: 0;
+  overflow: hidden;
 }
 
 .panel {
@@ -271,7 +406,7 @@ button.lib small {
 
 .viewport {
   flex: 1;
-  min-height: 420px;
+  min-height: 0;
   position: relative;
   animation: fade-stage 0.6s ease-out both;
 }
@@ -305,6 +440,64 @@ button.lib small {
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
+}
+
+.transform-box {
+  display: grid;
+  grid-template-columns: auto repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+  align-items: center;
+  margin: 0 0 0.85rem;
+  padding: 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #12161c;
+}
+
+.transform-box .axis,
+.transform-box .transform-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.transform-box .axis {
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+.transform-box .axis.x {
+  color: #e85d4c;
+}
+
+.transform-box .axis.y {
+  color: #7cbc6e;
+}
+
+.transform-box .axis.z {
+  color: #6aa0e8;
+}
+
+.transform-box .transform-label {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.transform-box .transform-label small {
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+}
+
+.transform-box input {
+  width: 100%;
+  min-width: 0;
+  padding: 0.28rem 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
 }
 
 label {

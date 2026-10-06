@@ -14,6 +14,7 @@ export type DesktopSaveResult = {
   path?: string
   canceled?: boolean
   error?: string
+  scene?: unknown
 }
 
 export type ReskateDesktopApi = {
@@ -23,7 +24,8 @@ export type ReskateDesktopApi = {
   listLibrary: () => Promise<AssetCatalog>
   previewAsset: (assetFile: string) => Promise<string>
   exportBlend: (scene: unknown) => Promise<DesktopSaveResult>
-  saveJson: (scene: unknown) => Promise<DesktopSaveResult>
+  saveJson: (scene: unknown, filePath?: string) => Promise<DesktopSaveResult>
+  openJson: () => Promise<DesktopSaveResult>
   onBlenderStatus: (callback: (status: BlenderStatus) => void) => () => void
 }
 

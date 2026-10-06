@@ -1,7 +1,6 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import {
   ContactShadows,
-  Grid,
   OrbitControls,
   TransformControls,
 } from '@react-three/drei'
@@ -9,19 +8,26 @@ import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type R
 import { MOUSE } from 'three'
 import * as THREE from 'three'
 import type {
-  GrindObject,
   MapScene,
   MeshObject,
   SceneObject,
   SpawnObject,
 } from '../types/scene'
+import { createBlueprintMaterial } from '../lib/blueprintMaterial'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 
 export type TransformMode = 'translate' | 'rotate' | 'scale'
 export type EditorTool = 'select' | 'grind'
 
+export type SnapSettings = {
+  move: number | null
+  scale: number | null
+  rotate: number | null
+}
+
 /** Ground and grid extent in metres. Large enough to lay out a full park. */
 const WORLD_SIZE = 1200
+/** Editor-only figure. Feet sit on the spawn point and the crown is 1.7 m. */
 
 /**
  * Set in the capture phase when the pointer is over a transform gizmo,
@@ -33,6 +39,9 @@ type GizmoControls = {
   enabled: boolean
   axis: string | null
   dragging: boolean
+  translationSnap: number | null
+  rotationSnap: number | null
+  scaleSnap: number | null
   pointerHover: (pointer: { x: number; y: number; button: number }) => void
   getPointer: (event: PointerEvent) => { x: number; y: number; button: number }
 }
@@ -42,7 +51,7 @@ type Props = {
   selectedId: string | null
   tool: EditorTool
   transformMode: TransformMode
-  grindDraft: [number, number, number][]
+  snap: SnapSettings
   dragPieceId: string | null
   dragAssetFile?: string
   dragAssetRevision?: number
@@ -118,11 +127,13 @@ function restHeight(point: THREE.Vector3) {
 }
 
 function Ground({ onGroundClick }: { onGroundClick: (p: THREE.Vector3) => void }) {
+  const material = useMemo(() => createBlueprintMaterial(), [])
+  useEffect(() => () => material.dispose(), [material])
+
   return (
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
       position={[0, -0.001, 0]}
-      receiveShadow
       userData={{ snap: true }}
       onPointerDown={(e) => {
         e.stopPropagation()
@@ -131,7 +142,7 @@ function Ground({ onGroundClick }: { onGroundClick: (p: THREE.Vector3) => void }
       }}
     >
       <planeGeometry args={[WORLD_SIZE, WORLD_SIZE]} />
-      <meshStandardMaterial color="#2c3036" roughness={0.92} metalness={0} />
+      <primitive object={material} attach="material" />
     </mesh>
   )
 }
@@ -140,11 +151,13 @@ function TransformGizmo({
   target,
   dragging,
   mode,
+  snap,
   onCommit,
 }: {
   target: RefObject<THREE.Group | null>
   dragging: RefObject<boolean>
   mode: TransformMode
+  snap: SnapSettings
   onCommit: (
     pos: [number, number, number],
     rot: [number, number, number],
@@ -177,6 +190,14 @@ function TransformGizmo({
     }
   }, [gl])
 
+  useLayoutEffect(() => {
+    const controls = controlsRef.current
+    if (!controls) return
+    controls.translationSnap = snap.move
+    controls.rotationSnap = snap.rotate
+    controls.scaleSnap = snap.scale
+  }, [snap.move, snap.rotate, snap.scale])
+
   function commit() {
     const g = target.current
     if (!g) return
@@ -197,6 +218,9 @@ function TransformGizmo({
       }}
       object={target as RefObject<THREE.Object3D>}
       mode={mode}
+      translationSnap={snap.move}
+      rotationSnap={snap.rotate}
+      scaleSnap={snap.scale}
       onMouseDown={() => {
         dragging.current = true
       }}
@@ -218,6 +242,7 @@ function MeshItem({
   selected,
   tool,
   transformMode,
+  snap,
   assetRevision,
   onSelect,
   onCommit,
@@ -226,6 +251,7 @@ function MeshItem({
   selected: boolean
   tool: EditorTool
   transformMode: TransformMode
+  snap: SnapSettings
   assetRevision: number
   onSelect: () => void
   onCommit: (
@@ -273,6 +299,7 @@ function MeshItem({
           target={ref}
           dragging={dragging}
           mode={transformMode}
+          snap={snap}
           onCommit={onCommit}
         />
       )}
@@ -280,43 +307,43 @@ function MeshItem({
   )
 }
 
-function GrindItem({
-  obj,
-  selected,
-  onSelect,
-}: {
-  obj: GrindObject
-  selected: boolean
-  onSelect: () => void
-}) {
-  const curve = useMemo(() => {
-    const pts = obj.points.map((p) => new THREE.Vector3(...p))
-    if (pts.length < 2) return null
-    return new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.05)
-  }, [obj.points])
-
-  const tube = useMemo(() => {
-    if (!curve) return null
-    return new THREE.TubeGeometry(curve, 32, Math.max(obj.radius, 0.02), 8, false)
-  }, [curve, obj.radius])
-
-  if (!tube) return null
-
+function SpawnFigure({ selected }: { selected: boolean }) {
+  const color = selected ? '#ffcc66' : '#e4b15c'
   return (
-    <mesh
-      geometry={tube}
-      onPointerDown={(e) => {
-        e.stopPropagation()
-        if (e.button !== 0 || gizmoOwnsPointer.current) return
-        onSelect()
-      }}
-    >
-      <meshStandardMaterial
-        color={selected ? '#ffb040' : '#d8dde6'}
-        metalness={0.85}
-        roughness={0.25}
-      />
-    </mesh>
+    <group>
+      <mesh castShadow position={[-0.1, 0.425, 0]}>
+        <capsuleGeometry args={[0.075, 0.7, 4, 8]} />
+        <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+      <mesh castShadow position={[0.1, 0.425, 0]}>
+        <capsuleGeometry args={[0.075, 0.7, 4, 8]} />
+        <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+      <mesh castShadow position={[0, 1.12, 0]}>
+        <boxGeometry args={[0.38, 0.52, 0.2]} />
+        <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+      <mesh castShadow position={[0, 1.42, 0]}>
+        <cylinderGeometry args={[0.055, 0.06, 0.1, 8]} />
+        <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+      <mesh castShadow position={[0, 1.57, 0]}>
+        <sphereGeometry args={[0.13, 16, 12]} />
+        <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+      <mesh castShadow position={[0, 1.56, -0.15]}>
+        <boxGeometry args={[0.05, 0.04, 0.07]} />
+        <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+      <mesh castShadow position={[-0.53, 1.32, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <capsuleGeometry args={[0.055, 0.58, 4, 8]} />
+        <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+      <mesh castShadow position={[0.53, 1.32, 0]} rotation={[0, 0, Math.PI / 2]}>
+        <capsuleGeometry args={[0.055, 0.58, 4, 8]} />
+        <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+    </group>
   )
 }
 
@@ -325,6 +352,7 @@ function SpawnItem({
   selected,
   tool,
   transformMode,
+  snap,
   onSelect,
   onCommit,
 }: {
@@ -332,6 +360,7 @@ function SpawnItem({
   selected: boolean
   tool: EditorTool
   transformMode: TransformMode
+  snap: SnapSettings
   onSelect: () => void
   onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
 }) {
@@ -358,24 +387,14 @@ function SpawnItem({
           onSelect()
         }}
       >
-        <mesh castShadow position={[0, 1.4, 0]}>
-          <coneGeometry args={[1.1, 2.8, 4]} />
-          <meshStandardMaterial color={selected ? '#ffcc66' : '#e8a020'} />
-        </mesh>
-        <mesh position={[0, 1.4, -2.6]} rotation={[Math.PI / 2, 0, 0]}>
-          <cylinderGeometry args={[0.16, 0.16, 3.2, 8]} />
-          <meshStandardMaterial color="#ffc14a" />
-        </mesh>
-        <mesh position={[0, 1.4, -4.5]} rotation={[-Math.PI / 2, 0, 0]}>
-          <coneGeometry args={[0.45, 1.1, 8]} />
-          <meshStandardMaterial color="#ffc14a" />
-        </mesh>
+        <SpawnFigure selected={selected} />
       </group>
       {selected && tool === 'select' && (
         <TransformGizmo
           target={ref}
           dragging={dragging}
           mode={mode}
+          snap={snap}
           onCommit={(pos, rot) => onCommit(pos, rot)}
         />
       )}
@@ -435,7 +454,7 @@ function SceneContents(props: Props) {
     selectedId,
     tool,
     transformMode,
-    grindDraft,
+    snap,
     dragPieceId,
     dragAssetFile,
     dragAssetRevision = 0,
@@ -450,11 +469,6 @@ function SceneContents(props: Props) {
   useEffect(() => {
     if (!dragPieceId) setPreviewPoint(null)
   }, [dragPieceId])
-
-  const draftCurve = useMemo(() => {
-    if (grindDraft.length < 2) return null
-    return new THREE.CatmullRomCurve3(grindDraft.map((p) => new THREE.Vector3(...p)))
-  }, [grindDraft])
 
   const previewY = previewPoint ? restHeight(previewPoint) : 0
 
@@ -478,16 +492,6 @@ function SceneContents(props: Props) {
       <Sun />
 
       <Ground onGroundClick={onGroundClick} />
-      <Grid
-        args={[WORLD_SIZE, WORLD_SIZE]}
-        cellSize={2}
-        sectionSize={10}
-        cellColor="#2c3036"
-        sectionColor="#3d4450"
-        fadeDistance={600}
-        position={[0, 0.002, 0]}
-        raycast={() => null}
-      />
 
       {scene.objects.map((obj) => {
         if (obj.kind === 'mesh') {
@@ -498,6 +502,7 @@ function SceneContents(props: Props) {
               selected={obj.id === selectedId}
               tool={tool}
               transformMode={transformMode}
+              snap={snap}
               assetRevision={obj.assetFile ? (assetRevisions[obj.assetFile] ?? 0) : 0}
               onSelect={() => onSelect(obj.id)}
               onCommit={(pos, rot, scale) => {
@@ -506,16 +511,7 @@ function SceneContents(props: Props) {
             />
           )
         }
-        if (obj.kind === 'grind') {
-          return (
-            <GrindItem
-              key={obj.id}
-              obj={obj}
-              selected={obj.id === selectedId}
-              onSelect={() => onSelect(obj.id)}
-            />
-          )
-        }
+        if (obj.kind !== 'spawn') return null
         return (
           <SpawnItem
             key={obj.id}
@@ -523,6 +519,7 @@ function SceneContents(props: Props) {
             selected={obj.id === selectedId}
             tool={tool}
             transformMode={transformMode}
+            snap={snap}
             onSelect={() => onSelect(obj.id)}
             onCommit={(pos, rot) => {
               onPatchObject(obj.id, { position: pos, rotation: rot })
@@ -542,19 +539,6 @@ function SceneContents(props: Props) {
         </group>
       )}
 
-      {grindDraft.map((p, i) => (
-        <mesh key={`draft-${i}`} position={p}>
-          <sphereGeometry args={[0.35, 12, 12]} />
-          <meshBasicMaterial color="#ffb040" />
-        </mesh>
-      ))}
-      {draftCurve && (
-        <mesh>
-          <tubeGeometry args={[draftCurve, 24, 0.12, 6, false]} />
-          <meshBasicMaterial color="#ffb040" transparent opacity={0.75} />
-        </mesh>
-      )}
-
       <PieceDragLayer
         dragPieceId={dragPieceId}
         onPlace={onPlacePiece}
@@ -564,6 +548,54 @@ function SceneContents(props: Props) {
       <ContactShadows opacity={0.12} scale={160} blur={2.4} far={40} />
     </>
   )
+}
+
+/** Horizontal cross in public/img/skybox.png: up, then left/front/right/back, then down. */
+const SKYBOX_URL = '/img/skybox.png'
+
+function sliceCubeFace(image: HTMLImageElement, column: number, row: number) {
+  const face = image.width / 4
+  const canvas = document.createElement('canvas')
+  canvas.width = face
+  canvas.height = face
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return canvas
+  ctx.drawImage(image, column * face, row * face, face, face, 0, 0, face, face)
+  return canvas
+}
+
+function Skybox() {
+  const scene = useThree((s) => s.scene)
+
+  useEffect(() => {
+    let disposed = false
+    let texture: THREE.CubeTexture | null = null
+    const image = new Image()
+    image.onload = () => {
+      if (disposed) return
+      // +X, -X, +Y, -Y, +Z, -Z
+      const images = [
+        sliceCubeFace(image, 2, 1),
+        sliceCubeFace(image, 0, 1),
+        sliceCubeFace(image, 1, 0),
+        sliceCubeFace(image, 1, 2),
+        sliceCubeFace(image, 1, 1),
+        sliceCubeFace(image, 3, 1),
+      ]
+      texture = new THREE.CubeTexture(images)
+      texture.colorSpace = THREE.SRGBColorSpace
+      texture.needsUpdate = true
+      scene.background = texture
+    }
+    image.src = SKYBOX_URL
+    return () => {
+      disposed = true
+      if (texture && scene.background === texture) scene.background = null
+      texture?.dispose()
+    }
+  }, [scene])
+
+  return null
 }
 
 export function Viewport(props: Props) {
@@ -578,8 +610,8 @@ export function Viewport(props: Props) {
         shadows
         camera={{ position: [48, 36, 58], fov: 45, near: 0.5, far: 5000 }}
       >
-        <color attach="background" args={['#121418']} />
-        <fog attach="fog" args={['#121418', 180, 1100]} />
+        <Skybox />
+        <fog attach="fog" args={['#c9dadf', 180, 1100]} />
         <Suspense fallback={null}>
           <SceneContents {...props} />
         </Suspense>

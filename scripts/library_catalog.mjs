@@ -39,18 +39,40 @@ function parentIdOf(rel) {
 }
 
 /**
- * A folder that directly holds a .blend and no nested asset folders is one
- * placeable object, named after the folder. Parent folders are categories.
- * Objects/grindable/bench/short metal bench/*.blend
+ * A folder that holds a .blend is one placeable object, named after the folder.
+ * Anything beside that file, including a textures folder, stays with the object
+ * and is not scanned. Parent folders with no blend of their own are categories.
+ * Objects/grindable/bench/short metal bench/short metal bench.blend
  * → categories Objects, grindable, bench, piece "short metal bench".
  */
+async function addPiece(dir, rel, blends, acc) {
+  const folderName = path.posix.basename(rel)
+  const matched = blends.find(
+    (entry) => entry.name.replace(/\.blend$/i, '').toLowerCase() === folderName.toLowerCase(),
+  )
+  const chosen = matched ?? blends[0]
+  const assetFile = `${rel}/${chosen.name}`
+  const fileStat = await stat(path.join(dir, chosen.name))
+  acc.pieces.push({
+    id: rel,
+    label: folderName,
+    categoryId: parentIdOf(rel),
+    assetFile: toPosix(assetFile),
+    revision: Math.round(fileStat.mtimeMs),
+  })
+}
+
 async function walkDir(dir, rel, acc) {
   const entries = await readdir(dir, { withFileTypes: true })
   const blends = entries.filter((entry) => entry.isFile() && isBlendFile(entry.name))
+  if (blends.length > 0) {
+    await addPiece(dir, rel, blends, acc)
+    return 'piece'
+  }
+
   const subdirs = entries.filter(
     (entry) => entry.isDirectory() && !entry.name.startsWith('.') && !SKIP_DIRS.has(entry.name),
   )
-
   let childPieces = 0
   let childCategories = 0
   for (const sub of subdirs) {
@@ -58,38 +80,6 @@ async function walkDir(dir, rel, acc) {
     const kind = await walkDir(path.join(dir, sub.name), childRel, acc)
     if (kind === 'piece') childPieces += 1
     if (kind === 'category') childCategories += 1
-  }
-
-  if (blends.length > 0 && childPieces === 0 && childCategories === 0) {
-    const folderName = path.posix.basename(rel)
-    const matched = blends.find(
-      (entry) => entry.name.replace(/\.blend$/i, '').toLowerCase() === folderName.toLowerCase(),
-    )
-    const chosen = matched ?? blends[0]
-    const assetFile = `${rel}/${chosen.name}`
-    const fileStat = await stat(path.join(dir, chosen.name))
-    acc.pieces.push({
-      id: rel,
-      label: folderName,
-      categoryId: parentIdOf(rel),
-      assetFile: toPosix(assetFile),
-      revision: Math.round(fileStat.mtimeMs),
-    })
-    return 'piece'
-  }
-
-  for (const blend of blends) {
-    const label = blend.name.replace(/\.blend$/i, '')
-    const assetFile = `${rel}/${blend.name}`
-    const fileStat = await stat(path.join(dir, blend.name))
-    acc.pieces.push({
-      id: `${rel}/${label}`,
-      label,
-      categoryId: rel,
-      assetFile: toPosix(assetFile),
-      revision: Math.round(fileStat.mtimeMs),
-    })
-    childPieces += 1
   }
 
   if (childPieces === 0 && childCategories === 0) return null

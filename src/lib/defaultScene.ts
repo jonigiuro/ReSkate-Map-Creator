@@ -29,17 +29,6 @@ export function createDefaultScene(): MapScene {
         sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
       },
       {
-        id: uid('grind'),
-        kind: 'grind',
-        name: 'grind_ledge',
-        points: [
-          [-6, 2.45, -13],
-          [6, 2.45, -13],
-        ],
-        radius: 0.2,
-        surface: 'material_37227424',
-      },
-      {
         id: uid('spawn'),
         kind: 'spawn',
         name: 'spawn',

@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { statSync } from 'node:fs'
 import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -45,9 +46,9 @@ type LibraryHelpers = {
 }
 
 async function loadLibraryHelpers(): Promise<LibraryHelpers> {
-  return import(
-    pathToFileURL(path.join(root, 'scripts', 'library_catalog.mjs')).href
-  ) as Promise<LibraryHelpers>
+  const file = path.join(root, 'scripts', 'library_catalog.mjs')
+  const version = statSync(file).mtimeMs
+  return import(`${pathToFileURL(file).href}?update=${version}`) as Promise<LibraryHelpers>
 }
 
 function blendExportPlugin(): Plugin {

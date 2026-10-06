@@ -3,6 +3,7 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Menu,
   shell,
 } from 'electron'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
@@ -138,7 +139,9 @@ async function askForBlender(win) {
 let mainWindow = null
 
 async function createWindow() {
+  Menu.setApplicationMenu(null)
   mainWindow = new BrowserWindow({
+    autoHideMenuBar: true,
     width: 1440,
     height: 900,
     minWidth: 1100,
@@ -152,6 +155,8 @@ async function createWindow() {
       sandbox: false,
     },
   })
+
+  mainWindow.setMenu(null)
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -265,21 +270,44 @@ function registerIpc() {
     }
   })
 
-  ipcMain.handle('json:save', async (event, scene) => {
+  ipcMain.handle('json:save', async (event, scene, filePath) => {
     const win = BrowserWindow.fromWebContents(event.sender) || mainWindow
-    const save = await dialog.showSaveDialog(win ?? undefined, {
-      title: 'Save scene JSON',
-      defaultPath: 'reskate-scene.json',
-      filters: [{ name: 'JSON', extensions: ['json'] }],
-    })
-    if (save.canceled || !save.filePath) {
-      return { ok: false, canceled: true }
+    let out = typeof filePath === 'string' && filePath ? filePath : ''
+    if (!out) {
+      const save = await dialog.showSaveDialog(win ?? undefined, {
+        title: 'Save scene',
+        defaultPath: 'reskate-scene.json',
+        filters: [{ name: 'Scene JSON', extensions: ['json'] }],
+      })
+      if (save.canceled || !save.filePath) {
+        return { ok: false, canceled: true }
+      }
+      out = save.filePath
+      if (!out.toLowerCase().endsWith('.json')) out += '.json'
     }
-    let out = save.filePath
-    if (!out.toLowerCase().endsWith('.json')) out += '.json'
     try {
       await writeFile(out, JSON.stringify(scene, null, 2), 'utf8')
       return { ok: true, path: out }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: message }
+    }
+  })
+
+  ipcMain.handle('json:open', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) || mainWindow
+    const open = await dialog.showOpenDialog(win ?? undefined, {
+      title: 'Open scene',
+      filters: [{ name: 'Scene JSON', extensions: ['json'] }],
+      properties: ['openFile'],
+    })
+    if (open.canceled || !open.filePaths[0]) {
+      return { ok: false, canceled: true }
+    }
+    const filePath = open.filePaths[0]
+    try {
+      const text = (await readFile(filePath, 'utf8')).replace(/^\uFEFF/, '')
+      return { ok: true, path: filePath, scene: JSON.parse(text) }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       return { ok: false, error: message }

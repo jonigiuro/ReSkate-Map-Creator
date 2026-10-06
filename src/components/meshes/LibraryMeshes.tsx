@@ -1,8 +1,15 @@
-import { useGLTF } from '@react-three/drei'
+import { useGLTF, useTexture } from '@react-three/drei'
 import { Component, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
 import { httpPreviewUrl } from '../../lib/assetLibrary'
 import { getPiece } from '../../lib/library'
+
+const ASPHALT_TILE_M = 2
+const ASPHALT_MAPS = [
+  '/img/textures/asphalt/Asphalt_BaseColor.jpg',
+  '/img/textures/asphalt/Asphalt_Normal.jpg',
+  '/img/textures/asphalt/Asphalt_Roughness.jpg',
+] as const
 
 function useWedgeGeometry(width: number, depth: number, height: number) {
   return useMemo(() => {
@@ -203,6 +210,84 @@ function AuthoredMesh({
   )
 }
 
+/** One UV unit is ASPHALT_TILE_M metres. Y is measured up from the bottom face. */
+function useTiledBoxGeometry(w: number, h: number, d: number) {
+  return useMemo(() => {
+    const geometry = new THREE.BoxGeometry(w, h, d)
+    const pos = geometry.attributes.position
+    const normal = geometry.attributes.normal
+    const uv = geometry.attributes.uv
+    for (let i = 0; i < pos.count; i += 1) {
+      const x = pos.getX(i)
+      const y = pos.getY(i) + h / 2
+      const z = pos.getZ(i)
+      const nx = Math.abs(normal.getX(i))
+      const ny = Math.abs(normal.getY(i))
+      const nz = Math.abs(normal.getZ(i))
+      const u = (ny >= nx && ny >= nz ? x : nx >= nz ? z : x) / ASPHALT_TILE_M
+      const v = (ny >= nx && ny >= nz ? z : y) / ASPHALT_TILE_M
+      uv.setXY(i, u, v)
+    }
+    uv.needsUpdate = true
+    geometry.computeTangents()
+    return geometry
+  }, [w, h, d])
+}
+
+function FlatPad({
+  w,
+  h,
+  d,
+  ghost,
+}: {
+  w: number
+  h: number
+  d: number
+  ghost?: boolean
+}) {
+  const geometry = useTiledBoxGeometry(w, h, d)
+  const [colorMap, normalMap, roughnessMap] = useTexture([...ASPHALT_MAPS])
+
+  const material = useMemo(() => {
+    for (const map of [colorMap, normalMap, roughnessMap]) {
+      map.wrapS = THREE.RepeatWrapping
+      map.wrapT = THREE.RepeatWrapping
+      map.needsUpdate = true
+    }
+    colorMap.colorSpace = THREE.SRGBColorSpace
+    normalMap.colorSpace = THREE.NoColorSpace
+    roughnessMap.colorSpace = THREE.NoColorSpace
+    return new THREE.MeshStandardMaterial({
+      map: colorMap,
+      normalMap,
+      roughnessMap,
+      roughness: 1,
+      metalness: 0,
+      transparent: !!ghost,
+      opacity: ghost ? 0.45 : 1,
+      depthWrite: !ghost,
+    })
+  }, [colorMap, ghost, normalMap, roughnessMap])
+
+  useEffect(
+    () => () => {
+      geometry.dispose()
+      material.dispose()
+    },
+    [geometry, material],
+  )
+
+  return (
+    <mesh
+      castShadow={!ghost}
+      receiveShadow={!ghost}
+      position={[0, h / 2, 0]}
+      geometry={geometry}
+      material={material}
+    />
+  )
+}
+
 function BuiltinMesh({
   libraryId,
   color,
@@ -233,6 +318,10 @@ function BuiltinMesh({
         <PieceMaterial color={c} ghost={ghost} roughness={0.75} metalness={0.02} />
       </mesh>
     )
+  }
+
+  if (libraryId === 'flat_pad') {
+    return <FlatPad w={w} h={h} d={d} ghost={ghost} />
   }
 
   return (

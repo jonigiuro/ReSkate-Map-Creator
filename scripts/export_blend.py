@@ -123,7 +123,87 @@ def placeholder_material(name, color):
     return mat
 
 
-def _link_mesh(name, verts_three, faces, color):
+def metre_uv(x, y, z, normal, tile):
+    """One UV unit covers `tile` metres. Y is up from the bottom of the mesh."""
+    ax, ay, az = abs(normal.x), abs(normal.y), abs(normal.z)
+    if ay >= ax and ay >= az:
+        return (x / tile, z / tile)
+    if ax >= az:
+        return (z / tile, y / tile)
+    return (x / tile, y / tile)
+
+
+def assign_metre_uvs(mesh, verts_three, faces, tile):
+    uv_layer = mesh.uv_layers.new(name="UVMap")
+    loop_index = 0
+    for face in faces:
+        p0 = Vector(verts_three[face[0]])
+        p1 = Vector(verts_three[face[1]])
+        p2 = Vector(verts_three[face[2]])
+        normal = (p1 - p0).cross(p2 - p0)
+        if normal.length > 1e-8:
+            normal.normalize()
+        for index in face:
+            x, y, z = verts_three[index]
+            uv_layer.data[loop_index].uv = metre_uv(x, y, z, normal, tile)
+            loop_index += 1
+
+
+def _image_texture(nodes, path, colorspace, location):
+    image = bpy.data.images.load(str(Path(path).resolve()), check_existing=True)
+    try:
+        image.colorspace_settings.name = colorspace
+    except Exception as exc:
+        print(f"Colorspace {colorspace} not set on {path.name}: {exc}")
+    try:
+        if not image.packed_file:
+            image.pack()
+    except Exception as exc:
+        print(f"Could not pack {path}: {exc}")
+    node = nodes.new("ShaderNodeTexImage")
+    node.image = image
+    node.location = location
+    node.interpolation = "Linear"
+    node.extension = "REPEAT"
+    return node
+
+
+def asphalt_material(project_root):
+    """Principled asphalt from public/img/textures/asphalt, packed into the blend."""
+    cached = bpy.data.materials.get("asphalt")
+    if cached:
+        return cached
+    folder = Path(project_root) / "public" / "img" / "textures" / "asphalt"
+    files = {
+        "base": folder / "Asphalt_BaseColor.jpg",
+        "normal": folder / "Asphalt_Normal.jpg",
+        "rough": folder / "Asphalt_Roughness.jpg",
+    }
+    missing = [str(path) for path in files.values() if not path.is_file()]
+    if missing:
+        print("Asphalt textures missing, flat pad stays untextured: " + ", ".join(missing))
+        return placeholder_material("asphalt", (0.22, 0.22, 0.24))
+
+    mat = bpy.data.materials.new("asphalt")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, files["base"], "sRGB", (-520, 280))
+    rough = _image_texture(nodes, files["rough"], "Non-Color", (-520, 0))
+    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-520, -280))
+    normal_map = nodes.new("ShaderNodeNormalMap")
+    normal_map.location = (-220, -280)
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    return mat
+
+
+def _link_mesh(name, verts_three, faces, color, material=None, tile=None):
     """verts_three are editor-space (X, Y-up, Z).
 
     Faces are CCW when viewed from outside. The Y-up → Z-up map is a
@@ -134,14 +214,16 @@ def _link_mesh(name, verts_three, faces, color):
     verts = [three_local_to_blender(*v) for v in verts_three]
     mesh.from_pydata(verts, [], faces)
     mesh.update()
+    if tile:
+        assign_metre_uvs(mesh, verts_three, faces, tile)
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
-    mat = placeholder_material(f"{name}_mat", color)
+    mat = material or placeholder_material(f"{name}_mat", color)
     obj.data.materials.append(mat)
     return obj
 
 
-def make_box_mesh(name, size, color):
+def make_box_mesh(name, size, color, material=None, tile=None):
     """size is editor (width, height, depth). Origin on the bottom face, centered in XZ."""
     w, h, d = size
     hw, hd = w / 2.0, d / 2.0
@@ -169,7 +251,7 @@ def make_box_mesh(name, size, color):
         (3, 4, 0),
         (3, 7, 4),
     ]
-    return _link_mesh(name, verts, faces, color)
+    return _link_mesh(name, verts, faces, color, material=material, tile=tile)
 
 
 def make_wedge_mesh(name, size, color):
@@ -215,6 +297,20 @@ def make_quarter_pipe_mesh(name, radius, width, color):
         faces.append((a, a + 3, a + 1))
         faces.append((a, a + 2, a + 3))
     return _link_mesh(name, verts, faces, color)
+
+
+ASPHALT_TILE_M = 2.0
+
+
+def make_flat_pad(project_root):
+    """32 m × 1.2 m × 32 m box. Asphalt repeats every 2 m, same as the editor."""
+    return make_box_mesh(
+        "flat_pad",
+        (32.0, 1.2, 32.0),
+        (0.22, 0.22, 0.24),
+        material=asphalt_material(project_root),
+        tile=ASPHALT_TILE_M,
+    )
 
 
 # Base sizes match src/lib/library.ts (width, height, depth) in metres.
@@ -452,6 +548,7 @@ def build(scene):
     colls = ensure_collections()
 
     objects = scene.get("objects") or []
+    project_root = Path(scene.get("projectRoot") or ".")
     for entry in objects:
         kind = entry.get("kind")
         name = entry.get("name") or kind or "Object"
@@ -459,7 +556,6 @@ def build(scene):
         if kind == "mesh":
             asset = entry.get("assetFile")
             if asset:
-                project_root = Path(scene.get("projectRoot") or ".")
                 blend_path = Path(asset)
                 if not blend_path.is_absolute():
                     blend_path = project_root / asset
@@ -474,8 +570,11 @@ def build(scene):
                 continue
 
             lib = entry.get("libraryId") or "flat_pad"
-            builder = LIBRARY_BUILDERS.get(lib) or LIBRARY_BUILDERS["flat_pad"]
-            obj = builder()
+            if lib == "flat_pad":
+                obj = make_flat_pad(project_root)
+            else:
+                builder = LIBRARY_BUILDERS.get(lib) or LIBRARY_BUILDERS["flat_pad"]
+                obj = builder()
             obj.name = name
             apply_transform(
                 obj,

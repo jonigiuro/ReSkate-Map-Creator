@@ -7,7 +7,8 @@ contextBridge.exposeInMainWorld('reskateDesktop', {
   listLibrary: () => ipcRenderer.invoke('library:list'),
   previewAsset: (assetFile) => ipcRenderer.invoke('library:preview', assetFile),
   exportBlend: (scene) => ipcRenderer.invoke('blend:export', scene),
-  saveJson: (scene) => ipcRenderer.invoke('json:save', scene),
+  saveJson: (scene, filePath) => ipcRenderer.invoke('json:save', scene, filePath),
+  openJson: () => ipcRenderer.invoke('json:open'),
   onBlenderStatus: (callback) => {
     const handler = (_event, status) => callback(status)
     ipcRenderer.on('blender:status', handler)

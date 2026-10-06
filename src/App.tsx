@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type DragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import * as THREE from 'three'
 import { Viewport, type EditorTool, type TransformMode } from './components/Viewport'
 import {
@@ -9,14 +9,12 @@ import {
 import { createDefaultScene } from './lib/defaultScene'
 import { uid } from './lib/ids'
 import { LIBRARY_CATEGORIES, getPiece, piecesInCategory } from './lib/library'
+import { parseSceneFile, sceneFileName } from './lib/sceneFile'
 import type {
-  GrindObject,
-  GrindSurface,
   MapScene,
   MeshObject,
   SceneObject,
 } from './types/scene'
-import { GRIND_SURFACE_LABELS } from './types/scene'
 import './App.css'
 
 const GENERIC_CATEGORY = '__generic__'
@@ -29,10 +27,15 @@ export default function App() {
   const [categoryPath, setCategoryPath] = useState<string[]>([])
   const [dragPiece, setDragPiece] = useState<string | null>(null)
   const [transformMode, setTransformMode] = useState<TransformMode>('translate')
-  const [grindDraft, setGrindDraft] = useState<[number, number, number][]>([])
-  const [grindRadius, setGrindRadius] = useState(0.2)
-  const [grindSurface, setGrindSurface] = useState<GrindSurface>('material_37227424')
+  const [snapMove, setSnapMove] = useState(false)
+  const [snapScale, setSnapScale] = useState(false)
+  const [snapRotate, setSnapRotate] = useState(false)
+  const [snapMoveSize, setSnapMoveSize] = useState('1')
+  const [snapScaleSize, setSnapScaleSize] = useState('1.1')
+  const [snapRotateSize, setSnapRotateSize] = useState('45')
   const [exporting, setExporting] = useState(false)
+  const [scenePath, setScenePath] = useState<string | null>(null)
+  const [fileMenuOpen, setFileMenuOpen] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [didInitSelect, setDidInitSelect] = useState(false)
@@ -96,12 +99,18 @@ export default function App() {
     () => scene.objects.find((o) => o.id === selectedId) ?? null,
     [scene, selectedId],
   )
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const clipboardRef = useRef<{ source: SceneObject; copies: number } | null>(null)
+  const fileMenuRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const saveSceneRef = useRef<(saveAs: boolean) => void>(() => {})
+  const openSceneRef = useRef<() => void>(() => {})
 
   const counts = useMemo(() => {
     const mesh = scene.objects.filter((o) => o.kind === 'mesh').length
-    const grind = scene.objects.filter((o) => o.kind === 'grind').length
     const spawn = scene.objects.some((o) => o.kind === 'spawn')
-    return { mesh, grind, spawn }
+    return { mesh, spawn }
   }, [scene])
 
   function patchObject(id: string, patch: Partial<SceneObject>) {
@@ -129,17 +138,58 @@ export default function App() {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.metaKey || event.ctrlKey || event.altKey) return
       const target = event.target
-      if (
+      const typing =
         target instanceof HTMLElement &&
         (target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA' ||
           target.tagName === 'SELECT' ||
           target.isContentEditable)
-      ) {
-        return
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && !typing) {
+        const key = event.key.toLowerCase()
+        if (key === 'c') {
+          const obj = selectedRef.current
+          if (!obj) return
+          event.preventDefault()
+          if (obj.kind === 'spawn') {
+            setError('Spawn stays unique. Copy a mesh instead.')
+            return
+          }
+          clipboardRef.current = { source: structuredClone(obj), copies: 0 }
+          setError(null)
+          setStatus(`Copied ${obj.name}`)
+          return
+        }
+        if (key === 's') {
+          event.preventDefault()
+          saveSceneRef.current(false)
+          return
+        }
+        if (key === 'o') {
+          event.preventDefault()
+          openSceneRef.current()
+          return
+        }
+        if (key === 'v') {
+          const clip = clipboardRef.current
+          if (!clip || clip.source.kind === 'spawn') return
+          event.preventDefault()
+          clip.copies += 1
+          const shift = clip.copies
+          const src = clip.source
+          const id = uid(src.kind)
+          setScene((prev) => ({
+            ...prev,
+            objects: [...prev.objects, duplicateObject(src, id, shift, prev.objects)],
+          }))
+          setSelectedId(id)
+          setTool('select')
+          setError(null)
+          setStatus(`Pasted ${src.name}`)
+          return
+        }
       }
+      if (event.metaKey || event.ctrlKey || event.altKey || typing) return
       const key = event.key.toLowerCase()
       if (key !== 'w' && key !== 'e' && key !== 'r') return
       event.preventDefault()
@@ -185,47 +235,8 @@ export default function App() {
     setError(null)
   }
 
-  function onGroundClick(point: THREE.Vector3) {
-    const y = Math.max(0, point.y)
-    if (tool === 'select') {
-      setSelectedId(null)
-      return
-    }
-
-    if (tool === 'grind') {
-      const next: [number, number, number] = [
-        round4(point.x),
-        round4(y + 0.35),
-        round4(point.z),
-      ]
-      setGrindDraft((d) => [...d, next])
-    }
-  }
-
-  function finishGrind() {
-    if (grindDraft.length < 2) {
-      setError('Add at least two grind points, then finish the spline.')
-      return
-    }
-    const obj: GrindObject = {
-      id: uid('grind'),
-      kind: 'grind',
-      name: `grind_${scene.objects.filter((o) => o.kind === 'grind').length + 1}`,
-      points: grindDraft,
-      radius: grindRadius,
-      surface: grindSurface,
-    }
-    setScene((prev) => ({ ...prev, objects: [...prev.objects, obj] }))
-    setGrindDraft([])
-    setSelectedId(obj.id)
-    setTool('select')
-    setStatus('Grind spline added')
-    setError(null)
-  }
-
-  function cancelGrind() {
-    setGrindDraft([])
-    setTool('select')
+  function onGroundClick() {
+    if (tool === 'select') setSelectedId(null)
   }
 
   async function locateBlender() {
@@ -245,10 +256,6 @@ export default function App() {
     setStatus('Exporting .blend via Blender…')
     try {
       if (!counts.spawn) throw new Error('Scene needs a spawn empty.')
-      const hasAuthored = scene.objects.some((obj) => obj.kind === 'mesh' && obj.assetFile)
-      if (counts.grind < 1 && !hasAuthored) {
-        throw new Error('Add at least one grind spline, or place an object that already has one.')
-      }
 
       const desktop = window.reskateDesktop
       if (desktop) {
@@ -298,29 +305,104 @@ export default function App() {
     }
   }
 
-  async function downloadSceneJson() {
+  function adoptScene(next: MapScene, path: string | null) {
+    setScene(next)
+    setScenePath(path)
+    const spawn = next.objects.find((obj) => obj.kind === 'spawn')
+    setSelectedId(spawn?.id ?? next.objects[0]?.id ?? null)
+    setTool('select')
+    clipboardRef.current = null
+    setError(null)
+  }
+
+  async function saveScene(saveAs: boolean) {
+    setFileMenuOpen(false)
+    setError(null)
     const desktop = window.reskateDesktop
     if (desktop) {
-      const result = await desktop.saveJson(scene)
+      const target = saveAs ? undefined : scenePath ?? undefined
+      const result = await desktop.saveJson(scene, target)
       if (result.canceled) {
         setStatus('Save canceled')
         return
       }
-      if (!result.ok) {
-        setError(result.error || 'Failed to save JSON')
+      if (!result.ok || !result.path) {
+        setError(result.error || 'Failed to save the scene')
         return
       }
-      setStatus(`Saved ${result.path}`)
+      setScenePath(result.path)
+      setStatus(`Saved ${sceneFileName(result.path)}`)
       return
     }
     const blob = new Blob([JSON.stringify(scene, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = 'reskate-scene.json'
+    a.download = scenePath ? sceneFileName(scenePath) : 'reskate-scene.json'
     a.click()
     URL.revokeObjectURL(url)
+    setStatus('Downloaded the scene JSON')
   }
+
+  function loadSceneData(data: unknown, path: string | null) {
+    try {
+      const next = parseSceneFile(data)
+      adoptScene(next, path)
+      setStatus(path ? `Opened ${sceneFileName(path)}` : 'Opened scene')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function openScene() {
+    setFileMenuOpen(false)
+    const desktop = window.reskateDesktop
+    if (desktop) {
+      const result = await desktop.openJson()
+      if (result.canceled) {
+        setStatus('Open canceled')
+        return
+      }
+      if (!result.ok) {
+        setError(result.error || 'Failed to open the scene')
+        return
+      }
+      loadSceneData(result.scene, result.path ?? null)
+      return
+    }
+    fileInputRef.current?.click()
+  }
+
+  async function onSceneFilePicked(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const text = (await file.text()).replace(/^\uFEFF/, '')
+      loadSceneData(JSON.parse(text), file.name)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'That file is not valid JSON.')
+    }
+  }
+
+  saveSceneRef.current = (saveAs) => void saveScene(saveAs)
+  openSceneRef.current = () => void openScene()
+
+  useEffect(() => {
+    if (!fileMenuOpen) return
+    function onPointer(event: PointerEvent) {
+      if (!fileMenuRef.current?.contains(event.target as Node)) setFileMenuOpen(false)
+    }
+    function onEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setFileMenuOpen(false)
+    }
+    window.addEventListener('pointerdown', onPointer)
+    window.addEventListener('keydown', onEscape)
+    return () => {
+      window.removeEventListener('pointerdown', onPointer)
+      window.removeEventListener('keydown', onEscape)
+    }
+  }, [fileMenuOpen])
 
   const currentCategoryId = categoryPath.at(-1) ?? null
   const insideGeneric = currentCategoryId === GENERIC_CATEGORY
@@ -362,23 +444,81 @@ export default function App() {
     event.dataTransfer.setData('text/plain', label)
     event.dataTransfer.effectAllowed = 'copy'
     setDragPiece(id)
-    setGrindDraft([])
   }
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand-block">
+          <div className="file-row">
+            <div className="file-menu" ref={fileMenuRef}>
+              <button
+                type="button"
+                className="ghost"
+                aria-expanded={fileMenuOpen}
+                aria-haspopup="menu"
+                onClick={() => setFileMenuOpen((open) => !open)}
+              >
+                File
+              </button>
+              {fileMenuOpen && (
+                <div className="file-menu-panel" role="menu">
+                  <button type="button" role="menuitem" onClick={() => void openScene()}>
+                    Open… <kbd>Ctrl+O</kbd>
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => void saveScene(false)}>
+                    Save <kbd>Ctrl+S</kbd>
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => void saveScene(true)}>
+                    Save As…
+                  </button>
+                </div>
+              )}
+              <input
+                ref={fileInputRef}
+                className="file-input"
+                type="file"
+                accept=".json,application/json"
+                onChange={(event) => void onSceneFilePicked(event)}
+              />
+            </div>
+            {scenePath && <span className="scene-name">{sceneFileName(scenePath)}</span>}
+          </div>
           <p className="brand">ReSkate Map Creator</p>
           <p className="tagline">
-            Place kit pieces + grind splines → Studio `.blend`
+            Place kit pieces → Studio `.blend`
             {isDesktop ? ' · Desktop' : ' · Web'}
           </p>
         </div>
+        <div className="snap-controls" role="group" aria-label="Snapping">
+          <SnapField
+            label="Move"
+            unit="m"
+            pressed={snapMove}
+            value={snapMoveSize}
+            step={0.1}
+            onToggle={() => setSnapMove((on) => !on)}
+            onValue={setSnapMoveSize}
+          />
+          <SnapField
+            label="Scale"
+            pressed={snapScale}
+            value={snapScaleSize}
+            step={0.1}
+            onToggle={() => setSnapScale((on) => !on)}
+            onValue={setSnapScaleSize}
+          />
+          <SnapField
+            label="Rotate"
+            unit="deg"
+            pressed={snapRotate}
+            value={snapRotateSize}
+            step={1}
+            onToggle={() => setSnapRotate((on) => !on)}
+            onValue={setSnapRotateSize}
+          />
+        </div>
         <div className="top-actions">
-          <button type="button" className="ghost" onClick={() => void downloadSceneJson()}>
-            Save JSON
-          </button>
           <button type="button" className="primary" disabled={exporting} onClick={() => void exportBlend()}>
             {exporting ? 'Exporting…' : 'Export .blend'}
           </button>
@@ -411,7 +551,7 @@ export default function App() {
           <p className="hint">
             {categoryPath.length === 0
               ? 'Open a category, then drag a piece in. Save a .blend as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
-              : 'Drag a piece into the scene. It snaps to whatever is under the cursor. A .blend keeps the ReSkate material, texture, and splines.'}
+              : 'Drag a piece into the scene. It snaps to whatever is under the cursor. A .blend keeps the ReSkate material and texture.'}
           </p>
           {categoryPath.length > 0 && (
             <>
@@ -547,54 +687,6 @@ export default function App() {
               </li>
             ))}
           </ul>
-
-          <div className="grind-tools">
-            <h2>Grind spline</h2>
-            <label>
-              Radius (m)
-              <input
-                type="number"
-                min={0.005}
-                max={0.25}
-                step={0.005}
-                value={grindRadius}
-                onChange={(e) => setGrindRadius(Number(e.target.value))}
-              />
-            </label>
-            <label>
-              Surface
-              <select
-                value={grindSurface}
-                onChange={(e) => setGrindSurface(e.target.value as GrindSurface)}
-              >
-                {Object.entries(GRIND_SURFACE_LABELS).map(([id, label]) => (
-                  <option key={id} value={id}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              className={tool === 'grind' ? 'primary' : 'ghost'}
-              onClick={() => {
-                setTool('grind')
-                setSelectedId(null)
-              }}
-            >
-              Draw grind
-            </button>
-            {tool === 'grind' && (
-              <div className="row">
-                <button type="button" className="primary" onClick={finishGrind}>
-                  Finish ({grindDraft.length} pts)
-                </button>
-                <button type="button" className="ghost" onClick={cancelGrind}>
-                  Cancel
-                </button>
-              </div>
-            )}
-          </div>
         </aside>
 
         <main className="stage">
@@ -606,13 +698,6 @@ export default function App() {
                 onClick={() => setTool('select')}
               >
                 Select
-              </button>
-              <button
-                type="button"
-                className={tool === 'grind' ? 'on' : ''}
-                onClick={() => setTool('grind')}
-              >
-                Grind
               </button>
             </div>
             <div className="seg">
@@ -647,33 +732,65 @@ export default function App() {
             selectedId={selectedId}
             tool={tool}
             transformMode={transformMode}
-            grindDraft={grindDraft}
+            snap={{
+              move: snapMove ? parseSnap(snapMoveSize) : null,
+              scale: snapScale ? parseSnap(snapScaleSize) : null,
+              rotate: snapRotate ? degreesToRadians(parseSnap(snapRotateSize)) : null,
+            }}
+            onGroundClick={onGroundClick}
             dragPieceId={dragPiece}
             dragAssetFile={dragged?.assetFile}
             dragAssetRevision={dragged?.revision ?? 0}
             assetRevisions={assetRevisions}
             onSelect={setSelectedId}
             onPatchObject={patchObject}
-            onGroundClick={onGroundClick}
             onPlacePiece={placePiece}
           />
 
           <div className="status-bar">
             <span>
-              {counts.mesh} meshes · {counts.grind} grinds · spawn {counts.spawn ? '✓' : 'missing'}
+              {counts.mesh} meshes · spawn {counts.spawn ? '✓' : 'missing'}
             </span>
             {status && <span className="ok">{status}</span>}
             {error && <span className="err">{error}</span>}
             {tool === 'select' && (
-              <span>Click to select. Right-drag orbits, middle-drag pans.</span>
+              <span>Click to select. Right-drag orbits, middle-drag pans. Ctrl+C copies, Ctrl+V pastes.</span>
             )}
-            {tool === 'grind' && <span>Click points along the rail, then Finish.</span>}
           </div>
         </main>
 
         <aside className="panel inspector">
           <h2>Inspector</h2>
-          {!selected && <p className="hint">Select an object to edit Studio props.</p>}
+          {(!selected || selected.kind === 'grind') && (
+            <p className="hint">Select an object to edit its position, rotation, and scale.</p>
+          )}
+          {(selected?.kind === 'mesh' || selected?.kind === 'spawn') && (
+            <TransformBox
+              key={selected.id}
+              position={selected.position}
+              rotationDeg={[
+                radToDeg(selected.rotation[0]),
+                radToDeg(selected.rotation[1]),
+                radToDeg(selected.rotation[2]),
+              ]}
+              scale={selected.kind === 'mesh' ? selected.scale : undefined}
+              onPosition={(position) => patchObject(selected.id, { position })}
+              onRotationDeg={(rotationDeg) =>
+                patchObject(selected.id, {
+                  rotation: [
+                    (rotationDeg[0] * Math.PI) / 180,
+                    (rotationDeg[1] * Math.PI) / 180,
+                    (rotationDeg[2] * Math.PI) / 180,
+                  ],
+                })
+              }
+              onScale={
+                selected.kind === 'mesh'
+                  ? (scale) => patchObject(selected.id, { scale })
+                  : undefined
+              }
+            />
+          )}
           {selected?.kind === 'mesh' && selected.assetFile && (
             <div className="fields">
               <p className="badge">BLENDER OBJECT</p>
@@ -685,8 +802,8 @@ export default function App() {
                 />
               </label>
               <p className="hint">
-                Material, texture, collision, and grind splines stay as they were set with the
-                ReSkate addon. Export copies this .blend in, including those properties.
+                Materials, textures, and collision stay as they were set in Blender. Export copies
+                this .blend in, including those properties.
               </p>
               <p className="meta">
                 <code>{selected.assetFile}</code>
@@ -743,76 +860,13 @@ export default function App() {
               </p>
             </div>
           )}
-          {selected?.kind === 'grind' && (
-            <div className="fields">
-              <label>
-                Name
-                <input
-                  value={selected.name}
-                  onChange={(e) => patchObject(selected.id, { name: e.target.value })}
-                />
-              </label>
-              <label>
-                Radius
-                <input
-                  type="number"
-                  min={0.005}
-                  max={0.25}
-                  step={0.005}
-                  value={selected.radius}
-                  onChange={(e) =>
-                    patchObject(selected.id, { radius: Number(e.target.value) })
-                  }
-                />
-              </label>
-              <label>
-                Surface
-                <select
-                  value={selected.surface}
-                  onChange={(e) =>
-                    patchObject(selected.id, {
-                      surface: e.target.value as GrindSurface,
-                    })
-                  }
-                >
-                  {Object.entries(GRIND_SURFACE_LABELS).map(([id, label]) => (
-                    <option key={id} value={id}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="meta">
-                Collection: <code>Grind curves</code>
-                <br />
-                RNA: <code>sk8_grind_curve</code>
-              </p>
-            </div>
-          )}
           {selected?.kind === 'spawn' && (
             <div className="fields">
               <p className="badge spawn">SPAWN EMPTY</p>
               <p className="hint">
-                Exported as empty named <code>spawn</code> in <code>Markers</code>. Arrow shows
-                facing (Studio local −Z).
+                Exported as empty named <code>spawn</code> in <code>Markers</code>. The figure is
+                1.7 m tall and faces Studio local −Z.
               </p>
-              <label>
-                Height
-                <input
-                  type="number"
-                  step={0.05}
-                  value={selected.position[1]}
-                  onChange={(e) =>
-                    patchObject(selected.id, {
-                      position: [
-                        selected.position[0],
-                        Number(e.target.value),
-                        selected.position[2],
-                      ],
-                    })
-                  }
-                />
-              </label>
             </div>
           )}
 
@@ -828,6 +882,218 @@ export default function App() {
           </div>
         </aside>
       </div>
+    </div>
+  )
+}
+
+function radToDeg(radians: number) {
+  return (radians * 180) / Math.PI
+}
+
+function formatNum(n: number) {
+  if (!Number.isFinite(n)) return ''
+  const rounded = Math.round(n * 1000) / 1000
+  return String(Object.is(rounded, -0) ? 0 : rounded)
+}
+
+function uniqueName(name: string, objects: SceneObject[]) {
+  const base = name.replace(/_copy\d*$/, '')
+  const taken = new Set(objects.map((object) => object.name))
+  let candidate = `${base}_copy`
+  let n = 2
+  while (taken.has(candidate)) {
+    candidate = `${base}_copy${n}`
+    n += 1
+  }
+  return candidate
+}
+
+function duplicateObject(
+  source: SceneObject,
+  id: string,
+  shift: number,
+  objects: SceneObject[],
+): SceneObject {
+  if (source.kind === 'mesh') {
+    return {
+      ...source,
+      id,
+      name: uniqueName(source.name, objects),
+      position: [source.position[0] + shift, source.position[1], source.position[2]],
+      rotation: [...source.rotation],
+      scale: [...source.scale],
+      sk8: { ...source.sk8 },
+    }
+  }
+  if (source.kind === 'grind') {
+    return {
+      ...source,
+      id,
+      name: uniqueName(source.name, objects),
+      points: source.points.map((point) => [point[0] + shift, point[1], point[2]]),
+    }
+  }
+  return { ...source, id }
+}
+
+function TransformBox({
+  position,
+  rotationDeg,
+  scale,
+  onPosition,
+  onRotationDeg,
+  onScale,
+}: {
+  position: [number, number, number]
+  rotationDeg: [number, number, number]
+  scale?: [number, number, number]
+  onPosition: (value: [number, number, number]) => void
+  onRotationDeg: (value: [number, number, number]) => void
+  onScale?: (value: [number, number, number]) => void
+}) {
+  return (
+    <div className="transform-box">
+      <span />
+      <span className="axis x">X</span>
+      <span className="axis y">Y</span>
+      <span className="axis z">Z</span>
+      <VecRow label="Position" unit="m" values={position} onCommit={onPosition} />
+      <VecRow label="Rotation" unit="deg" values={rotationDeg} onCommit={onRotationDeg} />
+      {scale && onScale && <VecRow label="Scale" values={scale} onCommit={onScale} />}
+    </div>
+  )
+}
+
+function VecRow({
+  label,
+  unit,
+  values,
+  onCommit,
+}: {
+  label: string
+  unit?: string
+  values: [number, number, number]
+  onCommit: (value: [number, number, number]) => void
+}) {
+  const [text, setText] = useState<[string, string, string]>([
+    formatNum(values[0]),
+    formatNum(values[1]),
+    formatNum(values[2]),
+  ])
+  const focus = useRef<[boolean, boolean, boolean]>([false, false, false])
+
+  useEffect(() => {
+    setText((prev) => {
+      let changed = false
+      const next: [string, string, string] = [...prev]
+      for (let i = 0; i < 3; i += 1) {
+        if (focus.current[i]) continue
+        const formatted = formatNum(values[i])
+        if (next[i] !== formatted) {
+          next[i] = formatted
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [values[0], values[1], values[2]])
+
+  function commit(index: 0 | 1 | 2, raw: string) {
+    if (raw.trim() === '' || raw === '-' || raw === '.' || raw === '-.') return
+    const value = Number(raw)
+    if (!Number.isFinite(value)) return
+    const next: [number, number, number] = [values[0], values[1], values[2]]
+    next[index] = value
+    onCommit(next)
+  }
+
+  return (
+    <>
+      <span className="transform-label">
+        {label}
+        {unit && <small>{unit}</small>}
+      </span>
+      {([0, 1, 2] as const).map((index) => (
+        <input
+          key={index}
+          type="number"
+          step="any"
+          aria-label={`${label} ${'XYZ'[index]}`}
+          value={text[index]}
+          onFocus={() => {
+            focus.current[index] = true
+          }}
+          onBlur={() => {
+            focus.current[index] = false
+            const value = Number(text[index])
+            setText((prev) => {
+              const next: [string, string, string] = [...prev]
+              next[index] = formatNum(Number.isFinite(value) ? value : values[index])
+              return next
+            })
+          }}
+          onChange={(event) => {
+            const raw = event.target.value
+            setText((prev) => {
+              const next: [string, string, string] = [...prev]
+              next[index] = raw
+              return next
+            })
+            commit(index, raw)
+          }}
+        />
+      ))}
+    </>
+  )
+}
+
+function parseSnap(text: string) {
+  const value = Number(text)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
+
+function degreesToRadians(degrees: number | null) {
+  return degrees === null ? null : (degrees * Math.PI) / 180
+}
+
+function SnapField({
+  label,
+  unit,
+  pressed,
+  value,
+  step,
+  onToggle,
+  onValue,
+}: {
+  label: string
+  unit?: string
+  pressed: boolean
+  value: string
+  step: number
+  onToggle: () => void
+  onValue: (value: string) => void
+}) {
+  const invalid = pressed && parseSnap(value) === null
+  return (
+    <div className="snap-field">
+      <button
+        type="button"
+        className={pressed ? 'on' : ''}
+        aria-pressed={pressed}
+        onClick={onToggle}
+      >
+        {label}
+      </button>
+      <input
+        type="number"
+        min={0}
+        step={step}
+        value={value}
+        aria-label={`${label} snap size`}
+        aria-invalid={invalid}
+        onChange={(event) => onValue(event.target.value)}
+      />
+      {unit && <span className="unit">{unit}</span>}
     </div>
   )
 }
