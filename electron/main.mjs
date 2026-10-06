@@ -5,14 +5,19 @@ import {
   ipcMain,
   shell,
 } from 'electron'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   checkBlender,
-  findBlender,
+  checkBlenderFile,
   runBlenderExport,
 } from '../scripts/blender_export.mjs'
+import {
+  ensureAssetPreview,
+  resolveLibraryBlender,
+  scanProjectLibrary,
+} from '../scripts/library_catalog.mjs'
 
 // Helpful on headless / cloud GPUs so Three.js WebGL can start
 app.commandLine.appendSwitch('enable-unsafe-swiftshader')
@@ -33,8 +38,100 @@ function exportScriptPath() {
     : path.join(process.resourcesPath, 'scripts', 'export_blend.py')
 }
 
+function previewScriptPath() {
+  return isDev
+    ? path.join(appRoot(), 'scripts', 'preview_asset.py')
+    : path.join(process.resourcesPath, 'scripts', 'preview_asset.py')
+}
+
 function tempExportDir() {
   return path.join(app.getPath('temp'), 'reskate-map-creator')
+}
+
+function blenderConfigPath() {
+  return path.join(app.getPath('userData'), 'blender-path.json')
+}
+
+async function readSavedBlenderPath() {
+  try {
+    const raw = await readFile(blenderConfigPath(), 'utf8')
+    const data = JSON.parse(raw)
+    return typeof data.path === 'string' && data.path ? data.path : null
+  } catch {
+    return null
+  }
+}
+
+async function saveBlenderPath(blenderPath) {
+  await mkdir(path.dirname(blenderConfigPath()), { recursive: true })
+  await writeFile(
+    blenderConfigPath(),
+    JSON.stringify({ path: blenderPath }, null, 2),
+    'utf8',
+  )
+}
+
+/** Saved executable first, then `blender` on PATH. */
+async function resolveBlender() {
+  const saved = await readSavedBlenderPath()
+  if (saved) {
+    const picked = await checkBlenderFile(saved)
+    if (picked.ok) return picked
+  }
+  return checkBlender()
+}
+
+async function askForBlender(win) {
+  const choice = await dialog.showMessageBox(win ?? undefined, {
+    type: 'warning',
+    title: 'Blender required',
+    message: 'Blender was not found on PATH',
+    detail:
+      'Choose the Blender executable (blender.exe). This app does not bundle Blender, and the path you pick is remembered for later exports.',
+    buttons: ['Choose Blender…', 'Not now'],
+    defaultId: 0,
+    cancelId: 1,
+  })
+  if (choice.response !== 0) {
+    return { ok: false, canceled: true }
+  }
+
+  while (true) {
+    const open = await dialog.showOpenDialog(win ?? undefined, {
+      title: 'Select the Blender executable',
+      defaultPath:
+        process.platform === 'win32'
+          ? 'C:\\Program Files\\Blender Foundation'
+          : undefined,
+      properties: ['openFile'],
+      filters:
+        process.platform === 'win32'
+          ? [{ name: 'Blender', extensions: ['exe'] }]
+          : undefined,
+    })
+    if (open.canceled || !open.filePaths[0]) {
+      return { ok: false, canceled: true }
+    }
+
+    const status = await checkBlenderFile(open.filePaths[0])
+    if (status.ok && status.path) {
+      await saveBlenderPath(status.path)
+      return status
+    }
+
+    const again = await dialog.showMessageBox(win ?? undefined, {
+      type: 'error',
+      title: 'Not a Blender executable',
+      message: 'Choose blender.exe',
+      detail: status.error || 'That file is not the Blender executable.',
+      buttons: ['Choose again', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (again.response !== 0) {
+      return { ok: false, canceled: true, error: status.error }
+    }
+  }
 }
 
 /** @type {BrowserWindow | null} */
@@ -67,39 +164,56 @@ async function createWindow() {
     await mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
   }
 
-  // Surface Blender prerequisite early
-  const status = await checkBlender()
-  mainWindow.webContents.send('blender:status', status)
+  let status = await resolveBlender()
   if (!status.ok) {
-    dialog.showMessageBox(mainWindow, {
-      type: 'warning',
-      title: 'Blender required',
-      message: 'Blender was not found on PATH',
-      detail:
-        status.error ||
-        'Install Blender and ensure `blender` works in a terminal. This app does not bundle Blender.',
-      buttons: ['OK'],
-    })
+    status = await askForBlender(mainWindow)
   }
+  mainWindow.webContents.send('blender:status', status)
 }
 
 function registerIpc() {
-  ipcMain.handle('blender:check', async () => checkBlender())
+  ipcMain.handle('blender:check', async () => resolveBlender())
+
+  ipcMain.handle('library:list', async () => scanProjectLibrary(appRoot()))
+
+  ipcMain.handle('library:preview', async (_event, assetFile) => {
+    const blender = await resolveBlender()
+    const blenderPath = blender.ok && blender.path ? blender.path : await resolveLibraryBlender()
+    const glbPath = await ensureAssetPreview({
+      projectRoot: appRoot(),
+      assetFile,
+      blenderPath,
+      scriptPath: previewScriptPath(),
+    })
+    return pathToFileURL(glbPath).href
+  })
+
+  ipcMain.handle('blender:pick', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) || mainWindow
+    const status = await askForBlender(win)
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('blender:status', status)
+    }
+    return status
+  })
 
   ipcMain.handle('blend:export', async (event, scene) => {
     const win = BrowserWindow.fromWebContents(event.sender) || mainWindow
-    const blender = await checkBlender()
+    let blender = await resolveBlender()
     if (!blender.ok) {
-      if (win) {
-        await dialog.showMessageBox(win, {
-          type: 'error',
-          title: 'Blender required',
-          message: 'Cannot export .blend — Blender not found',
-          detail: blender.error,
-          buttons: ['OK'],
-        })
+      blender = await askForBlender(win)
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('blender:status', blender)
       }
-      return { ok: false, error: blender.error }
+    }
+    if (!blender.ok || !blender.path) {
+      return {
+        ok: false,
+        canceled: Boolean(blender.canceled),
+        error: blender.canceled
+          ? undefined
+          : blender.error || 'Blender was not found.',
+      }
     }
 
     const save = await dialog.showSaveDialog(win ?? undefined, {
@@ -121,11 +235,14 @@ function registerIpc() {
       await mkdir(tmp, { recursive: true })
       const stamp = Date.now()
       const scenePath = path.join(tmp, `scene-${stamp}.json`)
-      await writeFile(scenePath, JSON.stringify(scene, null, 2), 'utf8')
+      await writeFile(
+        scenePath,
+        JSON.stringify({ ...scene, projectRoot: appRoot() }, null, 2),
+        'utf8',
+      )
 
-      const blenderBin = (await findBlender()) || 'blender'
       await runBlenderExport({
-        blenderPath: blenderBin,
+        blenderPath: blender.path,
         scriptPath: exportScriptPath(),
         scenePath,
         blendPath,

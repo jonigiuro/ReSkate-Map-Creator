@@ -66,11 +66,21 @@ npm run export:blend -- path/to/scene.json path/to/out.blend
 
 ## What you can do
 
-1. Pick a **placeholder** library piece (flat pad, ledge, rail bar, kicker, quarter pipe) and click the ground to place it
+1. Open a library category and drag a piece into the scene. Built-in pieces live under **Generic**. Your own objects come from folders in the project (see below).
 2. Move / rotate / scale with the gizmo
 3. Draw a **grind spline** (radius + Studio surface preset)
 4. Keep the required **`spawn`** empty (facing arrow = Studio local −Z)
 5. **Export `.blend`** — collections `Map` / `Markers` / `Grind curves`, `sk8_collision_mode`, `sk8_grind_curve`
+
+## Your own objects
+
+Save each object from Blender as a `.blend` (not FBX or glTF). That file keeps the ReSkate addon data: materials, textures, collision, and grind splines. Put it in a folder named after the object. Parent folders become categories.
+
+```text
+Objects/grindable/bench/short metal bench/short metal bench.blend
+```
+
+The library shows **Objects → grindable → bench**, and **short metal bench** is the piece you drag in. The list refreshes on its own when you add or save a file. Model the object with its origin where you want the pivot, Z up, in metres. Export copies those objects into the map `.blend` without rewriting the addon properties.
 
 ## Studio handoff
 
@@ -87,6 +97,8 @@ Real Skate meshes are not included. Replace placeholders in Blender before shipp
 | `src/` | React + Three.js placer UI |
 | `electron/` | Desktop shell (main + preload IPC) |
 | `scripts/export_blend.py` | Blender/`bpy` scene builder → `.blend` |
+| `scripts/library_catalog.mjs` | Finds authored `.blend` files in the project folders |
+| `scripts/preview_asset.py` | Builds the editor preview for an authored `.blend` |
 | `scripts/blender_export.mjs` | Shared Blender PATH check + spawn helper |
 | `scripts/export_cli.mjs` | CLI wrapper |
 | `exports/` | Demo scene JSON + generated blends |

@@ -55,12 +55,17 @@
       "dist/**/*",
       "electron/**/*",
       "scripts/blender_export.mjs",
+      "scripts/library_catalog.mjs",
       "package.json"
     ],
     "extraResources": [
       {
         "from": "scripts/export_blend.py",
         "to": "scripts/export_blend.py"
+      },
+      {
+        "from": "scripts/preview_asset.py",
+        "to": "scripts/preview_asset.py"
       }
     ],
     "asar": true,

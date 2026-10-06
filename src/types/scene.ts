@@ -7,12 +7,8 @@ export type GrindSurface =
   | 'material_37227424'
   | 'material_37228128'
 
-export type LibraryId =
-  | 'flat_pad'
-  | 'ledge'
-  | 'rail_bar'
-  | 'kicker'
-  | 'quarter_pipe'
+/** Built-in kit id, or the project-relative folder of an authored .blend. */
+export type LibraryId = string
 
 export interface Sk8MeshProps {
   collision_mode: CollisionMode
@@ -23,6 +19,8 @@ export interface MeshObject {
   id: string
   kind: 'mesh'
   libraryId: LibraryId
+  /** Project-relative .blend. Set for objects dropped in from a folder. */
+  assetFile?: string
   name: string
   position: [number, number, number]
   rotation: [number, number, number]

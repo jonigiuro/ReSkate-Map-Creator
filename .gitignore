@@ -8,6 +8,9 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
+.cache
+__pycache__/
+*.blend1
 dist
 dist-ssr
 release

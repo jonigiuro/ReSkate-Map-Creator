@@ -38,13 +38,11 @@ export async function findBlender() {
   return result
 }
 
-export async function checkBlender() {
-  const blenderPath = await findBlender()
+export async function checkBlenderFile(blenderPath) {
   if (!blenderPath) {
     return {
       ok: false,
-      error:
-        'Blender was not found on PATH. Install Blender and ensure the `blender` command works in a terminal. This app does not bundle Blender.',
+      error: 'No Blender executable was selected.',
     }
   }
   try {
@@ -56,25 +54,31 @@ export async function checkBlender() {
       error: `Blender was found at ${blenderPath} but is not executable.`,
     }
   }
+  const base = path.basename(blenderPath).toLowerCase()
+  if (base !== 'blender' && base !== 'blender.exe') {
+    return {
+      ok: false,
+      path: blenderPath,
+      error: 'That file is not the Blender executable. Choose blender.exe.',
+    }
+  }
   return { ok: true, path: blenderPath }
 }
 
-export function runBlenderExport({
-  blenderPath = 'blender',
-  scriptPath,
-  scenePath,
-  blendPath,
-  cwd,
-}) {
+export async function checkBlender() {
+  const blenderPath = await findBlender()
+  if (!blenderPath) {
+    return {
+      ok: false,
+      error:
+        'Blender was not found on PATH. Install Blender and ensure the `blender` command works in a terminal. This app does not bundle Blender.',
+    }
+  }
+  return checkBlenderFile(blenderPath)
+}
+
+export function runBlender(blenderPath, args, cwd) {
   return new Promise((resolve, reject) => {
-    const args = [
-      '--background',
-      '--python',
-      scriptPath,
-      '--',
-      scenePath,
-      blendPath,
-    ]
     const child = spawn(blenderPath, args, { cwd })
     let stderr = ''
     let stdout = ''
@@ -87,7 +91,7 @@ export function runBlenderExport({
     child.on('error', (err) => {
       reject(
         new Error(
-          `Failed to start Blender. Install Blender and ensure \`blender\` is on PATH. ${err.message}`,
+          `Failed to start Blender (${blenderPath}). ${err.message}`,
         ),
       )
     })
@@ -98,11 +102,25 @@ export function runBlenderExport({
       }
       reject(
         new Error(
-          `Blender export failed (exit ${code}).\n${stderr || stdout}`.trim(),
+          `Blender failed (exit ${code}).\n${stderr || stdout}`.trim(),
         ),
       )
     })
   })
+}
+
+export function runBlenderExport({
+  blenderPath = 'blender',
+  scriptPath,
+  scenePath,
+  blendPath,
+  cwd,
+}) {
+  return runBlender(
+    blenderPath,
+    ['--background', '--python', scriptPath, '--', scenePath, blendPath],
+    cwd,
+  )
 }
 
 export function repoRootFromHere(importMetaUrl) {

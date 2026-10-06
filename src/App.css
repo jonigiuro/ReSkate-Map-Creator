@@ -50,6 +50,12 @@
   color: #ffe0d8;
 }
 
+.banner-error .banner-btn {
+  margin-left: 0.75rem;
+  padding: 0.25rem 0.7rem;
+  vertical-align: baseline;
+}
+
 .brand {
   margin: 0;
   font-family: var(--font-display);
@@ -138,9 +144,48 @@ button.lib:hover {
   transform: translateY(-1px);
 }
 
-button.lib.active {
+button.lib.active,
+button.lib.dragging {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, var(--panel-2));
+}
+
+button.lib[draggable='true'] {
+  cursor: grab;
+}
+
+button.lib.dragging {
+  cursor: grabbing;
+}
+
+.library-path {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  align-items: center;
+  margin: 0 0 0.45rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.library-path button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+
+.library-back {
+  margin: 0 0 0.55rem;
+}
+
+button.lib .swatch.folder {
+  background:
+    linear-gradient(#d7a15a, #d7a15a) 0.35rem 0.7rem / 1.5rem 1.15rem no-repeat,
+    linear-gradient(#e0b56d, #e0b56d) 0.35rem 0.45rem / 0.7rem 0.28rem no-repeat,
+    #2a241c;
 }
 
 button.lib .swatch {
@@ -204,7 +249,13 @@ button.lib small {
   padding: 0.4rem 0.7rem;
   cursor: pointer;
   font: inherit;
-  text-transform: capitalize;
+}
+
+.seg button kbd {
+  margin-left: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  opacity: 0.75;
 }
 
 .seg button.on {
