@@ -36,6 +36,20 @@
   animation: drop-in 0.45s ease-out both;
 }
 
+.banner-error {
+  padding: 0.65rem 1.25rem;
+  background: color-mix(in srgb, var(--danger) 22%, #1a1010);
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 55%, var(--line));
+  color: #f5cfc8;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.banner-error code {
+  font-family: var(--font-mono);
+  color: #ffe0d8;
+}
+
 .brand {
   margin: 0;
   font-family: var(--font-display);

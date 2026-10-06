@@ -1,12 +1,28 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { spawn } from 'node:child_process'
 import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
 const PORT = 47321
+
+type BlenderHelpers = {
+  findBlender: () => Promise<string | null>
+  runBlenderExport: (opts: {
+    blenderPath?: string
+    scriptPath: string
+    scenePath: string
+    blendPath: string
+    cwd?: string
+  }) => Promise<{ stdout: string; stderr: string }>
+}
+
+async function loadBlenderHelpers(): Promise<BlenderHelpers> {
+  return import(
+    pathToFileURL(path.join(root, 'scripts', 'blender_export.mjs')).href
+  ) as Promise<BlenderHelpers>
+}
 
 function blendExportPlugin(): Plugin {
   return {
@@ -22,6 +38,7 @@ function blendExportPlugin(): Plugin {
         req.on('data', (chunk: Buffer) => chunks.push(chunk))
         req.on('end', async () => {
           try {
+            const { findBlender, runBlenderExport } = await loadBlenderHelpers()
             const body = Buffer.concat(chunks).toString('utf8')
             const scene = JSON.parse(body)
             const exportsDir = path.join(root, 'exports')
@@ -33,7 +50,14 @@ function blendExportPlugin(): Plugin {
             await writeFile(scenePath, JSON.stringify(scene, null, 2), 'utf8')
 
             const scriptPath = path.join(root, 'scripts', 'export_blend.py')
-            await runBlenderExport(scriptPath, scenePath, blendPath)
+            const blenderPath = (await findBlender()) || 'blender'
+            await runBlenderExport({
+              blenderPath,
+              scriptPath,
+              scenePath,
+              blendPath,
+              cwd: root,
+            })
 
             const blend = await readFile(blendPath)
             res.statusCode = 200
@@ -63,55 +87,17 @@ function blendExportPlugin(): Plugin {
   }
 }
 
-function runBlenderExport(
-  scriptPath: string,
-  scenePath: string,
-  blendPath: string,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '--background',
-      '--python',
-      scriptPath,
-      '--',
-      scenePath,
-      blendPath,
-    ]
-    const child = spawn('blender', args, { cwd: root })
-    let stderr = ''
-    let stdout = ''
-    child.stdout.on('data', (d: Buffer) => {
-      stdout += d.toString()
-    })
-    child.stderr.on('data', (d: Buffer) => {
-      stderr += d.toString()
-    })
-    child.on('error', (err) => {
-      reject(
-        new Error(
-          `Failed to start Blender. Install Blender and ensure \`blender\` is on PATH. ${err.message}`,
-        ),
-      )
-    })
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve()
-        return
-      }
-      reject(
-        new Error(
-          `Blender export failed (exit ${code}).\n${stderr || stdout}`.trim(),
-        ),
-      )
-    })
-  })
-}
-
 export default defineConfig({
+  // Relative base so the packaged Electron app can load file:// assets
+  base: './',
   plugins: [react(), blendExportPlugin()],
   server: {
     host: '0.0.0.0',
     port: PORT,
     strictPort: true,
+  },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
   },
 })

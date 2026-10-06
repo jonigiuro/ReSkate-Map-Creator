@@ -1,11 +1,18 @@
 {
   "name": "reskate-map-creator",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "ReSkate Map Creator — place kit pieces and export Studio-oriented .blend files",
+  "author": "ReSkate Map Creator",
   "type": "module",
+  "main": "electron/main.mjs",
   "scripts": {
     "dev": "vite",
+    "desktop": "concurrently -k -n vite,electron -c cyan,magenta \"vite\" \"wait-on http://127.0.0.1:47321 && electron .\"",
+    "desktop:prod": "npm run build && electron .",
     "build": "tsc -b && vite build",
+    "build:desktop": "npm run build && electron-builder --linux AppImage dir",
+    "build:desktop:win": "npm run build && electron-builder --win nsis portable",
     "lint": "oxlint",
     "preview": "vite preview --host 0.0.0.0 --port 47321",
     "export:blend": "node scripts/export_cli.mjs",
@@ -29,8 +36,55 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "concurrently": "^10.0.5",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
     "oxlint": "^1.81.0",
     "typescript": "~6.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.0",
+    "wait-on": "^8.0.5"
+  },
+  "build": {
+    "appId": "com.reskate.mapcreator",
+    "productName": "ReSkate Map Creator",
+    "copyright": "Copyright © ReSkate Map Creator",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "scripts/blender_export.mjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/export_blend.py",
+        "to": "scripts/export_blend.py"
+      }
+    ],
+    "asar": true,
+    "linux": {
+      "target": [
+        "AppImage",
+        "dir"
+      ],
+      "category": "Graphics",
+      "desktopName": "reskate-map-creator.desktop",
+      "artifactName": "${productName}-${version}-${os}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "${productName}-${version}-${os}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "ReSkate Map Creator"
+    }
   }
 }

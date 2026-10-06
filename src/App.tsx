@@ -28,6 +28,8 @@ export default function App() {
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [didInitSelect, setDidInitSelect] = useState(false)
+  const [blenderOk, setBlenderOk] = useState<boolean | null>(null)
+  const isDesktop = typeof window !== 'undefined' && Boolean(window.reskateDesktop)
 
   useEffect(() => {
     if (didInitSelect) return
@@ -35,6 +37,18 @@ export default function App() {
     if (spawn) setSelectedId(spawn.id)
     setDidInitSelect(true)
   }, [scene, didInitSelect])
+
+  useEffect(() => {
+    const desktop = window.reskateDesktop
+    if (!desktop) return
+    let unsub = () => {}
+    void desktop.checkBlender().then((s) => setBlenderOk(s.ok))
+    unsub = desktop.onBlenderStatus((s) => {
+      setBlenderOk(s.ok)
+      if (!s.ok) setError(s.error || 'Blender was not found on PATH.')
+    })
+    return () => unsub()
+  }, [])
 
   const selected = useMemo(
     () => scene.objects.find((o) => o.id === selectedId) ?? null,
@@ -136,6 +150,23 @@ export default function App() {
       if (!counts.spawn) throw new Error('Scene needs a spawn empty.')
       if (counts.grind < 1) throw new Error('Add at least one grind spline for the MVP demo.')
 
+      const desktop = window.reskateDesktop
+      if (desktop) {
+        const result = await desktop.exportBlend(scene)
+        if (result.canceled) {
+          setStatus('Export canceled')
+          return
+        }
+        if (!result.ok) {
+          throw new Error(result.error || 'Export failed')
+        }
+        setBlenderOk(true)
+        setStatus(
+          `Saved ${result.path} — open in ReSkate Studio, then run reskate_cli compile-map.`,
+        )
+        return
+      }
+
       const res = await fetch('/api/export-blend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -156,14 +187,32 @@ export default function App() {
         'Downloaded reskate-map.blend — open in ReSkate Studio, then run reskate_cli compile-map.',
       )
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
       setStatus(null)
+      if (/blender/i.test(message) && /path|not found|failed to start/i.test(message)) {
+        setBlenderOk(false)
+      }
     } finally {
       setExporting(false)
     }
   }
 
-  function downloadSceneJson() {
+  async function downloadSceneJson() {
+    const desktop = window.reskateDesktop
+    if (desktop) {
+      const result = await desktop.saveJson(scene)
+      if (result.canceled) {
+        setStatus('Save canceled')
+        return
+      }
+      if (!result.ok) {
+        setError(result.error || 'Failed to save JSON')
+        return
+      }
+      setStatus(`Saved ${result.path}`)
+      return
+    }
     const blob = new Blob([JSON.stringify(scene, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -178,17 +227,28 @@ export default function App() {
       <header className="topbar">
         <div className="brand-block">
           <p className="brand">ReSkate Map Creator</p>
-          <p className="tagline">Place kit pieces + grind splines → Studio `.blend`</p>
+          <p className="tagline">
+            Place kit pieces + grind splines → Studio `.blend`
+            {isDesktop ? ' · Desktop' : ' · Web'}
+          </p>
         </div>
         <div className="top-actions">
-          <button type="button" className="ghost" onClick={downloadSceneJson}>
+          <button type="button" className="ghost" onClick={() => void downloadSceneJson()}>
             Save JSON
           </button>
-          <button type="button" className="primary" disabled={exporting} onClick={exportBlend}>
+          <button type="button" className="primary" disabled={exporting} onClick={() => void exportBlend()}>
             {exporting ? 'Exporting…' : 'Export .blend'}
           </button>
         </div>
       </header>
+
+      {blenderOk === false && (
+        <div className="banner-error" role="alert">
+          <strong>Blender not found on PATH.</strong> Install Blender and make sure the{' '}
+          <code>blender</code> command works in a terminal. This app does not bundle Blender — export
+          will fail until it is available.
+        </div>
+      )}
 
       <div className="workspace">
         <aside className="panel library">
