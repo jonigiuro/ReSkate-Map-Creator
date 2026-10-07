@@ -19,6 +19,9 @@ exports/*.blend
 exports/scene-*.json
 !exports/demo-scene.json
 
+# Local object library. Not part of the repo.
+Objects/Private/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

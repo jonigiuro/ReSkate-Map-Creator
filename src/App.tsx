@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import * as THREE from 'three'
 import { Viewport, type EditorTool, type TransformMode } from './components/Viewport'
 import {
   EMPTY_CATALOG,
   fetchAssetCatalog,
+  httpPreviewThumbUrl,
   type AssetCatalog,
 } from './lib/assetLibrary'
-import { createDefaultScene } from './lib/defaultScene'
+import { createDefaultScene, createNewScene } from './lib/defaultScene'
 import { uid } from './lib/ids'
-import { LIBRARY_CATEGORIES, getPiece, piecesInCategory } from './lib/library'
+import { getPiece } from './lib/library'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
 import type {
   MapScene,
@@ -17,15 +18,14 @@ import type {
 } from './types/scene'
 import './App.css'
 
-const GENERIC_CATEGORY = '__generic__'
-
 export default function App() {
   const [scene, setScene] = useState<MapScene>(() => createDefaultScene())
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [tool, setTool] = useState<EditorTool>('select')
   const [catalog, setCatalog] = useState<AssetCatalog>(EMPTY_CATALOG)
   const [categoryPath, setCategoryPath] = useState<string[]>([])
-  const [dragPiece, setDragPiece] = useState<string | null>(null)
+  const [activePiece, setActivePiece] = useState<string | null>(null)
+  const [placeYaw, setPlaceYaw] = useState(0)
   const [transformMode, setTransformMode] = useState<TransformMode>('translate')
   const [snapMove, setSnapMove] = useState(false)
   const [snapScale, setSnapScale] = useState(false)
@@ -57,7 +57,7 @@ export default function App() {
         if (cancel) return
         setCatalog(next)
         setCategoryPath((path) => {
-          if (path.length === 0 || path[0] === GENERIC_CATEGORY) return path
+          if (path.length === 0) return path
           const intact = path.every((id, index) => {
             const category = next.categories.find((item) => item.id === id)
             if (!category) return false
@@ -106,6 +106,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const saveSceneRef = useRef<(saveAs: boolean) => void>(() => {})
   const openSceneRef = useRef<() => void>(() => {})
+  const deleteSelectedRef = useRef<() => void>(() => {})
 
   const counts = useMemo(() => {
     const mesh = scene.objects.filter((o) => o.kind === 'mesh').length
@@ -134,7 +135,9 @@ export default function App() {
       objects: prev.objects.filter((o) => o.id !== selectedId),
     }))
     setSelectedId(null)
+    setError(null)
   }
+  deleteSelectedRef.current = deleteSelected
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -190,6 +193,15 @@ export default function App() {
         }
       }
       if (event.metaKey || event.ctrlKey || event.altKey || typing) return
+      if (event.key === 'Escape') {
+        setActivePiece(null)
+        return
+      }
+      if (event.key === 'Delete') {
+        event.preventDefault()
+        deleteSelectedRef.current()
+        return
+      }
       const key = event.key.toLowerCase()
       if (key !== 'w' && key !== 'e' && key !== 'r') return
       event.preventDefault()
@@ -216,7 +228,7 @@ export default function App() {
         assetFile: authored?.assetFile,
         name: `${label.replace(/\s+/g, '_')}_${prev.objects.filter((o) => o.kind === 'mesh').length + 1}`,
         position: [round4(point.x), round4(y), round4(point.z)],
-        rotation: [0, 0, 0],
+        rotation: [0, placeYaw, 0],
         scale: [1, 1, 1],
         sk8: {
           ...(builtin?.defaultSk8 ?? {
@@ -227,15 +239,22 @@ export default function App() {
       }
       return { ...prev, objects: [...prev.objects, obj] }
     })
-    setSelectedId(id)
-    setTool('select')
-    setTransformMode('translate')
-    setDragPiece(null)
     setStatus(`Placed ${label}`)
     setError(null)
   }
 
+  function togglePiece(id: string) {
+    setActivePiece((current) => (current === id ? null : id))
+    setPlaceYaw(0)
+    setSelectedId(null)
+  }
+
+  function rotatePlacement() {
+    setPlaceYaw((yaw) => (yaw + Math.PI / 2) % (Math.PI * 2))
+  }
+
   function onGroundClick() {
+    if (activePiece) return
     if (tool === 'select') setSelectedId(null)
   }
 
@@ -305,12 +324,20 @@ export default function App() {
     }
   }
 
+  function newScene() {
+    setFileMenuOpen(false)
+    adoptScene(createNewScene(), null)
+    setStatus('New scene')
+  }
+
   function adoptScene(next: MapScene, path: string | null) {
     setScene(next)
     setScenePath(path)
     const spawn = next.objects.find((obj) => obj.kind === 'spawn')
     setSelectedId(spawn?.id ?? next.objects[0]?.id ?? null)
     setTool('select')
+    setActivePiece(null)
+    setPlaceYaw(0)
     clipboardRef.current = null
     setError(null)
   }
@@ -405,8 +432,7 @@ export default function App() {
   }, [fileMenuOpen])
 
   const currentCategoryId = categoryPath.at(-1) ?? null
-  const insideGeneric = currentCategoryId === GENERIC_CATEGORY
-  const insideFolder = categoryPath.length > 0 && !insideGeneric
+  const insideFolder = categoryPath.length > 0
   const folderCategories = insideFolder
     ? catalog.categories.filter((category) => category.parentId === currentCategoryId)
     : []
@@ -416,7 +442,7 @@ export default function App() {
   const assetRevisions = Object.fromEntries(
     catalog.pieces.map((piece) => [piece.assetFile, piece.revision]),
   )
-  const dragged = catalog.pieces.find((piece) => piece.id === dragPiece)
+  const active = catalog.pieces.find((piece) => piece.id === activePiece)
 
   function subtreePieceCount(categoryId: string) {
     const ids = new Set<string>([categoryId])
@@ -435,15 +461,7 @@ export default function App() {
   }
 
   function crumbLabel(id: string) {
-    if (id === GENERIC_CATEGORY) return 'Generic'
     return catalog.categories.find((category) => category.id === id)?.label ?? id
-  }
-
-  function beginDrag(event: DragEvent, id: string, label: string) {
-    event.dataTransfer.setData('application/x-reskate-piece', id)
-    event.dataTransfer.setData('text/plain', label)
-    event.dataTransfer.effectAllowed = 'copy'
-    setDragPiece(id)
   }
 
   return (
@@ -463,6 +481,9 @@ export default function App() {
               </button>
               {fileMenuOpen && (
                 <div className="file-menu-panel" role="menu">
+                  <button type="button" role="menuitem" onClick={newScene}>
+                    New
+                  </button>
                   <button type="button" role="menuitem" onClick={() => void openScene()}>
                     Open… <kbd>Ctrl+O</kbd>
                   </button>
@@ -550,8 +571,8 @@ export default function App() {
           <h2>Library</h2>
           <p className="hint">
             {categoryPath.length === 0
-              ? 'Open a category, then drag a piece in. Save a .blend as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
-              : 'Drag a piece into the scene. It snaps to whatever is under the cursor. A .blend keeps the ReSkate material and texture.'}
+              ? 'Open a category, then click a piece. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
+              : 'Click a piece to pick it up. It follows the cursor. Right-click turns it 90°. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid; height stays on the surface under the cursor.'}
           </p>
           {categoryPath.length > 0 && (
             <>
@@ -581,27 +602,6 @@ export default function App() {
             </>
           )}
           <ul className="lib-list">
-            {categoryPath.length === 0 &&
-              LIBRARY_CATEGORIES.map((category) => {
-                const count = piecesInCategory(category.id).length
-                return (
-                  <li key={category.id}>
-                    <button
-                      type="button"
-                      className="lib"
-                      onClick={() => setCategoryPath([GENERIC_CATEGORY])}
-                    >
-                      <span className="swatch folder" />
-                      <span>
-                        <strong>{category.label}</strong>
-                        <small>
-                          {count} {count === 1 ? 'piece' : 'pieces'} · {category.blurb}
-                        </small>
-                      </span>
-                    </button>
-                  </li>
-                )
-              })}
             {categoryPath.length === 0 &&
               catalog.categories
                 .filter((category) => category.parentId === null)
@@ -633,10 +633,11 @@ export default function App() {
                     <PieceButton
                       id={piece.id}
                       label={piece.label}
-                      detail="Drag into the scene · keeps Blender properties"
-                      dragging={dragPiece === piece.id}
-                      onDragStart={(event) => beginDrag(event, piece.id, piece.label)}
-                      onDragEnd={() => setDragPiece(null)}
+                      detail="Click to place"
+                      assetFile={piece.assetFile}
+                      revision={piece.revision}
+                      active={activePiece === piece.id}
+                      onToggle={() => togglePiece(piece.id)}
                     />
                   </li>
                 ))}
@@ -660,29 +661,16 @@ export default function App() {
                 </li>
               )
             })}
-            {insideGeneric &&
-              piecesInCategory('generic').map((piece) => (
-                <li key={piece.id}>
-                  <PieceButton
-                    id={piece.id}
-                    label={piece.label}
-                    detail={`Drag into the scene · ${piece.blurb}`}
-                    color={piece.color}
-                    dragging={dragPiece === piece.id}
-                    onDragStart={(event) => beginDrag(event, piece.id, piece.label)}
-                    onDragEnd={() => setDragPiece(null)}
-                  />
-                </li>
-              ))}
             {folderPieces.map((piece) => (
               <li key={piece.id}>
                 <PieceButton
                   id={piece.id}
                   label={piece.label}
-                  detail="Drag into the scene · keeps Blender properties"
-                  dragging={dragPiece === piece.id}
-                  onDragStart={(event) => beginDrag(event, piece.id, piece.label)}
-                  onDragEnd={() => setDragPiece(null)}
+                  detail="Click to place"
+                  assetFile={piece.assetFile}
+                  revision={piece.revision}
+                  active={activePiece === piece.id}
+                  onToggle={() => togglePiece(piece.id)}
                 />
               </li>
             ))}
@@ -722,9 +710,6 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <button type="button" className="ghost danger" onClick={deleteSelected}>
-              Delete
-            </button>
           </div>
 
           <Viewport
@@ -738,11 +723,16 @@ export default function App() {
               rotate: snapRotate ? degreesToRadians(parseSnap(snapRotateSize)) : null,
             }}
             onGroundClick={onGroundClick}
-            dragPieceId={dragPiece}
-            dragAssetFile={dragged?.assetFile}
-            dragAssetRevision={dragged?.revision ?? 0}
+            placePieceId={activePiece}
+            placeAssetFile={active?.assetFile}
+            placeAssetRevision={active?.revision ?? 0}
+            placeYaw={placeYaw}
+            onRotatePiece={rotatePlacement}
             assetRevisions={assetRevisions}
-            onSelect={setSelectedId}
+            onSelect={(id) => {
+              if (activePiece) return
+              setSelectedId(id)
+            }}
             onPatchObject={patchObject}
             onPlacePiece={placePiece}
           />
@@ -754,7 +744,10 @@ export default function App() {
             {status && <span className="ok">{status}</span>}
             {error && <span className="err">{error}</span>}
             {tool === 'select' && (
-              <span>Click to select. Right-drag orbits, middle-drag pans. Ctrl+C copies, Ctrl+V pastes.</span>
+              <span>
+                Click to select. Right-drag orbits, middle-drag pans. C frames the selection. Ctrl+C
+                copies, Ctrl+V pastes. Delete removes. Right-click turns a held piece 90°.
+              </span>
             )}
           </div>
         </main>
@@ -792,23 +785,11 @@ export default function App() {
             />
           )}
           {selected?.kind === 'mesh' && selected.assetFile && (
-            <div className="fields">
-              <p className="badge">BLENDER OBJECT</p>
-              <label>
-                Name
-                <input
-                  value={selected.name}
-                  onChange={(e) => patchObject(selected.id, { name: e.target.value })}
-                />
-              </label>
-              <p className="hint">
-                Materials, textures, and collision stay as they were set in Blender. Export copies
-                this .blend in, including those properties.
-              </p>
-              <p className="meta">
-                <code>{selected.assetFile}</code>
-              </p>
-            </div>
+            <AuthoredFields
+              name={selected.name}
+              assetFile={selected.assetFile}
+              onName={(name) => patchObject(selected.id, { name })}
+            />
           )}
           {selected?.kind === 'mesh' && !selected.assetFile && (
             <div className="fields">
@@ -865,7 +846,7 @@ export default function App() {
               <p className="badge spawn">SPAWN EMPTY</p>
               <p className="hint">
                 Exported as empty named <code>spawn</code> in <code>Markers</code>. The figure is
-                1.7 m tall and faces Studio local −Z.
+                1.7 m tall. The arrow shows where the skater heads.
               </p>
             </div>
           )}
@@ -1056,6 +1037,42 @@ function degreesToRadians(degrees: number | null) {
   return degrees === null ? null : (degrees * Math.PI) / 180
 }
 
+function authoredLabel(assetFile: string) {
+  const ext = assetFile.split('.').pop()?.toLowerCase()
+  if (ext === 'fbx') return 'FBX'
+  if (ext === 'obj') return 'OBJ'
+  return 'BLENDER'
+}
+
+function AuthoredFields({
+  name,
+  assetFile,
+  onName,
+}: {
+  name: string
+  assetFile: string
+  onName: (name: string) => void
+}) {
+  const kind = authoredLabel(assetFile)
+  return (
+    <div className="fields">
+      <p className="badge">{kind} OBJECT</p>
+      <label>
+        Name
+        <input value={name} onChange={(event) => onName(event.target.value)} />
+      </label>
+      <p className="hint">
+        {kind === 'BLENDER'
+          ? 'Materials, textures, and collision stay as they were set in Blender. Export copies this .blend in, including those properties.'
+          : `Export imports this .${kind.toLowerCase()} through Blender. The mesh and materials come along.`}
+      </p>
+      <p className="meta">
+        <code>{assetFile}</code>
+      </p>
+    </div>
+  )
+}
+
 function SnapField({
   label,
   unit,
@@ -1102,32 +1119,66 @@ function round4(n: number) {
   return Math.round(n * 10000) / 10000
 }
 
+function useLibraryThumb(assetFile?: string, revision = 0) {
+  const http = typeof window !== 'undefined' && window.location.protocol !== 'file:'
+  const [fileUrl, setFileUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (http || !assetFile) return
+    const desktop = window.reskateDesktop
+    if (!desktop?.previewThumb) return
+    let cancel = false
+    void desktop.previewThumb(assetFile).then((url) => {
+      if (!cancel) setFileUrl(url)
+    })
+    return () => {
+      cancel = true
+    }
+  }, [assetFile, http, revision])
+
+  if (!assetFile) return null
+  if (http) return httpPreviewThumbUrl(assetFile, revision)
+  return fileUrl
+}
+
 function PieceButton({
   id,
   label,
   detail,
   color,
-  dragging,
-  onDragStart,
-  onDragEnd,
+  assetFile,
+  revision,
+  active,
+  onToggle,
 }: {
   id: string
   label: string
   detail: string
   color?: string
-  dragging: boolean
-  onDragStart: (event: DragEvent) => void
-  onDragEnd: () => void
+  assetFile?: string
+  revision?: number
+  active: boolean
+  onToggle: () => void
 }) {
+  const thumb = useLibraryThumb(assetFile, revision)
+  const [thumbFailed, setThumbFailed] = useState(false)
+
+  useEffect(() => {
+    setThumbFailed(false)
+  }, [thumb])
+
   return (
     <button
       type="button"
-      className={dragging ? 'lib dragging' : 'lib'}
-      draggable
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
+      className={active ? 'lib active' : 'lib'}
+      aria-pressed={active}
+      onClick={onToggle}
     >
-      <span className="swatch" style={{ background: color ?? '#9aa3ad' }} data-piece={id} />
+      {thumb && !thumbFailed ? (
+        <img className="swatch" src={thumb} alt="" data-piece={id} onError={() => setThumbFailed(true)} />
+      ) : (
+        <span className="swatch" style={{ background: color ?? '#9aa3ad' }} data-piece={id} />
+      )}
       <span>
         <strong>{label}</strong>
         <small>{detail}</small>

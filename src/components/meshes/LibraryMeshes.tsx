@@ -167,27 +167,56 @@ function useAuthoredPreviewUrl(assetFile: string, revision: number) {
 
 function GltfMesh({ url, ghost }: { url: string; ghost?: boolean }) {
   const gltf = useGLTF(url)
-  const object = useMemo(() => {
+  const view = useMemo(() => {
     const clone = gltf.scene.clone(true)
+    const disposables: { dispose: () => void }[] = []
+    if (!ghost) {
+      clone.traverse((node) => {
+        const mesh = node as THREE.Mesh
+        if (!mesh.isMesh) return
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+      })
+      return { clone, disposables }
+    }
+
+    // Source materials often carry an unused alpha channel. Forcing them
+    // transparent multiplies that alpha in and the mesh disappears.
+    const fill = new THREE.MeshBasicMaterial({
+      color: '#8aa0ad',
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+      toneMapped: false,
+    })
+    const lines = new THREE.LineBasicMaterial({
+      color: '#ffe2a8',
+      toneMapped: false,
+    })
+    disposables.push(fill, lines)
     clone.traverse((node) => {
       const mesh = node as THREE.Mesh
-      if (!mesh.isMesh) return
-      mesh.castShadow = !ghost
-      mesh.receiveShadow = !ghost
-      if (!ghost) return
-      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-      mesh.material = materials.map((material) => {
-        const copy = material.clone()
-        copy.transparent = true
-        copy.opacity = 0.45
-        copy.depthWrite = false
-        return copy
-      })
+      if (!mesh.isMesh || !mesh.geometry) return
+      mesh.castShadow = false
+      mesh.receiveShadow = false
+      mesh.material = fill
+      const edges = new THREE.EdgesGeometry(mesh.geometry, 30)
+      disposables.push(edges)
+      const outline = new THREE.LineSegments(edges, lines)
+      outline.raycast = () => {}
+      mesh.add(outline)
     })
-    return clone
+    return { clone, disposables }
   }, [ghost, gltf.scene])
 
-  return <primitive object={object} />
+  useEffect(() => {
+    const disposables = view.disposables
+    return () => {
+      for (const item of disposables) item.dispose()
+    }
+  }, [view])
+
+  return <primitive object={view.clone} />
 }
 
 function AuthoredMesh({

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('reskateDesktop', {
   pickBlender: () => ipcRenderer.invoke('blender:pick'),
   listLibrary: () => ipcRenderer.invoke('library:list'),
   previewAsset: (assetFile) => ipcRenderer.invoke('library:preview', assetFile),
+  previewThumb: (assetFile) => ipcRenderer.invoke('library:thumb', assetFile),
   exportBlend: (scene) => ipcRenderer.invoke('blend:export', scene),
   saveJson: (scene, filePath) => ipcRenderer.invoke('json:save', scene, filePath),
   openJson: () => ipcRenderer.invoke('json:open'),

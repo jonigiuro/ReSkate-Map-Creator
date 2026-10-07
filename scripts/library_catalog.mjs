@@ -29,8 +29,18 @@ function toPosix(value) {
   return value.replace(/\\/g, '/')
 }
 
-function isBlendFile(name) {
-  return /\.blend$/i.test(name) && !/\.blend\d+$/i.test(name)
+const MODEL_RANK = { '.blend': 0, '.fbx': 1, '.obj': 2 }
+
+function modelExt(name) {
+  const lower = name.toLowerCase()
+  if (lower.endsWith('.blend') && !/\.blend\d+$/i.test(lower)) return '.blend'
+  if (lower.endsWith('.fbx')) return '.fbx'
+  if (lower.endsWith('.obj')) return '.obj'
+  return null
+}
+
+function isModelFile(name) {
+  return modelExt(name) !== null
 }
 
 function parentIdOf(rel) {
@@ -39,18 +49,32 @@ function parentIdOf(rel) {
 }
 
 /**
- * A folder that holds a .blend is one placeable object, named after the folder.
- * Anything beside that file, including a textures folder, stays with the object
- * and is not scanned. Parent folders with no blend of their own are categories.
- * Objects/grindable/bench/short metal bench/short metal bench.blend
- * → categories Objects, grindable, bench, piece "short metal bench".
+ * A folder that holds a .blend, .fbx, or .obj is one placeable object, named
+ * after the folder. Anything beside that file, including textures, stays with
+ * the object and is not scanned. Parent folders with no model of their own are
+ * categories.
+ * Objects/grindable/bench/short metal bench/short metal bench.fbx
+ * → categories grindable, bench, piece "short metal bench".
+ * Objects/ is the library root on disk and is not shown as a folder.
+ * A .blend wins when the folder also contains an .fbx or .obj.
  */
-async function addPiece(dir, rel, blends, acc) {
+function chooseModel(folderName, files) {
+  const folder = folderName.toLowerCase()
+  const ranked = files.map((entry) => {
+    const ext = modelExt(entry.name)
+    const stem = entry.name.slice(0, entry.name.length - ext.length).toLowerCase()
+    return { entry, ext, match: stem === folder }
+  })
+  ranked.sort((a, b) => {
+    if (a.match !== b.match) return a.match ? -1 : 1
+    return MODEL_RANK[a.ext] - MODEL_RANK[b.ext]
+  })
+  return ranked[0].entry
+}
+
+async function addPiece(dir, rel, models, acc) {
   const folderName = path.posix.basename(rel)
-  const matched = blends.find(
-    (entry) => entry.name.replace(/\.blend$/i, '').toLowerCase() === folderName.toLowerCase(),
-  )
-  const chosen = matched ?? blends[0]
+  const chosen = chooseModel(folderName, models)
   const assetFile = `${rel}/${chosen.name}`
   const fileStat = await stat(path.join(dir, chosen.name))
   acc.pieces.push({
@@ -64,9 +88,9 @@ async function addPiece(dir, rel, blends, acc) {
 
 async function walkDir(dir, rel, acc) {
   const entries = await readdir(dir, { withFileTypes: true })
-  const blends = entries.filter((entry) => entry.isFile() && isBlendFile(entry.name))
-  if (blends.length > 0) {
-    await addPiece(dir, rel, blends, acc)
+  const models = entries.filter((entry) => entry.isFile() && isModelFile(entry.name))
+  if (models.length > 0) {
+    await addPiece(dir, rel, models, acc)
     return 'piece'
   }
 
@@ -92,18 +116,27 @@ async function walkDir(dir, rel, acc) {
   return 'category'
 }
 
+const LIBRARY_ROOT = 'Objects'
+
 export async function scanProjectLibrary(projectRoot) {
   const acc = { categories: [], pieces: [] }
+  const objectsDir = path.join(projectRoot, LIBRARY_ROOT)
   let entries = []
   try {
-    entries = await readdir(projectRoot, { withFileTypes: true })
+    entries = await readdir(objectsDir, { withFileTypes: true })
   } catch {
     return acc
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue
-    await walkDir(path.join(projectRoot, entry.name), entry.name, acc)
+    await walkDir(path.join(objectsDir, entry.name), `${LIBRARY_ROOT}/${entry.name}`, acc)
+  }
+  for (const category of acc.categories) {
+    if (category.parentId === LIBRARY_ROOT) category.parentId = null
+  }
+  for (const piece of acc.pieces) {
+    if (piece.categoryId === LIBRARY_ROOT) piece.categoryId = null
   }
   acc.categories.sort((a, b) => a.label.localeCompare(b.label))
   acc.pieces.sort((a, b) => a.label.localeCompare(b.label))
@@ -119,8 +152,8 @@ export function resolveInsideProject(projectRoot, assetFile) {
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error('Asset path is outside the project.')
   }
-  if (!isBlendFile(path.basename(abs))) {
-    throw new Error('Asset is not a .blend file.')
+  if (!isModelFile(path.basename(abs))) {
+    throw new Error('Asset must be a .blend, .fbx, or .obj file.')
   }
   return abs
 }
@@ -200,13 +233,15 @@ async function buildPreview({ projectRoot, assetFile, blenderPath, scriptPath })
   const revision = Math.round(sourceStat.mtimeMs)
   const dir = cacheDirFor(projectRoot, assetFile)
   const glbPath = path.join(dir, 'preview.glb')
+  const pngPath = path.join(dir, 'preview.png')
   const metaPath = path.join(dir, 'meta.json')
   try {
     const meta = JSON.parse(await readFile(metaPath, 'utf8'))
     await access(glbPath)
+    await access(pngPath)
     if (meta.revision === revision) return glbPath
   } catch {
-    // cache miss
+    // cache miss, or an older preview that never rendered a thumbnail
   }
 
   const blender = blenderPath || (await resolveLibraryBlender())

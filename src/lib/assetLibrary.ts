@@ -34,3 +34,7 @@ export async function fetchAssetCatalog(): Promise<AssetCatalog> {
 export function httpPreviewUrl(assetFile: string, revision: number) {
   return `/api/library-preview?file=${encodeURIComponent(assetFile)}&v=${revision}`
 }
+
+export function httpPreviewThumbUrl(assetFile: string, revision: number) {
+  return `/api/library-thumb?file=${encodeURIComponent(assetFile)}&v=${revision}`
+}

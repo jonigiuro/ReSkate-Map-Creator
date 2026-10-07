@@ -203,7 +203,7 @@ def asphalt_material(project_root):
     return mat
 
 
-def _link_mesh(name, verts_three, faces, color, material=None, tile=None):
+def _link_mesh(name, verts_three, faces, color, material=None, tile=None, loop_uvs=None):
     """verts_three are editor-space (X, Y-up, Z).
 
     Faces are CCW when viewed from outside. The Y-up → Z-up map is a
@@ -214,7 +214,11 @@ def _link_mesh(name, verts_three, faces, color, material=None, tile=None):
     verts = [three_local_to_blender(*v) for v in verts_three]
     mesh.from_pydata(verts, [], faces)
     mesh.update()
-    if tile:
+    if loop_uvs:
+        uv_layer = mesh.uv_layers.new(name="UVMap")
+        for loop_index, uv in enumerate(loop_uvs):
+            uv_layer.data[loop_index].uv = uv
+    elif tile:
         assign_metre_uvs(mesh, verts_three, faces, tile)
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
@@ -302,11 +306,84 @@ def make_quarter_pipe_mesh(name, radius, width, color):
 ASPHALT_TILE_M = 2.0
 
 
+def make_tiled_box_mesh(name, size, color, material, tile):
+    """Box split into tiles of at most `tile` metres so each face stays inside UV 0–1.
+
+    size is editor (width, height, depth). Origin on the bottom face, centered in XZ.
+    A game that does not wrap still shows the texture repeating, because every tile
+    is its own island.
+    """
+    w, h, d = size
+    hw, hd = w / 2.0, d / 2.0
+    tile = float(tile)
+
+    def segments(length):
+        return max(1, int(math.ceil(length / tile - 1e-9)))
+
+    nx, ny, nz = segments(w), segments(h), segments(d)
+    verts = []
+    faces = []
+    loops = []
+
+    def add_quad(corners, uvs):
+        base = len(verts)
+        verts.extend(corners)
+        faces.append((base, base + 1, base + 2))
+        faces.append((base, base + 2, base + 3))
+        loops.extend((uvs[0], uvs[1], uvs[2], uvs[0], uvs[2], uvs[3]))
+
+    def cell_uv(span_u, span_v):
+        return ((0.0, 0.0), (span_u, 0.0), (span_u, span_v), (0.0, span_v))
+
+    sx, sz, sy = w / nx, d / nz, h / ny
+    for i in range(nx):
+        for j in range(nz):
+            x0, x1 = -hw + i * sx, -hw + (i + 1) * sx
+            z0, z1 = -hd + j * sz, -hd + (j + 1) * sz
+            uv = cell_uv(sx / tile, sz / tile)
+            add_quad(
+                [(x0, h, z0), (x0, h, z1), (x1, h, z1), (x1, h, z0)],
+                uv,
+            )
+            add_quad(
+                [(x0, 0.0, z0), (x1, 0.0, z0), (x1, 0.0, z1), (x0, 0.0, z1)],
+                uv,
+            )
+    for i in range(nx):
+        for k in range(ny):
+            x0, x1 = -hw + i * sx, -hw + (i + 1) * sx
+            y0, y1 = k * sy, (k + 1) * sy
+            uv = cell_uv(sx / tile, sy / tile)
+            add_quad(
+                [(x0, y0, hd), (x1, y0, hd), (x1, y1, hd), (x0, y1, hd)],
+                uv,
+            )
+            add_quad(
+                [(x1, y0, -hd), (x0, y0, -hd), (x0, y1, -hd), (x1, y1, -hd)],
+                uv,
+            )
+    for j in range(nz):
+        for k in range(ny):
+            z0, z1 = -hd + j * sz, -hd + (j + 1) * sz
+            y0, y1 = k * sy, (k + 1) * sy
+            uv = cell_uv(sz / tile, sy / tile)
+            add_quad(
+                [(hw, y0, z0), (hw, y1, z0), (hw, y1, z1), (hw, y0, z1)],
+                uv,
+            )
+            add_quad(
+                [(-hw, y0, z1), (-hw, y1, z1), (-hw, y1, z0), (-hw, y0, z0)],
+                uv,
+            )
+
+    return _link_mesh(name, verts, faces, color, material=material, loop_uvs=loops)
+
+
 def make_flat_pad(project_root):
-    """32 m × 1.2 m × 32 m box. Asphalt repeats every 2 m, same as the editor."""
-    return make_box_mesh(
+    """200 m × 0.5 m × 200 m box. Asphalt repeats every 2 m, same as the editor."""
+    return make_tiled_box_mesh(
         "flat_pad",
-        (32.0, 1.2, 32.0),
+        (200.0, 0.5, 200.0),
         (0.22, 0.22, 0.24),
         material=asphalt_material(project_root),
         tile=ASPHALT_TILE_M,
@@ -315,7 +392,7 @@ def make_flat_pad(project_root):
 
 # Base sizes match src/lib/library.ts (width, height, depth) in metres.
 LIBRARY_BUILDERS = {
-    "flat_pad": lambda: make_box_mesh("flat_pad", (32.0, 1.2, 32.0), (0.22, 0.22, 0.24)),
+    "flat_pad": lambda: make_box_mesh("flat_pad", (200.0, 0.5, 200.0), (0.22, 0.22, 0.24)),
     "ledge": lambda: make_box_mesh("ledge", (16.0, 2.4, 3.2), (0.55, 0.55, 0.52)),
     "rail_bar": lambda: make_box_mesh("rail_bar", (16.0, 0.45, 0.45), (0.75, 0.78, 0.82)),
     "kicker": lambda: make_wedge_mesh("kicker", (12.0, 8.0, 3.2), (0.85, 0.45, 0.12)),
@@ -461,13 +538,27 @@ def pack_images_from(source_blend, before_images):
             print(f"Could not pack {candidate}: {exc}")
 
 
+def import_foreign_mesh(path):
+    """Import an .fbx or .obj. Meshes land in world space with no parent empty."""
+    import addon_utils
+
+    suffix = path.suffix.lower()
+    if suffix == ".fbx":
+        addon_utils.enable("io_scene_fbx")
+        bpy.ops.import_scene.fbx(filepath=str(path))
+    elif suffix == ".obj":
+        bpy.ops.wm.obj_import(filepath=str(path))
+    else:
+        raise RuntimeError(f"Unsupported asset type: {path}")
+
+
 def append_authored_asset(name, blend_path, position, rotation, scale, colls):
     """
-    Copy every object out of an authored .blend.
+    Copy an authored .blend, .fbx, or .obj into the map.
 
-    libraries.load duplicates datablocks, so materials, images, curve splines,
-    and ReSkate addon ID properties come with them. Nothing here rewrites those
-    props — the placer only parents the hierarchy under an empty and moves it.
+    Blend files use libraries.load, so materials, images, curve splines, and
+    ReSkate addon ID properties come with them. FBX and OBJ are imported, then
+    flattened to meshes. Nothing here rewrites addon props.
     """
     blend_path = Path(blend_path).resolve()
     if not blend_path.is_file():
@@ -475,8 +566,23 @@ def append_authored_asset(name, blend_path, position, rotation, scale, colls):
 
     before_objects = set(bpy.data.objects)
     before_images = set(bpy.data.images)
-    with bpy.data.libraries.load(str(blend_path), link=False) as (data_from, data_to):
-        data_to.objects = list(data_from.objects)
+    suffix = blend_path.suffix.lower()
+    if suffix == ".blend":
+        with bpy.data.libraries.load(str(blend_path), link=False) as (data_from, data_to):
+            data_to.objects = list(data_from.objects)
+    elif suffix in {".fbx", ".obj"}:
+        import_foreign_mesh(blend_path)
+        bpy.context.view_layer.update()
+        fresh = [obj for obj in bpy.data.objects if obj not in before_objects]
+        worlds = [(obj, obj.matrix_world.copy()) for obj in fresh if obj.type == "MESH"]
+        for obj, world in worlds:
+            obj.parent = None
+            obj.matrix_world = world
+        for obj in fresh:
+            if obj.type != "MESH":
+                bpy.data.objects.remove(obj, do_unlink=True)
+    else:
+        raise RuntimeError(f"Unsupported asset type: {blend_path}")
 
     imported = [obj for obj in bpy.data.objects if obj not in before_objects]
     dropped = [obj for obj in imported if obj.type not in KEEP_TYPES]

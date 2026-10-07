@@ -106,6 +106,44 @@ function blendExportPlugin(): Plugin {
         })
       })
 
+      server.middlewares.use('/api/library-thumb', (req, res) => {
+        if (req.method !== 'GET') {
+          res.statusCode = 405
+          res.end()
+          return
+        }
+        const query = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const assetFile = query.searchParams.get('file')
+        if (!assetFile) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'Missing file query.' }))
+          return
+        }
+        void (async () => {
+          try {
+            const { ensureAssetPreview, resolveLibraryBlender } = await loadLibraryHelpers()
+            const blenderPath = await resolveLibraryBlender()
+            const glbPath = await ensureAssetPreview({
+              projectRoot: root,
+              assetFile,
+              blenderPath,
+              scriptPath: path.join(root, 'scripts', 'preview_asset.py'),
+            })
+            const png = await readFile(path.join(path.dirname(glbPath), 'preview.png'))
+            res.statusCode = 200
+            res.setHeader('Content-Type', 'image/png')
+            res.setHeader('Cache-Control', 'no-cache')
+            res.end(png)
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: message }))
+          }
+        })()
+      })
+
       server.middlewares.use('/api/library-preview', (req, res) => {
         if (req.method !== 'GET') {
           res.statusCode = 405

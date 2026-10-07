@@ -7,6 +7,7 @@ import {
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { MOUSE } from 'three'
 import * as THREE from 'three'
+import { toCreasedNormals } from 'three-stdlib'
 import type {
   MapScene,
   MeshObject,
@@ -52,24 +53,34 @@ type Props = {
   tool: EditorTool
   transformMode: TransformMode
   snap: SnapSettings
-  dragPieceId: string | null
-  dragAssetFile?: string
-  dragAssetRevision?: number
+  placePieceId: string | null
+  placeAssetFile?: string
+  placeAssetRevision?: number
+  placeYaw: number
   assetRevisions: Record<string, number>
   onSelect: (id: string | null) => void
   onPatchObject: (id: string, patch: Partial<SceneObject>) => void
   onGroundClick: (point: THREE.Vector3) => void
   onPlacePiece: (id: string, point: THREE.Vector3) => void
+  onRotatePiece: () => void
 }
 
 const raycaster = new THREE.Raycaster()
 const pointerNdc = new THREE.Vector2()
+
+function snapHorizontal(point: THREE.Vector3, size: number | null) {
+  if (size == null || !Number.isFinite(size) || size <= 0) return point
+  point.x = Math.round(point.x / size) * size
+  point.z = Math.round(point.z / size) * size
+  return point
+}
 
 function snapPointFromEvent(
   event: { clientX: number; clientY: number },
   camera: THREE.Camera,
   scene: THREE.Scene,
   dom: HTMLElement,
+  moveSnap: number | null,
 ): THREE.Vector3 | null {
   const rect = dom.getBoundingClientRect()
   if (rect.width === 0 || rect.height === 0) return null
@@ -78,11 +89,17 @@ function snapPointFromEvent(
   raycaster.setFromCamera(pointerNdc, camera)
   const hits = raycaster.intersectObjects(scene.children, true)
   for (const hit of hits) {
+    let ghost = false
+    let snap = false
     let obj: THREE.Object3D | null = hit.object
     while (obj) {
-      if (obj.userData.snap) return hit.point.clone()
+      if (obj.userData.placementGhost) ghost = true
+      if (obj.userData.snap) snap = true
       obj = obj.parent
     }
+    if (ghost || !snap) continue
+    // Grid is world X/Z only. Height stays on the surface under the cursor.
+    return snapHorizontal(hit.point.clone(), moveSnap)
   }
   return null
 }
@@ -275,7 +292,7 @@ function MeshItem({
     <>
       <group
         ref={ref}
-        userData={{ snap: true }}
+        userData={{ snap: true, focusId: obj.id }}
         onPointerDown={(e) => {
           e.stopPropagation()
           if (e.button !== 0 || gizmoOwnsPointer.current) return
@@ -287,12 +304,6 @@ function MeshItem({
           assetFile={obj.assetFile}
           assetRevision={assetRevision}
         />
-        {selected && (
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.08, 0]}>
-            <ringGeometry args={[1.6, 2, 48]} />
-            <meshBasicMaterial color="#f0a020" toneMapped={false} />
-          </mesh>
-        )}
       </group>
       {selected && tool === 'select' && (
         <TransformGizmo
@@ -334,6 +345,14 @@ function SpawnFigure({ selected }: { selected: boolean }) {
       <mesh castShadow position={[0, 1.56, -0.15]}>
         <boxGeometry args={[0.05, 0.04, 0.07]} />
         <meshStandardMaterial color={color} roughness={0.62} metalness={0.04} />
+      </mesh>
+      <mesh position={[0, 0.06, -0.72]} rotation={[-Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[0.035, 0.035, 0.9, 8]} />
+        <meshBasicMaterial color="#f7fbff" toneMapped={false} />
+      </mesh>
+      <mesh position={[0, 0.06, -1.31]} rotation={[-Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.1, 0.28, 10]} />
+        <meshBasicMaterial color="#f7fbff" toneMapped={false} />
       </mesh>
       <mesh castShadow position={[-0.53, 1.32, 0]} rotation={[0, 0, Math.PI / 2]}>
         <capsuleGeometry args={[0.055, 0.58, 4, 8]} />
@@ -381,6 +400,7 @@ function SpawnItem({
     <>
       <group
         ref={ref}
+        userData={{ focusId: obj.id }}
         onPointerDown={(e) => {
           e.stopPropagation()
           if (e.button !== 0 || gizmoOwnsPointer.current) return
@@ -402,48 +422,283 @@ function SpawnItem({
   )
 }
 
-function PieceDragLayer({
-  dragPieceId,
+function PiecePlacementLayer({
+  placePieceId,
+  moveSnap,
   onPlace,
   onPreview,
+  onRotate,
 }: {
-  dragPieceId: string | null
+  placePieceId: string | null
+  moveSnap: number | null
   onPlace: (id: string, point: THREE.Vector3) => void
   onPreview: (point: THREE.Vector3 | null) => void
+  onRotate: () => void
 }) {
   const camera = useThree((s) => s.camera)
   const scene = useThree((s) => s.scene)
   const gl = useThree((s) => s.gl)
-  const pieceRef = useRef(dragPieceId)
+  const pieceRef = useRef(placePieceId)
+  const moveSnapRef = useRef(moveSnap)
   const onPlaceRef = useRef(onPlace)
   const onPreviewRef = useRef(onPreview)
-  pieceRef.current = dragPieceId
+  const onRotateRef = useRef(onRotate)
+  pieceRef.current = placePieceId
+  moveSnapRef.current = moveSnap
   onPlaceRef.current = onPlace
   onPreviewRef.current = onPreview
+  onRotateRef.current = onRotate
 
   useEffect(() => {
     const el = gl.domElement
-    const over = (event: DragEvent) => {
+    el.style.cursor = placePieceId ? 'crosshair' : ''
+    const clickSlop = 8
+    let rightStart: { x: number; y: number } | null = null
+    let orbiting = false
+
+    const move = (event: PointerEvent) => {
+      if (pieceRef.current) {
+        onPreviewRef.current(snapPointFromEvent(event, camera, scene, el, moveSnapRef.current))
+      }
+      if (!rightStart || orbiting) return
+      const dx = event.clientX - rightStart.x
+      const dy = event.clientY - rightStart.y
+      if (dx * dx + dy * dy < clickSlop * clickSlop) return
+      orbiting = true
+      rightStart = null
+      el.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          buttons: event.buttons || 2,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          isPrimary: event.isPrimary,
+        }),
+      )
+    }
+    const down = (event: PointerEvent) => {
       if (!pieceRef.current) return
+      if (event.button === 2) {
+        if (orbiting) return
+        rightStart = { x: event.clientX, y: event.clientY }
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+      if (event.button !== 0) return
+      const point = snapPointFromEvent(event, camera, scene, el, moveSnapRef.current)
+      if (!point) return
       event.preventDefault()
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
-      onPreviewRef.current(snapPointFromEvent(event, camera, scene, el))
+      event.stopPropagation()
+      onPlaceRef.current(pieceRef.current, point)
     }
-    const drop = (event: DragEvent) => {
-      const id = pieceRef.current
-      if (!id) return
+    const up = (event: PointerEvent) => {
+      if (event.button !== 2) return
+      if (orbiting) {
+        orbiting = false
+        return
+      }
+      if (!rightStart || !pieceRef.current) {
+        rightStart = null
+        return
+      }
+      rightStart = null
       event.preventDefault()
-      const point = snapPointFromEvent(event, camera, scene, el)
-      onPreviewRef.current(null)
-      if (point) onPlaceRef.current(id, point)
+      event.stopPropagation()
+      onRotateRef.current()
     }
-    el.addEventListener('dragover', over)
-    el.addEventListener('drop', drop)
+    const leave = () => onPreviewRef.current(null)
+
+    el.addEventListener('pointermove', move, true)
+    el.addEventListener('pointerdown', down, true)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointerleave', leave)
     return () => {
-      el.removeEventListener('dragover', over)
-      el.removeEventListener('drop', drop)
+      el.style.cursor = ''
+      el.removeEventListener('pointermove', move, true)
+      el.removeEventListener('pointerdown', down, true)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointerleave', leave)
     }
-  }, [camera, scene, gl])
+  }, [camera, scene, gl, placePieceId])
+
+  return null
+}
+
+const _frameBox = new THREE.Box3()
+const _frameCenter = new THREE.Vector3()
+const _frameSize = new THREE.Vector3()
+const _frameOffset = new THREE.Vector3()
+
+/** Pull the camera in so the selected object fills most of the view, keeping the current angle. */
+function frameObject(
+  object: THREE.Object3D,
+  camera: THREE.PerspectiveCamera,
+  controls: { target: THREE.Vector3; update: () => void },
+  viewport: { width: number; height: number },
+) {
+  const fill = 0.7
+  _frameBox.setFromObject(object)
+  if (_frameBox.isEmpty()) {
+    object.getWorldPosition(_frameCenter)
+    _frameSize.set(1, 1, 1)
+  } else {
+    _frameBox.getCenter(_frameCenter)
+    _frameBox.getSize(_frameSize)
+  }
+  _frameSize.x = Math.max(_frameSize.x, 0.25)
+  _frameSize.y = Math.max(_frameSize.y, 0.25)
+  _frameSize.z = Math.max(_frameSize.z, 0.25)
+
+  const aspect = Math.max(viewport.width, 1) / Math.max(viewport.height, 1)
+  const vFov = THREE.MathUtils.degToRad(camera.fov)
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect)
+  const distance = Math.max(
+    _frameSize.y / 2 / (Math.tan(vFov / 2) * fill),
+    _frameSize.x / 2 / (Math.tan(hFov / 2) * fill),
+    _frameSize.z / 2 / (Math.tan(vFov / 2) * fill),
+  )
+
+  _frameOffset.copy(camera.position).sub(controls.target)
+  if (_frameOffset.lengthSq() < 1e-6) _frameOffset.set(48, 36, 58)
+  _frameOffset.setLength(Math.max(distance, 0.35))
+
+  controls.target.copy(_frameCenter)
+  camera.position.copy(_frameCenter).add(_frameOffset)
+  camera.near = Math.min(0.5, Math.max(0.01, distance * 0.02))
+  camera.updateProjectionMatrix()
+  controls.update()
+}
+
+const _outlineSize = new THREE.Vector2()
+
+/**
+ * Back-face shell pushed out by a few pixels. Stays the same width at any zoom.
+ * Geometry is copied so the source mesh is left alone.
+ */
+function outlineGeometry(geometry: THREE.BufferGeometry) {
+  const source = geometry.index ? geometry : geometry.clone()
+  const creased = toCreasedNormals(source, Math.PI)
+  if (!geometry.index && creased !== source) source.dispose()
+  return creased
+}
+
+function SelectionOutline({ selectedId }: { selectedId: string | null }) {
+  const gl = useThree((s) => s.gl)
+  const scene = useThree((s) => s.scene)
+  const material = useMemo(() => {
+    return new THREE.ShaderMaterial({
+      toneMapped: false,
+      side: THREE.BackSide,
+      depthTest: true,
+      depthWrite: false,
+      uniforms: {
+        uColor: { value: new THREE.Color('#fff4d2') },
+        uThickness: { value: 6 },
+        uSize: { value: new THREE.Vector2(1, 1) },
+      },
+      vertexShader: `
+        uniform float uThickness;
+        uniform vec2 uSize;
+        void main() {
+          vec4 clipPosition = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vec4 clipNormal = projectionMatrix * modelViewMatrix * vec4(normal, 0.0);
+          vec2 nxy = clipNormal.xy;
+          float len = length(nxy);
+          if (len > 0.0001) {
+            clipPosition.xy += (nxy / len) * uThickness / uSize * clipPosition.w * 2.0;
+          }
+          gl_Position = clipPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        void main() {
+          gl_FragColor = vec4(uColor, 1.0);
+        }
+      `,
+    })
+  }, [])
+
+  useEffect(() => () => material.dispose(), [material])
+
+  useFrame(() => {
+    gl.getDrawingBufferSize(_outlineSize)
+    material.uniforms.uSize.value.copy(_outlineSize)
+  })
+
+  useLayoutEffect(() => {
+    gl.getDrawingBufferSize(_outlineSize)
+    material.uniforms.uSize.value.copy(_outlineSize)
+    const hulls: THREE.Mesh[] = []
+    if (!selectedId) return () => {}
+    let found: THREE.Object3D | null = null
+    scene.traverse((obj) => {
+      if (obj.userData.focusId === selectedId) found = obj
+    })
+    found?.traverse((node) => {
+      const mesh = node as THREE.Mesh
+      if (!mesh.isMesh || !mesh.geometry || mesh.userData.selectionOutline) return
+      const hull = new THREE.Mesh(outlineGeometry(mesh.geometry), material)
+      hull.userData.selectionOutline = true
+      hull.raycast = () => {}
+      hull.castShadow = false
+      hull.receiveShadow = false
+      hull.renderOrder = 2
+      mesh.add(hull)
+      hulls.push(hull)
+    })
+    return () => {
+      for (const hull of hulls) {
+        hull.parent?.remove(hull)
+        hull.geometry.dispose()
+      }
+    }
+  }, [gl, material, scene, selectedId])
+
+  return null
+}
+
+function FrameSelection({ selectedId }: { selectedId: string | null }) {
+  const camera = useThree((s) => s.camera)
+  const scene = useThree((s) => s.scene)
+  const controls = useThree((s) => s.controls)
+  const size = useThree((s) => s.size)
+  const selectedRef = useRef(selectedId)
+  selectedRef.current = selectedId
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key.toLowerCase() !== 'c') return
+      if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat) return
+      const target = event.target
+      const typing =
+        target instanceof HTMLElement &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      if (typing) return
+      const id = selectedRef.current
+      if (!id) return
+      const orbit = controls as { target?: THREE.Vector3; update?: () => void } | null
+      if (!orbit?.target || !orbit.update) return
+      if (!(camera instanceof THREE.PerspectiveCamera)) return
+      let found: THREE.Object3D | null = null
+      scene.traverse((obj) => {
+        if (obj.userData.focusId === id) found = obj
+      })
+      if (!found) return
+      event.preventDefault()
+      frameObject(found, camera, orbit as { target: THREE.Vector3; update: () => void }, size)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [camera, scene, controls, size])
 
   return null
 }
@@ -455,20 +710,22 @@ function SceneContents(props: Props) {
     tool,
     transformMode,
     snap,
-    dragPieceId,
-    dragAssetFile,
-    dragAssetRevision = 0,
+    placePieceId,
+    placeAssetFile,
+    placeAssetRevision = 0,
+    placeYaw,
     assetRevisions,
     onSelect,
     onPatchObject,
     onGroundClick,
     onPlacePiece,
+    onRotatePiece,
   } = props
   const [previewPoint, setPreviewPoint] = useState<THREE.Vector3 | null>(null)
 
   useEffect(() => {
-    if (!dragPieceId) setPreviewPoint(null)
-  }, [dragPieceId])
+    if (!placePieceId) setPreviewPoint(null)
+  }, [placePieceId])
 
   const previewY = previewPoint ? restHeight(previewPoint) : 0
 
@@ -483,9 +740,11 @@ function SceneContents(props: Props) {
           MIDDLE: MOUSE.PAN,
           RIGHT: MOUSE.ROTATE,
         }}
-        minDistance={2}
+        minDistance={0.25}
         maxDistance={2000}
       />
+      <FrameSelection selectedId={selectedId} />
+      <SelectionOutline selectedId={selectedId} />
 
       <ambientLight intensity={0.22} />
       <hemisphereLight args={['#d5e2ee', '#3a332c', 0.28]} />
@@ -528,21 +787,27 @@ function SceneContents(props: Props) {
         )
       })}
 
-      {dragPieceId && previewPoint && (
-        <group position={[previewPoint.x, previewY, previewPoint.z]}>
+      {placePieceId && previewPoint && (
+        <group
+          position={[previewPoint.x, previewY, previewPoint.z]}
+          rotation={[0, placeYaw, 0]}
+          userData={{ placementGhost: true }}
+        >
           <LibraryMesh
-            libraryId={dragPieceId}
-            assetFile={dragAssetFile}
-            assetRevision={dragAssetRevision}
+            libraryId={placePieceId}
+            assetFile={placeAssetFile}
+            assetRevision={placeAssetRevision}
             ghost
           />
         </group>
       )}
 
-      <PieceDragLayer
-        dragPieceId={dragPieceId}
+      <PiecePlacementLayer
+        placePieceId={placePieceId}
+        moveSnap={snap.move}
         onPlace={onPlacePiece}
         onPreview={setPreviewPoint}
+        onRotate={onRotatePiece}
       />
 
       <ContactShadows opacity={0.12} scale={160} blur={2.4} far={40} />

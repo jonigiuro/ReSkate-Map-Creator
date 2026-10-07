@@ -193,6 +193,18 @@ function registerIpc() {
     return pathToFileURL(glbPath).href
   })
 
+  ipcMain.handle('library:thumb', async (_event, assetFile) => {
+    const blender = await resolveBlender()
+    const blenderPath = blender.ok && blender.path ? blender.path : await resolveLibraryBlender()
+    const glbPath = await ensureAssetPreview({
+      projectRoot: appRoot(),
+      assetFile,
+      blenderPath,
+      scriptPath: previewScriptPath(),
+    })
+    return pathToFileURL(path.join(path.dirname(glbPath), 'preview.png')).href
+  })
+
   ipcMain.handle('blender:pick', async (event) => {
     const win = BrowserWindow.fromWebContents(event.sender) || mainWindow
     const status = await askForBlender(win)

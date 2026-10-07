@@ -7,7 +7,7 @@ export type GrindSurface =
   | 'material_37227424'
   | 'material_37228128'
 
-/** Built-in kit id, or the project-relative folder of an authored .blend. */
+/** Built-in kit id, or the project-relative folder of an authored model. */
 export type LibraryId = string
 
 export interface Sk8MeshProps {
@@ -19,7 +19,7 @@ export interface MeshObject {
   id: string
   kind: 'mesh'
   libraryId: LibraryId
-  /** Project-relative .blend. Set for objects dropped in from a folder. */
+  /** Project-relative .blend, .fbx, or .obj. Set for objects dropped in from a folder. */
   assetFile?: string
   name: string
   position: [number, number, number]

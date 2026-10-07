@@ -23,6 +23,7 @@ export type ReskateDesktopApi = {
   pickBlender: () => Promise<BlenderStatus>
   listLibrary: () => Promise<AssetCatalog>
   previewAsset: (assetFile: string) => Promise<string>
+  previewThumb: (assetFile: string) => Promise<string>
   exportBlend: (scene: unknown) => Promise<DesktopSaveResult>
   saveJson: (scene: unknown, filePath?: string) => Promise<DesktopSaveResult>
   openJson: () => Promise<DesktopSaveResult>

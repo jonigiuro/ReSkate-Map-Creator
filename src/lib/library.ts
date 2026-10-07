@@ -7,25 +7,8 @@ export type BuiltinLibraryId =
   | 'kicker'
   | 'quarter_pipe'
 
-export type LibraryCategoryId = 'generic'
-
-export interface LibraryCategory {
-  id: LibraryCategoryId
-  label: string
-  blurb: string
-}
-
-export const LIBRARY_CATEGORIES: LibraryCategory[] = [
-  {
-    id: 'generic',
-    label: 'Generic',
-    blurb: 'Default placeholder kit pieces.',
-  },
-]
-
 export interface LibraryPiece {
   id: BuiltinLibraryId
-  category: LibraryCategoryId
   label: string
   blurb: string
   placeholder: true
@@ -38,17 +21,15 @@ export interface LibraryPiece {
 export const LIBRARY: LibraryPiece[] = [
   {
     id: 'flat_pad',
-    category: 'generic',
     label: 'Flat pad',
     blurb: 'Asphalt pad. The texture repeats every 2 m.',
     placeholder: true,
-    size: [32, 1.2, 32],
+    size: [200, 0.5, 200],
     color: '#38383d',
     defaultSk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
   },
   {
     id: 'ledge',
-    category: 'generic',
     label: 'Ledge',
     blurb: 'Box ledge kit piece.',
     placeholder: true,
@@ -58,7 +39,6 @@ export const LIBRARY: LibraryPiece[] = [
   },
   {
     id: 'rail_bar',
-    category: 'generic',
     label: 'Rail bar (mesh)',
     blurb: 'Visual rail bar.',
     placeholder: true,
@@ -68,7 +48,6 @@ export const LIBRARY: LibraryPiece[] = [
   },
   {
     id: 'kicker',
-    category: 'generic',
     label: 'Kicker',
     blurb: 'Simple wedge launch. Placeholder mesh.',
     placeholder: true,
@@ -78,7 +57,6 @@ export const LIBRARY: LibraryPiece[] = [
   },
   {
     id: 'quarter_pipe',
-    category: 'generic',
     label: 'Quarter pipe',
     blurb: 'Coarse quarter-pipe stand-in for layouting.',
     placeholder: true,
@@ -90,8 +68,4 @@ export const LIBRARY: LibraryPiece[] = [
 
 export function getPiece(id: string): LibraryPiece | undefined {
   return LIBRARY.find((p) => p.id === id)
-}
-
-export function piecesInCategory(category: LibraryCategoryId): LibraryPiece[] {
-  return LIBRARY.filter((p) => p.category === category)
 }
