@@ -3,6 +3,11 @@
 An easy to use, vibe-coded, editor for people that don't want to learn blender just for mapping.
 It allows you to place some assets and export a blend file. After that you still have to rely on ReSkate to actually load and run the map.
 
+## Warning
+
+This is vibe-coded, I'm not responsible if it messes up your pc or if anything happens as a consequence of downloading and/or using this repo or it's releases.
+By downlading anything from this repo you accept this terms.
+
 ## What you need
 
 Blender has to be installed on your computer (for ToS reasons) and you'll need ReSkate studio to convert your map to a skateable map.
