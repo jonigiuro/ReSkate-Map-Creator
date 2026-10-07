@@ -27,10 +27,15 @@ GRIND_SURFACES = {
 }
 
 
+# The game collides badly with a map sitting on the world origin. The editor
+# keeps showing ground level as 0. Export lifts every world position by this much.
+EXPORT_UP_M = 200.0
+
+
 def three_to_blender_pos(p):
-    """Three.js Y-up → Blender Z-up metres: (x, y, z)_three → (x, -z, y)_blender."""
+    """Three.js Y-up → Blender Z-up metres: (x, y, z)_three → (x, -z, y + lift)_blender."""
     x, y, z = p
-    return Vector((float(x), float(-z), float(y)))
+    return Vector((float(x), float(-z), float(y) + EXPORT_UP_M))
 
 
 def three_local_to_blender(x, y, z):
@@ -447,7 +452,7 @@ def make_grind_curve(name, points_three, radius, surface):
     spline = curve_data.splines.new("POLY")
     pts = [three_to_blender_pos(p) for p in points_three]
     if len(pts) < 2:
-        pts = [Vector((0, 0, 0.5)), Vector((2, 0, 0.5))]
+        pts = [Vector((0, 0, 0.5 + EXPORT_UP_M)), Vector((2, 0, 0.5 + EXPORT_UP_M))]
     spline.points.add(len(pts) - 1)
     for i, p in enumerate(pts):
         spline.points[i].co = (p.x, p.y, p.z, 1.0)

@@ -73,7 +73,7 @@ npm run build:desktop
 
 # Windows (run on a Windows machine)
 npm run build:desktop:win
-# → release/ReSkate Map Creator-0.2.0.exe
+# → release/ReSkate Map Creator-0.2.1.exe
 ```
 
 The build also copies `Objects` next to that exe, without `Objects/Private`. The app reads the library from that folder. Blender must still be installed separately.
