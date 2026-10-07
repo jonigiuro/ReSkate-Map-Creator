@@ -655,6 +655,7 @@ def build(scene):
 
     objects = scene.get("objects") or []
     project_root = Path(scene.get("projectRoot") or ".")
+    assets_root = Path(scene.get("assetsRoot") or project_root)
     for entry in objects:
         kind = entry.get("kind")
         name = entry.get("name") or kind or "Object"
@@ -677,7 +678,7 @@ def build(scene):
 
             lib = entry.get("libraryId") or "flat_pad"
             if lib == "flat_pad":
-                obj = make_flat_pad(project_root)
+                obj = make_flat_pad(assets_root)
             else:
                 builder = LIBRARY_BUILDERS.get(lib) or LIBRARY_BUILDERS["flat_pad"]
                 obj = builder()

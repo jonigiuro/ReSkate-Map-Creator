@@ -599,25 +599,10 @@ button.ghost.danger {
 }
 
 .meta code,
-.workflow code,
 .hint code {
   font-family: var(--font-mono);
   font-size: 0.78em;
   color: #d7c4a0;
-}
-
-.workflow {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--line);
-}
-
-.workflow ol {
-  margin: 0.4rem 0 0;
-  padding-left: 1.1rem;
-  color: var(--muted);
-  font-size: 0.85rem;
-  line-height: 1.45;
 }
 
 @keyframes drop-in {

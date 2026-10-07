@@ -28,21 +28,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:47321'
 
-function appRoot() {
-  // Project root in dev; in production resources hold export script
-  return isDev ? path.join(__dirname, '..') : process.resourcesPath
+/** Folder that contains Objects/. Dev: the repo. Packaged: the folder of the exe. */
+function installDir() {
+  if (!app.isPackaged) return path.join(__dirname, '..')
+  // Portable exe extracts elsewhere; this env var is the folder the user launched.
+  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR
+  if (portableDir) return portableDir
+  return path.dirname(process.execPath)
+}
+
+/** Bundled scripts and asphalt textures. Outside the asar so Blender can read them. */
+function resourcesRoot() {
+  return app.isPackaged ? process.resourcesPath : installDir()
 }
 
 function exportScriptPath() {
-  return isDev
-    ? path.join(appRoot(), 'scripts', 'export_blend.py')
-    : path.join(process.resourcesPath, 'scripts', 'export_blend.py')
+  return path.join(resourcesRoot(), 'scripts', 'export_blend.py')
 }
 
 function previewScriptPath() {
-  return isDev
-    ? path.join(appRoot(), 'scripts', 'preview_asset.py')
-    : path.join(process.resourcesPath, 'scripts', 'preview_asset.py')
+  return path.join(resourcesRoot(), 'scripts', 'preview_asset.py')
 }
 
 function tempExportDir() {
@@ -179,13 +184,13 @@ async function createWindow() {
 function registerIpc() {
   ipcMain.handle('blender:check', async () => resolveBlender())
 
-  ipcMain.handle('library:list', async () => scanProjectLibrary(appRoot()))
+  ipcMain.handle('library:list', async () => scanProjectLibrary(installDir()))
 
   ipcMain.handle('library:preview', async (_event, assetFile) => {
     const blender = await resolveBlender()
     const blenderPath = blender.ok && blender.path ? blender.path : await resolveLibraryBlender()
     const glbPath = await ensureAssetPreview({
-      projectRoot: appRoot(),
+      projectRoot: installDir(),
       assetFile,
       blenderPath,
       scriptPath: previewScriptPath(),
@@ -197,7 +202,7 @@ function registerIpc() {
     const blender = await resolveBlender()
     const blenderPath = blender.ok && blender.path ? blender.path : await resolveLibraryBlender()
     const glbPath = await ensureAssetPreview({
-      projectRoot: appRoot(),
+      projectRoot: installDir(),
       assetFile,
       blenderPath,
       scriptPath: previewScriptPath(),
@@ -254,7 +259,11 @@ function registerIpc() {
       const scenePath = path.join(tmp, `scene-${stamp}.json`)
       await writeFile(
         scenePath,
-        JSON.stringify({ ...scene, projectRoot: appRoot() }, null, 2),
+        JSON.stringify(
+          { ...scene, projectRoot: installDir(), assetsRoot: resourcesRoot() },
+          null,
+          2,
+        ),
         'utf8',
       )
 
@@ -263,7 +272,7 @@ function registerIpc() {
         scriptPath: exportScriptPath(),
         scenePath,
         blendPath,
-        cwd: isDev ? appRoot() : path.dirname(blendPath),
+        cwd: installDir(),
       })
 
       return { ok: true, path: blendPath }

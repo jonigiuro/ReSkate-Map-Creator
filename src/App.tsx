@@ -287,9 +287,7 @@ export default function App() {
           throw new Error(result.error || 'Export failed')
         }
         setBlenderOk(true)
-        setStatus(
-          `Saved ${result.path} — open in ReSkate Studio, then run reskate_cli compile-map.`,
-        )
+        setStatus(`Saved ${result.path}`)
         return
       }
 
@@ -309,9 +307,7 @@ export default function App() {
       a.download = 'reskate-map.blend'
       a.click()
       URL.revokeObjectURL(url)
-      setStatus(
-        'Downloaded reskate-map.blend — open in ReSkate Studio, then run reskate_cli compile-map.',
-      )
+      setStatus('Downloaded reskate-map.blend')
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
@@ -851,16 +847,6 @@ export default function App() {
             </div>
           )}
 
-          <div className="workflow">
-            <h2>Studio handoff</h2>
-            <ol>
-              <li>Export `.blend` from this app</li>
-              <li>Open the blend in ReSkate Studio</li>
-              <li>
-                Run <code>reskate_cli compile-map</code> (manual)
-              </li>
-            </ol>
-          </div>
         </aside>
       </div>
     </div>

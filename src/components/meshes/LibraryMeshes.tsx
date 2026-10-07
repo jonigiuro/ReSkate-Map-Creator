@@ -5,10 +5,12 @@ import { httpPreviewUrl } from '../../lib/assetLibrary'
 import { getPiece } from '../../lib/library'
 
 const ASPHALT_TILE_M = 2
+const publicFile = (file: string) => `${import.meta.env.BASE_URL}${file}`
+
 const ASPHALT_MAPS = [
-  '/img/textures/asphalt/Asphalt_BaseColor.jpg',
-  '/img/textures/asphalt/Asphalt_Normal.jpg',
-  '/img/textures/asphalt/Asphalt_Roughness.jpg',
+  publicFile('img/textures/asphalt/Asphalt_BaseColor.jpg'),
+  publicFile('img/textures/asphalt/Asphalt_Normal.jpg'),
+  publicFile('img/textures/asphalt/Asphalt_Roughness.jpg'),
 ] as const
 
 function useWedgeGeometry(width: number, depth: number, height: number) {

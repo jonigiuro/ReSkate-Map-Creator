@@ -636,11 +636,11 @@ function SelectionOutline({ selectedId }: { selectedId: string | null }) {
     material.uniforms.uSize.value.copy(_outlineSize)
     const hulls: THREE.Mesh[] = []
     if (!selectedId) return () => {}
-    let found: THREE.Object3D | null = null
+    const found: { current: THREE.Object3D | null } = { current: null }
     scene.traverse((obj) => {
-      if (obj.userData.focusId === selectedId) found = obj
+      if (obj.userData.focusId === selectedId) found.current = obj
     })
-    found?.traverse((node) => {
+    found.current?.traverse((node) => {
       const mesh = node as THREE.Mesh
       if (!mesh.isMesh || !mesh.geometry || mesh.userData.selectionOutline) return
       const hull = new THREE.Mesh(outlineGeometry(mesh.geometry), material)
@@ -816,7 +816,7 @@ function SceneContents(props: Props) {
 }
 
 /** Horizontal cross in public/img/skybox.png: up, then left/front/right/back, then down. */
-const SKYBOX_URL = '/img/skybox.png'
+const SKYBOX_URL = `${import.meta.env.BASE_URL}img/skybox.png`
 
 function sliceCubeFace(image: HTMLImageElement, column: number, row: number) {
   const face = image.width / 4

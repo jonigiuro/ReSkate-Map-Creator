@@ -1,8 +1,41 @@
 # ReSkate Map Creator (MVP)
 
+An easy to use, vibe-coded, editor for people that don't want to learn blender just for mapping.
+It allows you to place some assets and export a blend file. After that you still have to rely on ReSkate to actually load and run the map.
+
+## What you need
+
+Blender has to be installed on your computer (for ToS reasons) and you'll need ReSkate studio to convert your map to a skateable map.
+On the first startup the editor should ask for the location of your blender executable, just point it to it.
+
+## Adding your own assets
+
+You can create your own assets or download them from the internet. To use them in the editor place them in the Objects folder alongside the runnable exe file.
+Supported formats are *.blend, *.fbx, *.obj. Place the texture in a **textures** folder alongside the 3D file.
+The folder structure dictates the categories in the editor. If you place a stairset in /Objects/New York/Stairs/Single stair/Single stair.blend the same structure will be used in the editor.
+See inside the Objects/Blueprints to see an example of this.
+
+## How to use it
+
+Click and hold right mouse button to orbit.
+Click and hold mouse wheel to pan.
+Mousewheel is for zooming in and out.
+
+Click on an object in the library (left bar) to select it, then move the mouse on the scene, you should see the asset following the mouse. Click to place the asset.
+In the top bar you can turn on snapping and change the snapping steps. Snapping works while moving assets and when placing assets.
+
+You can save and load your scenes as *.json in the File dropdown.
+
+Once your map is created hit **Export .blend** to create your blend file. 
+From then on you need ReSkate to load and convert the file.
+
+# From here on the README is AI generated.
+
+# ReSkate Map Creator (MVP)
+
 Standalone object placer for custom skate parks aimed at **ReSkate Studio**.
 
-Place placeholder kit meshes + grind splines + a `spawn` empty, then export a **Studio-oriented `.blend`**. You still run Studio’s manual convert step (`reskate_cli compile-map`).
+Place placeholder kit meshes + grind splines + a `spawn` empty, then export a **Studio-oriented `.blend`**.
 
 **Blender is required and is not bundled.** Install Blender and ensure `blender` is on your `PATH`.
 
@@ -38,12 +71,12 @@ npm run build:desktop
 # → release/ReSkate Map Creator-*.AppImage
 # → release/linux-unpacked/ (dir target)
 
-# Windows (run on a Windows machine or CI with Windows runners)
+# Windows (run on a Windows machine)
 npm run build:desktop:win
-# → release/*.exe (NSIS installer + portable)
+# → release/ReSkate Map Creator-0.2.0.exe
 ```
 
-Then launch the AppImage / `.exe`. Blender must still be installed separately on the user’s machine.
+The build also copies `Objects` next to that exe, without `Objects/Private`. The app reads the library from that folder. Blender must still be installed separately.
 
 > Cross-building Windows installers from Linux often needs Wine and extra electron-builder setup. Prefer building `build:desktop:win` **on Windows**.
 
@@ -86,7 +119,6 @@ The library shows **Objects → grindable → bench**, and **short metal bench**
 
 1. Export the `.blend` (desktop save dialog or browser download)
 2. Open it in **ReSkate Studio**
-3. Run `reskate_cli compile-map <SkateFolder> <map.blend> <packageDir>`
 
 Real Skate meshes are not included. Replace placeholders in Blender before shipping a mod if you need game-accurate art.
 
