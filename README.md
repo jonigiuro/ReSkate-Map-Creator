@@ -78,10 +78,10 @@ npm run build:desktop
 
 # Windows (run on a Windows machine)
 npm run build:desktop:win
-# → release/ReSkate Map Creator-0.2.2.exe
+# → release/win-unpacked/ReSkate Map Creator.exe
 ```
 
-The build also copies `Objects` next to that exe, without `Objects/Private`. The app reads the library from that folder. Blender must still be installed separately.
+The build copies `Objects` next to that exe, without `Objects/Private`. Zip the `win-unpacked` folder to ship it. The app is not a self-extracting exe: those unpack into a temp folder on every launch, which is slow and is what antivirus tools flag. The exe is still unsigned, so Avast can warn anyway. Blender must still be installed separately.
 
 > Cross-building Windows installers from Linux often needs Wine and extra electron-builder setup. Prefer building `build:desktop:win` **on Windows**.
 

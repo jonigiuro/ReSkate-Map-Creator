@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ReSkate Map Creator</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #0e1013;
+        color: #e8e4dc;
+        font-family: "Segoe UI", sans-serif;
+        user-select: none;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+      }
+
+      .card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        text-align: center;
+      }
+
+      h1 {
+        margin: 0;
+        font-family: "Arial Narrow", "Segoe UI", sans-serif;
+        font-weight: 700;
+        font-size: 28px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        line-height: 1;
+      }
+
+      p {
+        margin: 0;
+        color: #9aa3ad;
+        font-size: 14px;
+      }
+
+      .spin {
+        width: 28px;
+        height: 28px;
+        border: 3px solid #2a313b;
+        border-top-color: #e8952a;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .spin {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <svg width="64" height="64" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+        <rect width="64" height="64" rx="8" fill="#171a1f" />
+        <path
+          d="M10 42 L28 18 L36 28 L54 14"
+          stroke="#e8952a"
+          stroke-width="5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+        <circle cx="18" cy="48" r="4" fill="#e8e4dc" />
+        <circle cx="46" cy="48" r="4" fill="#e8e4dc" />
+      </svg>
+      <div class="spin"></div>
+      <h1>ReSkate Map Creator</h1>
+      <p>Loading…</p>
+    </div>
+  </body>
+</html>

@@ -143,10 +143,44 @@ async function askForBlender(win) {
 /** @type {BrowserWindow | null} */
 let mainWindow = null
 
+function createSplash() {
+  const splash = new BrowserWindow({
+    width: 420,
+    height: 300,
+    frame: false,
+    resizable: false,
+    movable: true,
+    center: true,
+    show: false,
+    backgroundColor: '#0e1013',
+    title: 'ReSkate Map Creator',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+  splash.loadFile(path.join(__dirname, 'splash.html'))
+  splash.once('ready-to-show', () => {
+    if (!splash.isDestroyed()) splash.show()
+  })
+  return splash
+}
+
+function revealMain(splash) {
+  if (splash && !splash.isDestroyed()) splash.close()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show()
+    mainWindow.focus()
+  }
+}
+
 async function createWindow() {
   Menu.setApplicationMenu(null)
+  const splash = createSplash()
   mainWindow = new BrowserWindow({
     autoHideMenuBar: true,
+    show: false,
     width: 1440,
     height: 900,
     minWidth: 1100,
@@ -168,17 +202,28 @@ async function createWindow() {
     return { action: 'deny' }
   })
 
-  if (isDev) {
-    await mainWindow.loadURL(DEV_URL)
-  } else {
-    await mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
+  mainWindow.once('ready-to-show', () => revealMain(splash))
+
+  try {
+    if (isDev) {
+      await mainWindow.loadURL(DEV_URL)
+    } else {
+      await mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
+    }
+  } catch (err) {
+    revealMain(splash)
+    throw err
   }
+
+  if (!mainWindow.isVisible()) revealMain(splash)
 
   let status = await resolveBlender()
   if (!status.ok) {
     status = await askForBlender(mainWindow)
   }
-  mainWindow.webContents.send('blender:status', status)
+  if (!mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('blender:status', status)
+  }
 }
 
 function registerIpc() {
