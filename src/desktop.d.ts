@@ -29,6 +29,7 @@ export type ReskateDesktopApi = {
   openJson: () => Promise<DesktopSaveResult>
   onBlenderStatus: (callback: (status: BlenderStatus) => void) => () => void
   onExportWorking: (callback: () => void) => () => void
+  onHistoryCommand: (callback: (key: 'z' | 'y') => void) => () => void
 }
 
 declare global {

@@ -60,6 +60,8 @@ type Props = {
   assetRevisions: Record<string, number>
   onSelect: (id: string | null) => void
   onPatchObject: (id: string, patch: Partial<SceneObject>) => void
+  onTransformStart: () => void
+  onTransformEnd: () => void
   onGroundClick: (point: THREE.Vector3) => void
   onPlacePiece: (id: string, point: THREE.Vector3) => void
   onRotatePiece: () => void
@@ -170,6 +172,8 @@ function TransformGizmo({
   mode,
   snap,
   onCommit,
+  onGestureStart,
+  onGestureEnd,
 }: {
   target: RefObject<THREE.Group | null>
   dragging: RefObject<boolean>
@@ -180,6 +184,8 @@ function TransformGizmo({
     rot: [number, number, number],
     scale: [number, number, number],
   ) => void
+  onGestureStart: () => void
+  onGestureEnd: () => void
 }) {
   const controlsRef = useRef<GizmoControls | null>(null)
   const gl = useThree((s) => s.gl)
@@ -240,11 +246,13 @@ function TransformGizmo({
       scaleSnap={snap.scale}
       onMouseDown={() => {
         dragging.current = true
+        onGestureStart()
       }}
       onObjectChange={commit}
       onMouseUp={() => {
         dragging.current = false
         commit()
+        onGestureEnd()
       }}
     />
   )
@@ -263,6 +271,8 @@ function MeshItem({
   assetRevision,
   onSelect,
   onCommit,
+  onGestureStart,
+  onGestureEnd,
 }: {
   obj: MeshObject
   selected: boolean
@@ -276,6 +286,8 @@ function MeshItem({
     rot: [number, number, number],
     scale: [number, number, number],
   ) => void
+  onGestureStart: () => void
+  onGestureEnd: () => void
 }) {
   const ref = useRef<THREE.Group>(null)
   const dragging = useRef(false)
@@ -312,6 +324,8 @@ function MeshItem({
           mode={transformMode}
           snap={snap}
           onCommit={onCommit}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
         />
       )}
     </>
@@ -374,6 +388,8 @@ function SpawnItem({
   snap,
   onSelect,
   onCommit,
+  onGestureStart,
+  onGestureEnd,
 }: {
   obj: SpawnObject
   selected: boolean
@@ -382,6 +398,8 @@ function SpawnItem({
   snap: SnapSettings
   onSelect: () => void
   onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
+  onGestureStart: () => void
+  onGestureEnd: () => void
 }) {
   const ref = useRef<THREE.Group>(null)
   const dragging = useRef(false)
@@ -416,6 +434,8 @@ function SpawnItem({
           mode={mode}
           snap={snap}
           onCommit={(pos, rot) => onCommit(pos, rot)}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
         />
       )}
     </>
@@ -717,6 +737,8 @@ function SceneContents(props: Props) {
     assetRevisions,
     onSelect,
     onPatchObject,
+    onTransformStart,
+    onTransformEnd,
     onGroundClick,
     onPlacePiece,
     onRotatePiece,
@@ -767,6 +789,8 @@ function SceneContents(props: Props) {
               onCommit={(pos, rot, scale) => {
                 onPatchObject(obj.id, { position: pos, rotation: rot, scale })
               }}
+              onGestureStart={onTransformStart}
+              onGestureEnd={onTransformEnd}
             />
           )
         }
@@ -783,6 +807,8 @@ function SceneContents(props: Props) {
             onCommit={(pos, rot) => {
               onPatchObject(obj.id, { position: pos, rotation: rot })
             }}
+            onGestureStart={onTransformStart}
+            onGestureEnd={onTransformEnd}
           />
         )
       })}

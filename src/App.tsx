@@ -12,6 +12,7 @@ import { createDefaultScene, createNewScene } from './lib/defaultScene'
 import { uid } from './lib/ids'
 import { getPiece } from './lib/library'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
+import { useSceneHistory } from './lib/sceneHistory'
 import type {
   MapScene,
   MeshObject,
@@ -22,6 +23,7 @@ import './App.css'
 export default function App() {
   const [scene, setScene] = useState<MapScene>(() => createDefaultScene())
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const history = useSceneHistory(scene, selectedId)
   const [tool, setTool] = useState<EditorTool>('select')
   const [catalog, setCatalog] = useState<AssetCatalog>(EMPTY_CATALOG)
   const [categoryPath, setCategoryPath] = useState<string[]>([])
@@ -115,6 +117,9 @@ export default function App() {
   const saveSceneRef = useRef<(saveAs: boolean) => void>(() => {})
   const openSceneRef = useRef<() => void>(() => {})
   const deleteSelectedRef = useRef<() => void>(() => {})
+  const undoRef = useRef<() => void>(() => {})
+  const redoRef = useRef<() => void>(() => {})
+  const lastHistoryAt = useRef(0)
 
   const counts = useMemo(() => {
     const mesh = scene.objects.filter((o) => o.kind === 'mesh').length
@@ -122,29 +127,84 @@ export default function App() {
     return { mesh, spawn }
   }, [scene])
 
-  function patchObject(id: string, patch: Partial<SceneObject>) {
-    setScene((prev) => ({
+  function applyScene(next: MapScene) {
+    history.sceneRef.current = next
+    setScene(next)
+  }
+
+  function patchObject(
+    id: string,
+    patch: Partial<SceneObject>,
+    mode: 'step' | 'gesture' = 'step',
+  ) {
+    if (mode === 'gesture') history.beginGesture()
+    const before = mode === 'step' ? history.checkpoint() : null
+    const prev = history.sceneRef.current
+    applyScene({
       ...prev,
       objects: prev.objects.map((o) =>
         o.id === id ? ({ ...o, ...patch } as SceneObject) : o,
       ),
-    }))
+    })
+    if (before) history.remember(before)
   }
 
   function deleteSelected() {
-    if (!selectedId) return
-    const obj = scene.objects.find((o) => o.id === selectedId)
+    const id = history.selectedRef.current
+    if (!id) return
+    const obj = history.sceneRef.current.objects.find((o) => o.id === id)
     if (obj?.kind === 'spawn') {
       setError('Spawn is required for Studio maps — move it instead of deleting.')
       return
     }
-    setScene((prev) => ({
-      ...prev,
-      objects: prev.objects.filter((o) => o.id !== selectedId),
-    }))
+    const before = history.checkpoint()
+    applyScene({
+      ...history.sceneRef.current,
+      objects: history.sceneRef.current.objects.filter((o) => o.id !== id),
+    })
+    history.selectedRef.current = null
     setSelectedId(null)
+    history.remember(before)
     setError(null)
   }
+
+  function undo() {
+    const previous = history.undo()
+    if (!previous) {
+      setStatus('Nothing to undo')
+      return
+    }
+    history.sceneRef.current = previous.scene
+    history.selectedRef.current = previous.selectedId
+    setScene(previous.scene)
+    setSelectedId(previous.selectedId)
+    setError(null)
+    setStatus('Undone')
+  }
+
+  function redo() {
+    const next = history.redo()
+    if (!next) {
+      setStatus('Nothing to redo')
+      return
+    }
+    history.sceneRef.current = next.scene
+    history.selectedRef.current = next.selectedId
+    setScene(next.scene)
+    setSelectedId(next.selectedId)
+    setError(null)
+    setStatus('Redone')
+  }
+
+  function runHistory(command: 'undo' | 'redo') {
+    const now = performance.now()
+    if (now - lastHistoryAt.current < 20) return
+    lastHistoryAt.current = now
+    if (command === 'undo') undo()
+    else redo()
+  }
+  undoRef.current = () => runHistory('undo')
+  redoRef.current = () => runHistory('redo')
   deleteSelectedRef.current = deleteSelected
 
   useEffect(() => {
@@ -167,6 +227,19 @@ export default function App() {
           target.tagName === 'TEXTAREA' ||
           target.tagName === 'SELECT' ||
           target.isContentEditable)
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+        const key = event.key.toLowerCase()
+        if (key === 'z' || key === '\u001a') {
+          event.preventDefault()
+          undoRef.current()
+          return
+        }
+        if (key === 'y') {
+          event.preventDefault()
+          redoRef.current()
+          return
+        }
+      }
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && !typing) {
         const key = event.key.toLowerCase()
         if (key === 'c') {
@@ -200,11 +273,15 @@ export default function App() {
           const shift = clip.copies
           const src = clip.source
           const id = uid(src.kind)
-          setScene((prev) => ({
+          const before = history.checkpoint()
+          const prev = history.sceneRef.current
+          applyScene({
             ...prev,
             objects: [...prev.objects, duplicateObject(src, id, shift, prev.objects)],
-          }))
+          })
+          history.selectedRef.current = id
           setSelectedId(id)
+          history.remember(before)
           setTool('select')
           setError(null)
           setStatus(`Pasted ${src.name}`)
@@ -229,8 +306,18 @@ export default function App() {
       if (key === 'e') setTransformMode('scale')
       if (key === 'r') setTransformMode('rotate')
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
+
+  useEffect(() => {
+    const desktop = window.reskateDesktop
+    if (!desktop?.onHistoryCommand) return
+    return desktop.onHistoryCommand((key) => {
+      if (exportingRef.current || exportDialogRef.current) return
+      if (key === 'y') redoRef.current()
+      else undoRef.current()
+    })
   }, [])
 
   function placePiece(libraryId: string, point: THREE.Vector3) {
@@ -239,25 +326,26 @@ export default function App() {
     const label = authored?.label ?? builtin?.label ?? libraryId
     const y = point.y < 0.02 ? 0 : point.y
     const id = uid('mesh')
-    setScene((prev) => {
-      const obj: MeshObject = {
-        id,
-        kind: 'mesh',
-        libraryId,
-        assetFile: authored?.assetFile,
-        name: `${label.replace(/\s+/g, '_')}_${prev.objects.filter((o) => o.kind === 'mesh').length + 1}`,
-        position: [round4(point.x), round4(y), round4(point.z)],
-        rotation: [0, placeYaw, 0],
-        scale: [1, 1, 1],
-        sk8: {
-          ...(builtin?.defaultSk8 ?? {
-            collision_mode: 'triangle_mesh',
-            hide_from_pause_map: false,
-          }),
-        },
-      }
-      return { ...prev, objects: [...prev.objects, obj] }
-    })
+    const before = history.checkpoint()
+    const prev = history.sceneRef.current
+    const obj: MeshObject = {
+      id,
+      kind: 'mesh',
+      libraryId,
+      assetFile: authored?.assetFile,
+      name: `${label.replace(/\s+/g, '_')}_${prev.objects.filter((o) => o.kind === 'mesh').length + 1}`,
+      position: [round4(point.x), round4(y), round4(point.z)],
+      rotation: [0, placeYaw, 0],
+      scale: [1, 1, 1],
+      sk8: {
+        ...(builtin?.defaultSk8 ?? {
+          collision_mode: 'triangle_mesh',
+          hide_from_pause_map: false,
+        }),
+      },
+    }
+    applyScene({ ...prev, objects: [...prev.objects, obj] })
+    history.remember(before)
     setStatus(`Placed ${label}`)
     setError(null)
   }
@@ -372,6 +460,8 @@ export default function App() {
   }
 
   function adoptScene(next: MapScene, path: string | null) {
+    history.clear()
+    history.sceneRef.current = next
     setScene(next)
     setScenePath(path)
     const spawn = next.objects.find((obj) => obj.kind === 'spawn')
@@ -775,7 +865,9 @@ export default function App() {
               if (activePiece) return
               setSelectedId(id)
             }}
-            onPatchObject={patchObject}
+            onPatchObject={(id, patch) => patchObject(id, patch, 'gesture')}
+            onTransformStart={() => history.beginGesture()}
+            onTransformEnd={() => history.finishGesture()}
             onPlacePiece={placePiece}
           />
 
@@ -788,7 +880,8 @@ export default function App() {
             {tool === 'select' && (
               <span>
                 Click to select. Right-drag orbits, middle-drag pans. C frames the selection. Ctrl+C
-                copies, Ctrl+V pastes. Delete removes. Right-click turns a held piece 90°.
+                copies, Ctrl+V pastes. Ctrl+Z undoes, Ctrl+Y redoes. Delete removes. Right-click
+                turns a held piece 90°.
               </span>
             )}
           </div>
@@ -1099,8 +1192,11 @@ function VecRow({
       let changed = false
       const next: [string, string, string] = [...prev]
       for (let i = 0; i < 3; i += 1) {
-        if (focus.current[i]) continue
         const formatted = formatNum(values[i])
+        if (focus.current[i]) {
+          const typed = Number(prev[i])
+          if (prev[i].trim() !== '' && Number.isFinite(typed) && typed === values[i]) continue
+        }
         if (next[i] !== formatted) {
           next[i] = formatted
           changed = true

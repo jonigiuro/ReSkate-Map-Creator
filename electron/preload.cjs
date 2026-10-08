@@ -20,4 +20,9 @@ contextBridge.exposeInMainWorld('reskateDesktop', {
     ipcRenderer.on('blend:working', handler)
     return () => ipcRenderer.removeListener('blend:working', handler)
   },
+  onHistoryCommand: (callback) => {
+    const handler = (_event, key) => callback(key)
+    ipcRenderer.on('history:command', handler)
+    return () => ipcRenderer.removeListener('history:command', handler)
+  },
 })

@@ -197,6 +197,18 @@ async function createWindow() {
 
   mainWindow.setMenu(null)
 
+  // Ctrl+Z / Ctrl+Y are editing commands. Catch them before the page or a
+  // hidden menu accelerator can drop the keydown.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    if (!input.control || input.alt || input.meta || input.shift) return
+    const key = input.key.toLowerCase()
+    const command = key === 'z' || key === '\u001a' ? 'z' : key === 'y' ? 'y' : null
+    if (!command) return
+    event.preventDefault()
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('history:command', command)
+  })
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
