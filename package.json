@@ -1,7 +1,7 @@
 {
   "name": "reskate-map-creator",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "ReSkate Map Creator — place kit pieces and export Studio-oriented .blend files",
   "author": "ReSkate Map Creator",
   "type": "module",
