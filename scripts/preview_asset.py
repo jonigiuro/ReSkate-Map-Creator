@@ -7,8 +7,12 @@ import sys
 from pathlib import Path
 
 import addon_utils
+import bmesh
 import bpy
 from mathutils import Vector
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sk8_materials import ensure_sk8_material, material_invisible
 
 
 def argv_after_double_dash():
@@ -25,6 +29,44 @@ def drop_non_geometry():
     for obj in list(bpy.data.objects):
         if obj.type in {"CAMERA", "LIGHT", "SPEAKER"}:
             bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def drop_invisible_collision():
+    """Leave collision-only faces out of the editor preview. The source .blend is not saved."""
+    removed = 0
+    for obj in list(bpy.data.objects):
+        if obj.type != "MESH" or obj.data is None:
+            continue
+        mesh = obj.data
+        invisible = {
+            index
+            for index, slot in enumerate(mesh.materials)
+            if material_invisible(slot)
+        }
+        if not invisible:
+            continue
+        if mesh.users > 1:
+            mesh = mesh.copy()
+            obj.data = mesh
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        faces = [face for face in bm.faces if face.material_index in invisible]
+        if not faces:
+            bm.free()
+            continue
+        if len(faces) == len(bm.faces):
+            bm.free()
+            bpy.data.objects.remove(obj, do_unlink=True)
+            removed += 1
+            continue
+        bmesh.ops.delete(bm, geom=faces, context="FACES")
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+        removed += 1
+    if removed:
+        label = "part" if removed == 1 else "parts"
+        print(f"Hid {removed} collision-only {label} from the preview")
 
 
 def curves_to_mesh():
@@ -156,8 +198,10 @@ def main():
     meta_path = Path(args[2]).resolve()
     meta_path.parent.mkdir(parents=True, exist_ok=True)
 
+    ensure_sk8_material()
     load_source(source)
     drop_non_geometry()
+    drop_invisible_collision()
     curves_to_mesh()
     bpy.context.view_layer.update()
     bounds = three_bounds()

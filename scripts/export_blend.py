@@ -18,6 +18,9 @@ from pathlib import Path
 import bpy
 from mathutils import Matrix, Vector
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sk8_materials import ensure_sk8_material, material_share_token
+
 
 GRIND_SURFACES = {
     "material_37225248": "Concrete",
@@ -62,16 +65,12 @@ def cell_key(cell):
     return ",".join(str(int(v)) for v in cell)
 
 
-def material_base_name(name):
-    return re.sub(r"\.\d+$", "", name)
-
-
 def tag_imported_materials(before, source_id):
     """Mark materials just appended from one asset so later copies can share them."""
     for mat in bpy.data.materials:
         if mat in before or "reskate_mat_key" in mat.keys():
             continue
-        mat["reskate_mat_key"] = f"{source_id}|{material_base_name(mat.name)}"
+        mat["reskate_mat_key"] = f"{source_id}|{material_share_token(mat)}"
 
 
 def share_duplicate_materials(collapse=True):
@@ -865,6 +864,8 @@ def apply_transform(obj, position, rotation, scale):
 
 def build(scene):
     apply_export_options(scene)
+    # Before any library .blend is read, so Invisible (Collision Only) is restored.
+    ensure_sk8_material()
     disable_undo()
     clear_scene()
     colls = ensure_collections()

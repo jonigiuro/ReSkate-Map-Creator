@@ -68,6 +68,10 @@
         "to": "scripts/preview_asset.py"
       },
       {
+        "from": "scripts/sk8_materials.py",
+        "to": "scripts/sk8_materials.py"
+      },
+      {
         "from": "public/img/textures/asphalt",
         "to": "public/img/textures/asphalt"
       }

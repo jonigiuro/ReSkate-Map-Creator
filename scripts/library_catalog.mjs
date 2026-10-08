@@ -222,6 +222,9 @@ export function resolveLibraryBlender() {
   return blenderPromise
 }
 
+// Bump when the preview mesh changes for the same source file.
+const PREVIEW_PIPELINE = 3
+
 function cacheDirFor(projectRoot, assetFile) {
   const hash = createHash('sha1').update(assetFile).digest('hex').slice(0, 16)
   return path.join(projectRoot, '.cache', 'library', hash)
@@ -239,7 +242,7 @@ async function buildPreview({ projectRoot, assetFile, blenderPath, scriptPath })
     const meta = JSON.parse(await readFile(metaPath, 'utf8'))
     await access(glbPath)
     await access(pngPath)
-    if (meta.revision === revision) return glbPath
+    if (meta.revision === revision && meta.pipeline === PREVIEW_PIPELINE) return glbPath
   } catch {
     // cache miss, or an older preview that never rendered a thumbnail
   }
@@ -252,11 +255,14 @@ async function buildPreview({ projectRoot, assetFile, blenderPath, scriptPath })
   }
 
   await mkdir(dir, { recursive: true })
-  await runBlender(
+  const started = Date.now()
+  const rendered = await runBlender(
     blender,
     [
       '--background',
       '--factory-startup',
+      '--python-exit-code',
+      '1',
       '--python',
       scriptPath,
       '--',
@@ -266,8 +272,16 @@ async function buildPreview({ projectRoot, assetFile, blenderPath, scriptPath })
     ],
     projectRoot,
   )
+  const glbStat = await stat(glbPath)
+  const log = `${rendered?.stderr || ''}\n${rendered?.stdout || ''}`
+  if (glbStat.mtimeMs < started - 1000 || log.includes('Traceback')) {
+    throw new Error(
+      `Blender did not rebuild the preview.${log.trim() ? `\n${log.trim()}` : ''}`,
+    )
+  }
   const written = JSON.parse(await readFile(metaPath, 'utf8'))
   written.revision = revision
+  written.pipeline = PREVIEW_PIPELINE
   await writeFile(metaPath, JSON.stringify(written), 'utf8')
   return glbPath
 }
