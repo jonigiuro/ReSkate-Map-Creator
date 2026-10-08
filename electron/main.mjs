@@ -390,5 +390,11 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform === 'darwin') return
+  // app.quit() can return while this process is still alive on Windows, and
+  // the exe stays locked so the folder cannot be deleted.
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.destroy()
+  }
+  app.exit(0)
 })
