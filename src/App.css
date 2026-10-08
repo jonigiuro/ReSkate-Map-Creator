@@ -26,6 +26,13 @@
   font-family: var(--font-body);
 }
 
+.app-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .topbar {
   position: relative;
   z-index: 40;
@@ -656,5 +663,121 @@ button.ghost.danger {
 
   .viewport {
     min-height: 360px;
+  }
+}
+
+.export-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 8, 10, 0.62);
+}
+
+.export-dialog {
+  width: min(26rem, calc(100vw - 2rem));
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.1rem 1.15rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.export-dialog h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.export-dialog .hint {
+  margin: 0;
+}
+
+.export-dialog .hint.warn {
+  color: #f0b4a8;
+}
+
+.export-dialog .actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.export-dialog input[type='number'] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.export-dialog input[type='number']:disabled {
+  opacity: 0.45;
+}
+
+.export-dialog button.primary:disabled {
+  cursor: not-allowed;
+}
+
+.export-busy {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 8, 10, 0.72);
+  cursor: wait;
+}
+
+.export-busy-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(24rem, calc(100vw - 2rem));
+  padding: 1.4rem 1.5rem 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.export-busy-card strong {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.export-busy-card .hint {
+  margin: 0;
+}
+
+.export-spinner {
+  width: 2rem;
+  height: 2rem;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: export-spin 0.8s linear infinite;
+}
+
+@keyframes export-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .export-spinner {
+    animation: none;
   }
 }

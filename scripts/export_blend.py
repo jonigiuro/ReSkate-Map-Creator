@@ -35,6 +35,21 @@ EXPORT_UP_M = 200.0
 # Same piece type inside one cell becomes a single mesh. Other cells stay
 # separate so the game can still skip them when they are off camera.
 JOIN_CELL_M = 20.0
+EXPORT_OPTIMIZE = True
+
+
+def apply_export_options(scene):
+    """Chunk size and the Studio optimization come from the export dialog."""
+    global JOIN_CELL_M, EXPORT_OPTIMIZE
+    EXPORT_OPTIMIZE = bool(scene.get("exportOptimize", True))
+    raw = scene.get("exportChunkM", 20)
+    try:
+        size = float(raw)
+    except (TypeError, ValueError):
+        size = 20.0
+    if not math.isfinite(size) or size <= 0:
+        size = 20.0
+    JOIN_CELL_M = size
 
 
 def placement_cell(position):
@@ -45,6 +60,87 @@ def placement_cell(position):
 
 def cell_key(cell):
     return ",".join(str(int(v)) for v in cell)
+
+
+def material_base_name(name):
+    return re.sub(r"\.\d+$", "", name)
+
+
+def tag_imported_materials(before, source_id):
+    """Mark materials just appended from one asset so later copies can share them."""
+    for mat in bpy.data.materials:
+        if mat in before or "reskate_mat_key" in mat.keys():
+            continue
+        mat["reskate_mat_key"] = f"{source_id}|{material_base_name(mat.name)}"
+
+
+def share_duplicate_materials():
+    """Point every copy of the same asset material at one datablock."""
+    groups = {}
+    for mat in bpy.data.materials:
+        key = mat.get("reskate_mat_key")
+        if not key:
+            continue
+        groups.setdefault(str(key), []).append(mat)
+
+    shared = 0
+    for mats in groups.values():
+        if len(mats) < 2:
+            continue
+        mats.sort(key=lambda mat: (len(mat.name), mat.name))
+        keep = mats[0]
+        dupes = set(mats[1:])
+        for obj in bpy.data.objects:
+            if obj.type != "MESH":
+                continue
+            for slot in obj.material_slots:
+                if slot.material in dupes:
+                    slot.material = keep
+                    shared += 1
+        for mat in dupes:
+            mat.use_fake_user = False
+        for mesh in bpy.data.meshes:
+            for index, slot in enumerate(mesh.materials):
+                if slot in dupes:
+                    mesh.materials[index] = keep
+        for mat in dupes:
+            if mat.users == 0:
+                bpy.data.materials.remove(mat)
+                shared += 1
+
+    for obj in bpy.data.objects:
+        if obj.type == "MESH":
+            collapse_material_slots(obj)
+
+    for image in list(bpy.data.images):
+        image.use_fake_user = False
+        if image.users == 0:
+            bpy.data.images.remove(image)
+
+    if shared:
+        print(f"Shared duplicate materials ({len(bpy.data.materials)} materials left)")
+
+
+def collapse_material_slots(obj):
+    """Drop repeated slots that already point at the same material."""
+    mesh = obj.data
+    if len(mesh.materials) < 2:
+        return
+    remap = {}
+    kept = []
+    for index, mat in enumerate(mesh.materials):
+        if mat in kept:
+            remap[index] = kept.index(mat)
+        else:
+            remap[index] = len(kept)
+            kept.append(mat)
+    if len(kept) == len(mesh.materials):
+        return
+    for poly in mesh.polygons:
+        poly.material_index = remap.get(poly.material_index, 0)
+    mesh.materials.clear()
+    for mat in kept:
+        mesh.materials.append(mat)
 
 
 def part_name(obj):
@@ -67,7 +163,7 @@ def collision_signature(obj):
 
 
 def join_same_pieces():
-    """Join copies of one piece that share a 20 m cell. Spawn and grind curves stay."""
+    """Join copies of one piece that share a cell. Spawn and grind curves stay."""
     groups = {}
     for obj in list(bpy.data.objects):
         if obj.type != "MESH" or "reskate_join_piece" not in obj.keys():
@@ -195,6 +291,7 @@ def link_only(obj, coll):
 
 def placeholder_material(name, color):
     mat = bpy.data.materials.new(name=name)
+    mat["reskate_mat_key"] = f"kit|{name}"
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     bsdf = nodes.get("Principled BSDF")
@@ -647,6 +744,7 @@ def append_authored_asset(name, blend_path, position, rotation, scale, colls):
 
     before_objects = set(bpy.data.objects)
     before_images = set(bpy.data.images)
+    before_materials = set(bpy.data.materials)
     suffix = blend_path.suffix.lower()
     if suffix == ".blend":
         with bpy.data.libraries.load(str(blend_path), link=False) as (data_from, data_to):
@@ -664,6 +762,8 @@ def append_authored_asset(name, blend_path, position, rotation, scale, colls):
                 bpy.data.objects.remove(obj, do_unlink=True)
     else:
         raise RuntimeError(f"Unsupported asset type: {blend_path}")
+
+    tag_imported_materials(before_materials, blend_path.as_posix())
 
     imported = [obj for obj in bpy.data.objects if obj not in before_objects]
     dropped = [obj for obj in imported if obj.type not in KEEP_TYPES]
@@ -734,6 +834,7 @@ def apply_transform(obj, position, rotation, scale):
 
 
 def build(scene):
+    apply_export_options(scene)
     clear_scene()
     colls = ensure_collections()
 
@@ -795,7 +896,9 @@ def build(scene):
             )
             link_only(obj, colls["Markers"])
 
-    join_same_pieces()
+    if EXPORT_OPTIMIZE:
+        share_duplicate_materials()
+        join_same_pieces()
 
     # Unit scale: metres (Blender default)
     bpy.context.scene.unit_settings.system = "METRIC"

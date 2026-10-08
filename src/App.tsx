@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { flushSync } from 'react-dom'
 import * as THREE from 'three'
 import { Viewport, type EditorTool, type TransformMode } from './components/Viewport'
 import {
@@ -34,6 +35,9 @@ export default function App() {
   const [snapScaleSize, setSnapScaleSize] = useState('1.1')
   const [snapRotateSize, setSnapRotateSize] = useState('45')
   const [exporting, setExporting] = useState(false)
+  const [exportDialogOpen, setExportDialogOpen] = useState(false)
+  const [optimizeExport, setOptimizeExport] = useState(true)
+  const [chunkSize, setChunkSize] = useState('20')
   const [scenePath, setScenePath] = useState<string | null>(null)
   const [fileMenuOpen, setFileMenuOpen] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
@@ -103,6 +107,10 @@ export default function App() {
   selectedRef.current = selected
   const clipboardRef = useRef<{ source: SceneObject; copies: number } | null>(null)
   const fileMenuRef = useRef<HTMLDivElement>(null)
+  const exportDialogRef = useRef(false)
+  exportDialogRef.current = exportDialogOpen
+  const exportingRef = useRef(false)
+  exportingRef.current = exporting
   const fileInputRef = useRef<HTMLInputElement>(null)
   const saveSceneRef = useRef<(saveAs: boolean) => void>(() => {})
   const openSceneRef = useRef<() => void>(() => {})
@@ -141,6 +149,17 @@ export default function App() {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
+      if (exportingRef.current) {
+        event.preventDefault()
+        return
+      }
+      if (exportDialogRef.current) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setExportDialogOpen(false)
+        }
+        return
+      }
       const target = event.target
       const typing =
         target instanceof HTMLElement &&
@@ -269,16 +288,29 @@ export default function App() {
     }
   }
 
+  function requestExport() {
+    setExportDialogOpen(true)
+  }
+
   async function exportBlend() {
-    setExporting(true)
-    setError(null)
-    setStatus('Exporting .blend via Blender…')
+    const size = Number(chunkSize)
+    const chunkM = Number.isFinite(size) && size > 0 ? size : 20
+    const payload = {
+      ...scene,
+      exportOptimize: optimizeExport,
+      exportChunkM: chunkM,
+    }
+    flushSync(() => {
+      setExporting(true)
+      setError(null)
+      setStatus('Exporting .blend via Blender…')
+    })
     try {
       if (!counts.spawn) throw new Error('Scene needs a spawn empty.')
 
       const desktop = window.reskateDesktop
       if (desktop) {
-        const result = await desktop.exportBlend(scene)
+        const result = await desktop.exportBlend(payload)
         if (result.canceled) {
           setStatus('Export canceled')
           return
@@ -294,7 +326,7 @@ export default function App() {
       const res = await fetch('/api/export-blend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(scene),
+        body: JSON.stringify(payload),
       })
       if (!res.ok) {
         const data = (await res.json().catch(() => null)) as { error?: string } | null
@@ -461,7 +493,8 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className="app" aria-busy={exporting}>
+      <div className="app-shell" inert={exporting}>
       <header className="topbar">
         <div className="brand-block">
           <div className="file-row">
@@ -536,7 +569,7 @@ export default function App() {
           />
         </div>
         <div className="top-actions">
-          <button type="button" className="primary" disabled={exporting} onClick={() => void exportBlend()}>
+          <button type="button" className="primary" disabled={exporting} onClick={requestExport}>
             {exporting ? 'Exporting…' : 'Export .blend'}
           </button>
         </div>
@@ -849,6 +882,105 @@ export default function App() {
 
         </aside>
       </div>
+      </div>
+      {exporting && <ExportBusy />}
+      {exportDialogOpen && (
+        <ExportDialog
+          optimize={optimizeExport}
+          chunkSize={chunkSize}
+          onOptimize={setOptimizeExport}
+          onChunkSize={setChunkSize}
+          onCancel={() => setExportDialogOpen(false)}
+          onConfirm={() => {
+            setExportDialogOpen(false)
+            void exportBlend()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function ExportBusy() {
+  return (
+    <div className="export-busy" role="status" aria-live="polite" aria-busy="true">
+      <div className="export-busy-card">
+        <span className="export-spinner" aria-hidden="true" />
+        <strong id="export-busy-title">Exporting .blend</strong>
+        <p className="hint">Blender is building the map. The editor stays locked until it finishes.</p>
+      </div>
+    </div>
+  )
+}
+
+function ExportDialog({
+  optimize,
+  chunkSize,
+  onOptimize,
+  onChunkSize,
+  onCancel,
+  onConfirm,
+}: {
+  optimize: boolean
+  chunkSize: string
+  onOptimize: (value: boolean) => void
+  onChunkSize: (value: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const size = Number(chunkSize)
+  const chunkOk = Number.isFinite(size) && size > 0
+
+  return (
+    <div className="export-dialog-backdrop" onMouseDown={onCancel}>
+      <form
+        className="export-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-dialog-title"
+        onMouseDown={(event) => event.stopPropagation()}
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (optimize && !chunkOk) return
+          onConfirm()
+        }}
+      >
+        <h2 id="export-dialog-title">Export .blend</h2>
+        <p className="hint">
+          Optimization joins copies of the same piece inside each chunk and shares duplicate
+          materials. That is what keeps Studio’s build short. Turn it off to export every object
+          on its own.
+        </p>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={optimize}
+            onChange={(event) => onOptimize(event.target.checked)}
+          />
+          Optimize for Studio
+        </label>
+        <label>
+          Chunk size (m)
+          <input
+            type="number"
+            min="1"
+            step="1"
+            inputMode="numeric"
+            value={chunkSize}
+            disabled={!optimize}
+            onChange={(event) => onChunkSize(event.target.value)}
+          />
+        </label>
+        {optimize && !chunkOk && <p className="hint warn">Chunk size needs to be greater than 0.</p>}
+        <div className="actions">
+          <button type="button" className="ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={optimize && !chunkOk}>
+            Export
+          </button>
+        </div>
+      </form>
     </div>
   )
 }
