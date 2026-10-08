@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -30,6 +31,81 @@ GRIND_SURFACES = {
 # The game collides badly with a map sitting on the world origin. The editor
 # keeps showing ground level as 0. Export lifts every world position by this much.
 EXPORT_UP_M = 200.0
+
+# Same piece type inside one cell becomes a single mesh. Other cells stay
+# separate so the game can still skip them when they are off camera.
+JOIN_CELL_M = 20.0
+
+
+def placement_cell(position):
+    """Cell index from the placed pivot, in exported Blender metres."""
+    loc = three_to_blender_pos(position)
+    return tuple(math.floor(float(v) / JOIN_CELL_M) for v in loc)
+
+
+def cell_key(cell):
+    return ",".join(str(int(v)) for v in cell)
+
+
+def part_name(obj):
+    """Source object name, without Blender's .001 suffix on later copies."""
+    return re.sub(r"\.\d+$", "", obj.name)
+
+
+def tag_join_piece(obj, piece_id, cell, label, part):
+    if obj.type != "MESH":
+        return
+    obj["reskate_join_piece"] = str(piece_id)
+    obj["reskate_join_cell"] = cell_key(cell)
+    obj["reskate_join_label"] = str(label)
+    obj["reskate_join_part"] = str(part)
+
+
+def collision_signature(obj):
+    keys = sorted(key for key in obj.keys() if str(key).startswith("sk8_"))
+    return tuple((key, str(obj[key])) for key in keys)
+
+
+def join_same_pieces():
+    """Join copies of one piece that share a 20 m cell. Spawn and grind curves stay."""
+    groups = {}
+    for obj in list(bpy.data.objects):
+        if obj.type != "MESH" or "reskate_join_piece" not in obj.keys():
+            continue
+        sig = (
+            str(obj["reskate_join_piece"]),
+            str(obj["reskate_join_cell"]),
+            str(obj.get("reskate_join_part") or ""),
+            collision_signature(obj),
+        )
+        groups.setdefault(sig, []).append(obj)
+
+    if bpy.context.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+    joined = 0
+    for sig, objs in groups.items():
+        if len(objs) < 2:
+            continue
+        for obj in objs:
+            if obj.data.users > 1:
+                obj.data = obj.data.copy()
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in objs:
+            obj.select_set(True)
+        bpy.context.view_layer.objects.active = objs[0]
+        bpy.ops.object.convert(target="MESH")
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        bpy.ops.object.join()
+        result = bpy.context.view_layer.objects.active
+        label = str(objs[0].get("reskate_join_label") or result.name)
+        result.name = f"{label} [{sig[1]}]"
+        if sig[2] and sig[2] != label:
+            result.name = f"{label} {sig[2]} [{sig[1]}]"
+        joined += len(objs) - 1
+        print(f"Joined {len(objs)} '{label}' in cell {sig[1]} into {result.name}")
+    if joined:
+        print(f"Cell join removed {joined} objects")
 
 
 def three_to_blender_pos(p):
@@ -641,6 +717,9 @@ def append_authored_asset(name, blend_path, position, rotation, scale, colls):
         obj.parent = None
         obj.rotation_mode = "XYZ"
         obj.matrix_world = world
+    cell = placement_cell(position)
+    for obj, _world in baked:
+        tag_join_piece(obj, blend_path.as_posix(), cell, blend_path.stem, part_name(obj))
     bpy.data.objects.remove(root, do_unlink=True)
     pack_images_from(blend_path, before_images)
     print(f"Appended {blend_path.name} as {name} ({len(kept)} objects)")
@@ -688,13 +767,15 @@ def build(scene):
                 builder = LIBRARY_BUILDERS.get(lib) or LIBRARY_BUILDERS["flat_pad"]
                 obj = builder()
             obj.name = name
+            position = entry.get("position") or [0, 0, 0]
             apply_transform(
                 obj,
-                entry.get("position") or [0, 0, 0],
+                position,
                 entry.get("rotation") or [0, 0, 0],
                 entry.get("scale") or [1, 1, 1],
             )
             set_sk8_mesh_props(obj, entry.get("sk8"))
+            tag_join_piece(obj, lib, placement_cell(position), lib, lib)
             link_only(obj, colls["Map"])
 
         elif kind == "grind":
@@ -713,6 +794,8 @@ def build(scene):
                 entry.get("rotation") or [0, 0, 0],
             )
             link_only(obj, colls["Markers"])
+
+    join_same_pieces()
 
     # Unit scale: metres (Blender default)
     bpy.context.scene.unit_settings.system = "METRIC"
