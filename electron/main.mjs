@@ -6,7 +6,7 @@ import {
   Menu,
   shell,
 } from 'electron'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
@@ -297,6 +297,11 @@ function registerIpc() {
       blendPath += '.blend'
     }
 
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('blend:working')
+      await new Promise((resolve) => setTimeout(resolve, 80))
+    }
+
     try {
       const tmp = tempExportDir()
       await mkdir(tmp, { recursive: true })
@@ -312,13 +317,21 @@ function registerIpc() {
         'utf8',
       )
 
-      await runBlenderExport({
+      const exported = await runBlenderExport({
         blenderPath: blender.path,
         scriptPath: exportScriptPath(),
         scenePath,
         blendPath,
         cwd: installDir(),
       })
+
+      const info = await stat(blendPath).catch(() => null)
+      if (!info || info.size < 64) {
+        const log = `${exported?.stderr || ''}\n${exported?.stdout || ''}`.trim()
+        throw new Error(
+          `Blender finished without writing ${blendPath}.${log ? `\n${log}` : ''}`,
+        )
+      }
 
       return { ok: true, path: blendPath }
     } catch (err) {

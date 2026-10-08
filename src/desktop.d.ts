@@ -28,6 +28,7 @@ export type ReskateDesktopApi = {
   saveJson: (scene: unknown, filePath?: string) => Promise<DesktopSaveResult>
   openJson: () => Promise<DesktopSaveResult>
   onBlenderStatus: (callback: (status: BlenderStatus) => void) => () => void
+  onExportWorking: (callback: () => void) => () => void
 }
 
 declare global {

@@ -74,7 +74,7 @@ def tag_imported_materials(before, source_id):
         mat["reskate_mat_key"] = f"{source_id}|{material_base_name(mat.name)}"
 
 
-def share_duplicate_materials():
+def share_duplicate_materials(collapse=True):
     """Point every copy of the same asset material at one datablock."""
     groups = {}
     for mat in bpy.data.materials:
@@ -109,7 +109,7 @@ def share_duplicate_materials():
                 shared += 1
 
     for obj in bpy.data.objects:
-        if obj.type == "MESH":
+        if collapse and obj.type == "MESH":
             collapse_material_slots(obj)
 
     for image in list(bpy.data.images):
@@ -117,7 +117,7 @@ def share_duplicate_materials():
         if image.users == 0:
             bpy.data.images.remove(image)
 
-    if shared:
+    if shared and collapse:
         print(f"Shared duplicate materials ({len(bpy.data.materials)} materials left)")
 
 
@@ -162,6 +162,42 @@ def collision_signature(obj):
     return tuple((key, str(obj[key])) for key in keys)
 
 
+def disable_undo():
+    """Join keeps a full copy of the map for undo. That is what runs out of memory."""
+    try:
+        bpy.context.preferences.edit.use_global_undo = False
+    except Exception as exc:
+        print(f"Could not disable undo: {exc}")
+
+
+def purge_orphan_meshes():
+    for mesh in list(bpy.data.meshes):
+        if mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+
+
+def join_objects(objs):
+    """Join in small batches so a full cell is not duplicated in one operator."""
+    pending = [obj for obj in objs if obj.name in bpy.data.objects]
+    while len(pending) > 1:
+        batch = pending[:24]
+        pending = pending[24:]
+        for obj in batch:
+            if obj.data and obj.data.users > 1:
+                obj.data = obj.data.copy()
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in batch:
+            obj.select_set(True)
+        bpy.context.view_layer.objects.active = batch[0]
+        bpy.ops.object.convert(target="MESH")
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        bpy.ops.object.join()
+        result = bpy.context.view_layer.objects.active
+        purge_orphan_meshes()
+        pending.insert(0, result)
+    return pending[0] if pending else None
+
+
 def join_same_pieces():
     """Join copies of one piece that share a cell. Spawn and grind curves stay."""
     groups = {}
@@ -183,17 +219,9 @@ def join_same_pieces():
     for sig, objs in groups.items():
         if len(objs) < 2:
             continue
-        for obj in objs:
-            if obj.data.users > 1:
-                obj.data = obj.data.copy()
-        bpy.ops.object.select_all(action="DESELECT")
-        for obj in objs:
-            obj.select_set(True)
-        bpy.context.view_layer.objects.active = objs[0]
-        bpy.ops.object.convert(target="MESH")
-        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-        bpy.ops.object.join()
-        result = bpy.context.view_layer.objects.active
+        result = join_objects(objs)
+        if result is None:
+            continue
         label = str(objs[0].get("reskate_join_label") or result.name)
         result.name = f"{label} [{sig[1]}]"
         if sig[2] and sig[2] != label:
@@ -821,6 +849,8 @@ def append_authored_asset(name, blend_path, position, rotation, scale, colls):
     for obj, _world in baked:
         tag_join_piece(obj, blend_path.as_posix(), cell, blend_path.stem, part_name(obj))
     bpy.data.objects.remove(root, do_unlink=True)
+    if EXPORT_OPTIMIZE:
+        share_duplicate_materials(collapse=False)
     pack_images_from(blend_path, before_images)
     print(f"Appended {blend_path.name} as {name} ({len(kept)} objects)")
     return baked[0][0] if baked else kept[0]
@@ -835,6 +865,7 @@ def apply_transform(obj, position, rotation, scale):
 
 def build(scene):
     apply_export_options(scene)
+    disable_undo()
     clear_scene()
     colls = ensure_collections()
 
@@ -920,7 +951,9 @@ def main(argv):
     scene = json.loads(scene_path.read_text(encoding="utf-8"))
     build(scene)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    bpy.ops.wm.save_as_mainfile(filepath=str(out_path.resolve()))
+    result = bpy.ops.wm.save_as_mainfile(filepath=str(out_path.resolve()))
+    if "FINISHED" not in result:
+        raise RuntimeError(f"Blender did not save {out_path}: {set(result)}")
     print(f"Wrote {out_path}")
 
 

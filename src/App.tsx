@@ -293,6 +293,11 @@ export default function App() {
   }
 
   async function exportBlend() {
+    if (!counts.spawn) {
+      setError('Scene needs a spawn empty.')
+      setStatus(null)
+      return
+    }
     const size = Number(chunkSize)
     const chunkM = Number.isFinite(size) && size > 0 ? size : 20
     const payload = {
@@ -300,15 +305,22 @@ export default function App() {
       exportOptimize: optimizeExport,
       exportChunkM: chunkM,
     }
-    flushSync(() => {
-      setExporting(true)
-      setError(null)
-      setStatus('Exporting .blend via Blender…')
+    const desktop = window.reskateDesktop
+    const stopWatching = desktop?.onExportWorking(() => {
+      flushSync(() => {
+        setExporting(true)
+        setError(null)
+        setStatus('Exporting .blend via Blender…')
+      })
     })
+    if (!desktop) {
+      flushSync(() => {
+        setExporting(true)
+        setError(null)
+        setStatus('Exporting .blend via Blender…')
+      })
+    }
     try {
-      if (!counts.spawn) throw new Error('Scene needs a spawn empty.')
-
-      const desktop = window.reskateDesktop
       if (desktop) {
         const result = await desktop.exportBlend(payload)
         if (result.canceled) {
@@ -348,6 +360,7 @@ export default function App() {
         setBlenderOk(false)
       }
     } finally {
+      stopWatching?.()
       setExporting(false)
     }
   }

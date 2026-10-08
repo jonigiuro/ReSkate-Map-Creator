@@ -15,4 +15,9 @@ contextBridge.exposeInMainWorld('reskateDesktop', {
     ipcRenderer.on('blender:status', handler)
     return () => ipcRenderer.removeListener('blender:status', handler)
   },
+  onExportWorking: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on('blend:working', handler)
+    return () => ipcRenderer.removeListener('blend:working', handler)
+  },
 })

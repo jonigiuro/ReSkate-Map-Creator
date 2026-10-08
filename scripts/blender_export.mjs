@@ -82,11 +82,12 @@ export function runBlender(blenderPath, args, cwd) {
     const child = spawn(blenderPath, args, { cwd })
     let stderr = ''
     let stdout = ''
+    const keep = (prev, chunk) => (prev + chunk.toString()).slice(-12000)
     child.stdout.on('data', (d) => {
-      stdout += d.toString()
+      stdout = keep(stdout, d)
     })
     child.stderr.on('data', (d) => {
-      stderr += d.toString()
+      stderr = keep(stderr, d)
     })
     child.on('error', (err) => {
       reject(
@@ -96,15 +97,16 @@ export function runBlender(blenderPath, args, cwd) {
       )
     })
     child.on('close', (code) => {
+      const log = (stderr || stdout).trim()
       if (code === 0) {
         resolve({ stdout, stderr })
         return
       }
-      reject(
-        new Error(
-          `Blender failed (exit ${code}).\n${stderr || stdout}`.trim(),
-        ),
-      )
+      const killed = code == null || code < 0 || code > 255
+      const hint = killed
+        ? ' Blender stopped before it saved the map. On a large map that usually means it ran out of memory.'
+        : ''
+      reject(new Error(`Blender failed (exit ${code}).${hint}${log ? `\n${log}` : ''}`))
     })
   })
 }
@@ -118,7 +120,17 @@ export function runBlenderExport({
 }) {
   return runBlender(
     blenderPath,
-    ['--background', '--python', scriptPath, '--', scenePath, blendPath],
+    [
+      '--background',
+      '--factory-startup',
+      '--python-exit-code',
+      '1',
+      '--python',
+      scriptPath,
+      '--',
+      scenePath,
+      blendPath,
+    ],
     cwd,
   )
 }
