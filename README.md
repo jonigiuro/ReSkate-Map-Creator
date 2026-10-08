@@ -1,5 +1,7 @@
 # ReSkate Map Creator (MVP)
 
+Notice: converting bigger maps in reskate studio takes forever, I'm looking into it to understand if I can fix it in the map editor.
+
 An easy to use, vibe-coded, editor for people that don't want to learn blender just for mapping.
 It allows you to place some assets and export a blend file. After that you still have to rely on ReSkate to actually load and run the map.
 
