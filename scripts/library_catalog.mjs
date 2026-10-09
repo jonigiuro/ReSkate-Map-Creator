@@ -134,6 +134,8 @@ async function scanGeneratorKits(objectsDir, rootEntries) {
   }
   for (const child of children) {
     if (child.name.startsWith('.')) continue
+    // The bench kit stays out of the library until the run is reliable.
+    if (/bench/i.test(child.name)) continue
     if (child.isFile() && modelExt(child.name) === '.blend') {
       const assetFile = toPosix(`${LIBRARY_ROOT}/${folder.name}/${child.name}`)
       const fileStat = await stat(path.join(dir, child.name))

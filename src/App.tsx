@@ -29,6 +29,31 @@ import type {
 } from './types/scene'
 import './App.css'
 
+function MirrorHotkey({ onMirror }: { onMirror: () => void }) {
+  const onMirrorRef = useRef(onMirror)
+  onMirrorRef.current = onMirror
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.repeat) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.key.toLowerCase() !== 'm') return
+      const target = event.target
+      const typing =
+        target instanceof HTMLElement &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      if (typing) return
+      event.preventDefault()
+      onMirrorRef.current()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [])
+  return null
+}
+
 export default function App() {
   const [scene, setScene] = useState<MapScene>(() => createDefaultScene())
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -41,6 +66,7 @@ export default function App() {
   const [pins, setPins] = useState<[number, number, number][]>([])
   history.pinsRef.current = pins
   const [placeYaw, setPlaceYaw] = useState(0)
+  const [placeScaleX, setPlaceScaleX] = useState(1)
   const [transformMode, setTransformMode] = useState<TransformMode>('translate')
   const [snapMove, setSnapMove] = useState(false)
   const [snapScale, setSnapScale] = useState(false)
@@ -131,6 +157,7 @@ export default function App() {
   const deleteSelectedRef = useRef<() => void>(() => {})
   const undoRef = useRef<() => void>(() => {})
   const redoRef = useRef<() => void>(() => {})
+  const mirrorRef = useRef<() => void>(() => {})
   const lastHistoryAt = useRef(0)
 
   const counts = useMemo(() => {
@@ -227,6 +254,27 @@ export default function App() {
   undoRef.current = () => runHistory('undo')
   redoRef.current = () => runHistory('redo')
   deleteSelectedRef.current = deleteSelected
+
+  function mirrorHorizontal() {
+    if (exportingRef.current || exportDialogRef.current) return
+    if (activePiece) {
+      const next = placeScaleX < 0 ? 1 : -1
+      setPlaceScaleX(next)
+      setStatus(next < 0 ? 'Mirrored left to right' : 'Mirror off')
+      setError(null)
+      return
+    }
+    const obj = selectedRef.current
+    if (!obj || obj.kind !== 'mesh') {
+      setStatus('Mirror a mesh, or hold a piece from the library.')
+      return
+    }
+    const [x, y, z] = obj.scale
+    patchObject(obj.id, { scale: [-x, y, z] })
+    setStatus(`Mirrored ${obj.name}`)
+    setError(null)
+  }
+  mirrorRef.current = mirrorHorizontal
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -361,7 +409,7 @@ export default function App() {
       name: `${label.replace(/\s+/g, '_')}_${prev.objects.filter((o) => o.kind === 'mesh').length + 1}`,
       position: [round4(point.x), round4(y), round4(point.z)],
       rotation: [0, placeYaw, 0],
-      scale: [1, 1, 1],
+      scale: [placeScaleX, 1, 1],
       sk8: {
         ...(builtin?.defaultSk8 ?? {
           collision_mode: 'triangle_mesh',
@@ -386,6 +434,7 @@ export default function App() {
     clearPins()
     setActivePiece((current) => (current === id ? null : id))
     setPlaceYaw(0)
+    setPlaceScaleX(1)
     setSelectedId(null)
   }
 
@@ -780,6 +829,7 @@ export default function App() {
 
   return (
     <div className="app" aria-busy={exporting}>
+      <MirrorHotkey onMirror={() => mirrorRef.current()} />
       <div className="app-shell" inert={exporting}>
       <header className="topbar">
         <div className="brand-block">
@@ -886,10 +936,10 @@ export default function App() {
           <h2>Library</h2>
           <p className="hint">
             {categoryPath[0] === 'generators'
-              ? 'Click Curbs, or a kit from Objects/Generators. Name those blend objects with _start, _middle, and _end, and set them in a row. The first click drops a pin. Keep clicking to extend the run. Straight pieces stretch so they meet. A corner slants the two faces that meet. Escape leaves the tool.'
+              ? 'Click Curbs. The first click drops a pin. Keep clicking to extend the run. Escape leaves the tool.'
               : categoryPath.length === 0
                 ? 'Open a category, then click a piece. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
-                : 'Click a piece to pick it up. It follows the cursor. Right-click turns it 90°. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid; height stays on the surface under the cursor.'}
+                : 'Click a piece to pick it up. It follows the cursor. Right-click turns it 90°. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid; height stays on the surface under the cursor.'}
           </p>
           {categoryPath.length > 0 && (
             <>
@@ -1095,6 +1145,7 @@ export default function App() {
             placeAssetFile={active?.assetFile}
             placeAssetRevision={active?.revision ?? 0}
             placeYaw={placeYaw}
+            placeScaleX={placeScaleX}
             onRotatePiece={rotatePlacement}
             assetRevisions={assetRevisions}
             onSelect={(id) => {
@@ -1135,9 +1186,10 @@ export default function App() {
               </span>
             ) : tool === 'select' && (
               <span>
-                Click to select. Right-drag orbits, middle-drag pans. C frames the selection. Ctrl+C
-                copies, Ctrl+V pastes. Ctrl+Z undoes, Ctrl+Y redoes. Delete removes. Right-click
-                turns a held piece 90°.
+                Click to select. Right-drag orbits, middle-drag pans. C frames the selection. M
+                mirrors the selection, or a held piece, left to right. Ctrl+C copies, Ctrl+V
+                pastes. Ctrl+Z undoes, Ctrl+Y redoes. Delete removes. Right-click turns a held
+                piece 90°.
               </span>
             )}
           </div>

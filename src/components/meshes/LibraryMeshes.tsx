@@ -1,5 +1,5 @@
 import { useGLTF, useTexture } from '@react-three/drei'
-import { Component, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
 import { httpPreviewUrl } from '../../lib/assetLibrary'
 import { getPiece } from '../../lib/library'
@@ -369,15 +369,44 @@ export function LibraryMesh({
   assetRevision = 0,
   color,
   ghost,
+  mirrored = false,
 }: {
   libraryId: string
   assetFile?: string
   assetRevision?: number
   color?: string
   ghost?: boolean
+  /** Negative scale reverses triangle winding. Draw the outside, not the inside. */
+  mirrored?: boolean
 }) {
-  if (assetFile) {
-    return <AuthoredMesh assetFile={assetFile} revision={assetRevision} ghost={ghost} />
-  }
-  return <BuiltinMesh libraryId={libraryId} color={color} ghost={ghost} />
+  const ref = useRef<THREE.Group>(null)
+  useLayoutEffect(() => {
+    const root = ref.current
+    if (!root) return
+    root.traverse((node) => {
+      const mesh = node as THREE.Mesh
+      if (!mesh.isMesh || mesh.userData.selectionOutline) return
+      if (mirrored) {
+        mesh.onBeforeRender = (renderer) => {
+          const gl = renderer.getContext() as WebGLRenderingContext
+          gl.frontFace(gl.CW)
+        }
+        mesh.onAfterRender = (renderer) => {
+          const gl = renderer.getContext() as WebGLRenderingContext
+          gl.frontFace(gl.CCW)
+        }
+        mesh.userData.mirrorDraw = true
+      } else if (mesh.userData.mirrorDraw) {
+        mesh.onBeforeRender = () => {}
+        mesh.onAfterRender = () => {}
+        mesh.userData.mirrorDraw = false
+      }
+    })
+  })
+  const body = assetFile ? (
+    <AuthoredMesh assetFile={assetFile} revision={assetRevision} ghost={ghost} />
+  ) : (
+    <BuiltinMesh libraryId={libraryId} color={color} ghost={ghost} />
+  )
+  return <group ref={ref}>{body}</group>
 }

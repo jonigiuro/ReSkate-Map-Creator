@@ -69,6 +69,7 @@ type Props = {
   placeAssetFile?: string
   placeAssetRevision?: number
   placeYaw: number
+  placeScaleX: number
   assetRevisions: Record<string, number>
   onSelect: (id: string | null) => void
   onPatchObject: (id: string, patch: Partial<SceneObject>) => void
@@ -419,6 +420,7 @@ function MeshItem({
             libraryId={obj.libraryId}
             assetFile={obj.assetFile}
             assetRevision={assetRevision}
+            mirrored={obj.scale[0] * obj.scale[1] * obj.scale[2] < 0}
           />
         )}
       </group>
@@ -1102,6 +1104,7 @@ function SceneContents(props: Props) {
     placeAssetFile,
     placeAssetRevision = 0,
     placeYaw,
+    placeScaleX,
     assetRevisions,
     onSelect,
     onPatchObject,
@@ -1196,12 +1199,14 @@ function SceneContents(props: Props) {
         <group
           position={[previewPoint.x, previewY, previewPoint.z]}
           rotation={[0, placeYaw, 0]}
+          scale={[placeScaleX, 1, 1]}
           userData={{ placementGhost: true }}
         >
           <LibraryMesh
             libraryId={placePieceId}
             assetFile={placeAssetFile}
             assetRevision={placeAssetRevision}
+            mirrored={placeScaleX < 0}
             ghost
           />
         </group>
