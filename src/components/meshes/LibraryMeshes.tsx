@@ -1,5 +1,5 @@
 import { useGLTF, useTexture } from '@react-three/drei'
-import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
 import { httpPreviewUrl } from '../../lib/assetLibrary'
 import { getPiece } from '../../lib/library'
@@ -103,11 +103,13 @@ function PieceMaterial({
   ghost,
   roughness,
   metalness,
+  mirrored = false,
 }: {
   color: string
   ghost?: boolean
   roughness: number
   metalness: number
+  mirrored?: boolean
 }) {
   return (
     <meshStandardMaterial
@@ -117,6 +119,7 @@ function PieceMaterial({
       transparent={ghost}
       opacity={ghost ? 0.45 : 1}
       depthWrite={!ghost}
+      side={mirrored ? THREE.BackSide : THREE.FrontSide}
     />
   )
 }
@@ -167,7 +170,29 @@ export function useAuthoredPreviewUrl(assetFile: string, revision: number) {
   return fileUrl
 }
 
-function GltfMesh({ url, ghost }: { url: string; ghost?: boolean }) {
+function bindMirrorDraw(root: THREE.Object3D, mirrored: boolean) {
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh
+    if (!mesh.isMesh || mesh.userData.selectionOutline || mesh.userData.placementOutline) return
+    if (mirrored) {
+      mesh.onBeforeRender = (renderer) => {
+        const gl = renderer.getContext() as WebGLRenderingContext
+        gl.frontFace(gl.CW)
+      }
+      mesh.onAfterRender = (renderer) => {
+        const gl = renderer.getContext() as WebGLRenderingContext
+        gl.frontFace(gl.CCW)
+      }
+      mesh.userData.mirrorDraw = true
+    } else if (mesh.userData.mirrorDraw) {
+      mesh.onBeforeRender = () => {}
+      mesh.onAfterRender = () => {}
+      mesh.userData.mirrorDraw = false
+    }
+  })
+}
+
+function GltfMesh({ url, ghost, mirrored = false }: { url: string; ghost?: boolean; mirrored?: boolean }) {
   const gltf = useGLTF(url)
   const view = useMemo(() => {
     const clone = gltf.scene.clone(true)
@@ -205,7 +230,9 @@ function GltfMesh({ url, ghost }: { url: string; ghost?: boolean }) {
       const edges = new THREE.EdgesGeometry(mesh.geometry, 30)
       disposables.push(edges)
       const outline = new THREE.LineSegments(edges, lines)
+      outline.userData.placementOutline = true
       outline.raycast = () => {}
+      outline.renderOrder = 2
       mesh.add(outline)
     })
     return { clone, disposables }
@@ -218,6 +245,10 @@ function GltfMesh({ url, ghost }: { url: string; ghost?: boolean }) {
     }
   }, [view])
 
+  useLayoutEffect(() => {
+    bindMirrorDraw(view.clone, mirrored)
+  }, [mirrored, view])
+
   return <primitive object={view.clone} />
 }
 
@@ -225,17 +256,19 @@ function AuthoredMesh({
   assetFile,
   revision,
   ghost,
+  mirrored = false,
 }: {
   assetFile: string
   revision: number
   ghost?: boolean
+  mirrored?: boolean
 }) {
   const url = useAuthoredPreviewUrl(assetFile, revision)
   if (!url) return <FallbackBox ghost={ghost} />
   return (
     <Suspense fallback={<FallbackBox ghost={ghost} />}>
       <PreviewErrorBoundary key={url} fallback={<FallbackBox ghost={ghost} />}>
-        <GltfMesh url={url} ghost={ghost} />
+        <GltfMesh url={url} ghost={ghost} mirrored={mirrored} />
       </PreviewErrorBoundary>
     </Suspense>
   )
@@ -323,10 +356,12 @@ function BuiltinMesh({
   libraryId,
   color,
   ghost,
+  mirrored = false,
 }: {
   libraryId: string
   color?: string
   ghost?: boolean
+  mirrored?: boolean
 }) {
   const piece = getPiece(libraryId)
   const [w, h, d] = piece?.size ?? [1, 1, 1]
@@ -338,7 +373,7 @@ function BuiltinMesh({
   if (libraryId === 'kicker') {
     return (
       <mesh castShadow={!ghost} receiveShadow={!ghost} geometry={wedge}>
-        <PieceMaterial color={c} ghost={ghost} roughness={0.7} metalness={0.05} />
+        <PieceMaterial color={c} ghost={ghost} mirrored={mirrored} roughness={0.7} metalness={0.05} />
       </mesh>
     )
   }
@@ -346,7 +381,7 @@ function BuiltinMesh({
   if (libraryId === 'quarter_pipe') {
     return (
       <mesh castShadow={!ghost} receiveShadow={!ghost} geometry={qpipe}>
-        <PieceMaterial color={c} ghost={ghost} roughness={0.75} metalness={0.02} />
+        <PieceMaterial color={c} ghost={ghost} mirrored={mirrored} roughness={0.75} metalness={0.02} />
       </mesh>
     )
   }
@@ -358,7 +393,7 @@ function BuiltinMesh({
   return (
     <mesh castShadow={!ghost} receiveShadow={!ghost} position={[0, h / 2, 0]}>
       <boxGeometry args={[w, h, d]} />
-      <PieceMaterial color={c} ghost={ghost} roughness={0.7} metalness={0.08} />
+      <PieceMaterial color={c} ghost={ghost} mirrored={mirrored} roughness={0.7} metalness={0.08} />
     </mesh>
   )
 }
@@ -379,34 +414,15 @@ export function LibraryMesh({
   /** Negative scale reverses triangle winding. Draw the outside, not the inside. */
   mirrored?: boolean
 }) {
-  const ref = useRef<THREE.Group>(null)
-  useLayoutEffect(() => {
-    const root = ref.current
-    if (!root) return
-    root.traverse((node) => {
-      const mesh = node as THREE.Mesh
-      if (!mesh.isMesh || mesh.userData.selectionOutline) return
-      if (mirrored) {
-        mesh.onBeforeRender = (renderer) => {
-          const gl = renderer.getContext() as WebGLRenderingContext
-          gl.frontFace(gl.CW)
-        }
-        mesh.onAfterRender = (renderer) => {
-          const gl = renderer.getContext() as WebGLRenderingContext
-          gl.frontFace(gl.CCW)
-        }
-        mesh.userData.mirrorDraw = true
-      } else if (mesh.userData.mirrorDraw) {
-        mesh.onBeforeRender = () => {}
-        mesh.onAfterRender = () => {}
-        mesh.userData.mirrorDraw = false
-      }
-    })
-  })
-  const body = assetFile ? (
-    <AuthoredMesh assetFile={assetFile} revision={assetRevision} ghost={ghost} />
-  ) : (
-    <BuiltinMesh libraryId={libraryId} color={color} ghost={ghost} />
-  )
-  return <group ref={ref}>{body}</group>
+  if (assetFile) {
+    return (
+      <AuthoredMesh
+        assetFile={assetFile}
+        revision={assetRevision}
+        ghost={ghost}
+        mirrored={mirrored}
+      />
+    )
+  }
+  return <BuiltinMesh libraryId={libraryId} color={color} ghost={ghost} mirrored={mirrored} />
 }
