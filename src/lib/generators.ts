@@ -313,3 +313,128 @@ export function buildCurbGeometry(points: Vec3[], width: number, height: number,
   geometry.computeBoundingSphere()
   return geometry
 }
+
+/** Raised pad. The top is always this far above the shared base. */
+export const PLATFORM_HEIGHT_M = 0.5
+export const MIN_PLATFORM_HEIGHT_M = 0.05
+const MIN_PLATFORM_SPAN_M = 0.05
+
+export function platformFootprintTooSmall(a: Vec3, b: Vec3) {
+  return Math.abs(a[0] - b[0]) < MIN_PLATFORM_SPAN_M || Math.abs(a[2] - b[2]) < MIN_PLATFORM_SPAN_M
+}
+
+/** World corners become a centred local box. Both corners share the first point's height. */
+export function platformFromWorld(a: Vec3, b: Vec3) {
+  const origin: Vec3 = [round4((a[0] + b[0]) / 2), round4(a[1]), round4((a[2] + b[2]) / 2)]
+  const corners: [Vec3, Vec3] = [
+    [round4(a[0] - origin[0]), 0, round4(a[2] - origin[2])],
+    [round4(b[0] - origin[0]), 0, round4(b[2] - origin[2])],
+  ]
+  return { origin, corners }
+}
+
+/** Solid pad from two opposite corners. Local Y is the base. UVs are metres. */
+export function buildPlatformGeometry(corners: [Vec3, Vec3], height: number) {
+  const minX = Math.min(corners[0][0], corners[1][0])
+  const maxX = Math.max(corners[0][0], corners[1][0])
+  const minZ = Math.min(corners[0][2], corners[1][2])
+  const maxZ = Math.max(corners[0][2], corners[1][2])
+  const h = Math.max(height, MIN_PLATFORM_HEIGHT_M)
+  if (maxX - minX < 1e-4 || maxZ - minZ < 1e-4) return null
+
+  const positions: number[] = []
+  const normals: number[] = []
+  const uvs: number[] = []
+  const tangents: number[] = []
+  const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
+  const quad = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    d: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    ud: [number, number],
+    outward: THREE.Vector3,
+  ) => {
+    addTri(positions, normals, uvs, tangents, a, b, c, ua, ub, uc, outward)
+    addTri(positions, normals, uvs, tangents, a, c, d, ua, uc, ud, outward)
+  }
+
+  quad(
+    v(minX, h, minZ),
+    v(maxX, h, minZ),
+    v(maxX, h, maxZ),
+    v(minX, h, maxZ),
+    [minX, minZ],
+    [maxX, minZ],
+    [maxX, maxZ],
+    [minX, maxZ],
+    UP,
+  )
+  quad(
+    v(minX, 0, maxZ),
+    v(maxX, 0, maxZ),
+    v(maxX, 0, minZ),
+    v(minX, 0, minZ),
+    [minX, maxZ],
+    [maxX, maxZ],
+    [maxX, minZ],
+    [minX, minZ],
+    new THREE.Vector3(0, -1, 0),
+  )
+  quad(
+    v(maxX, 0, minZ),
+    v(maxX, 0, maxZ),
+    v(maxX, h, maxZ),
+    v(maxX, h, minZ),
+    [minZ, 0],
+    [maxZ, 0],
+    [maxZ, h],
+    [minZ, h],
+    new THREE.Vector3(1, 0, 0),
+  )
+  quad(
+    v(minX, 0, maxZ),
+    v(minX, 0, minZ),
+    v(minX, h, minZ),
+    v(minX, h, maxZ),
+    [maxZ, 0],
+    [minZ, 0],
+    [minZ, h],
+    [maxZ, h],
+    new THREE.Vector3(-1, 0, 0),
+  )
+  quad(
+    v(maxX, 0, maxZ),
+    v(minX, 0, maxZ),
+    v(minX, h, maxZ),
+    v(maxX, h, maxZ),
+    [maxX, 0],
+    [minX, 0],
+    [minX, h],
+    [maxX, h],
+    new THREE.Vector3(0, 0, 1),
+  )
+  quad(
+    v(minX, 0, minZ),
+    v(maxX, 0, minZ),
+    v(maxX, h, minZ),
+    v(minX, h, minZ),
+    [minX, 0],
+    [maxX, 0],
+    [maxX, h],
+    [minX, h],
+    new THREE.Vector3(0, 0, -1),
+  )
+
+  if (positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(tangents, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}

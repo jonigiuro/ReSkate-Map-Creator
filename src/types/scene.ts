@@ -32,7 +32,14 @@ export interface KitGenerator {
   points: [number, number, number][]
 }
 
-export type MeshGenerator = CurbGenerator | KitGenerator
+/** Axis-aligned pad. Corners are opposite footprint corners in local space. The top is one flat height. */
+export interface PlatformGenerator {
+  kind: 'platform'
+  corners: [[number, number, number], [number, number, number]]
+  height: number
+}
+
+export type MeshGenerator = CurbGenerator | KitGenerator | PlatformGenerator
 
 export interface MeshObject {
   id: string

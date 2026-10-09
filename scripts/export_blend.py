@@ -181,6 +181,43 @@ def purge_orphan_meshes():
             bpy.data.meshes.remove(mesh)
 
 
+def promote_render_uv(mesh):
+    """The game reads the first UV layer. Several library blends keep a leftover
+    unwrap there named UVMap, and the coordinates Blender actually renders live
+    on a later layer (automap). Copy that rendered layer into the first slot
+    so a mirrored copy and a plain copy of the same piece both match the editor.
+    """
+    layers = getattr(mesh, "uv_layers", None)
+    if not layers or len(layers) < 2:
+        return
+    rendered = next((layer for layer in layers if layer.active_render), None)
+    if rendered is None or rendered == layers[0]:
+        return
+    count = len(mesh.loops)
+    if count == 0:
+        return
+    values = [0.0] * (count * 2)
+    rendered.data.foreach_get("uv", values)
+    layers[0].data.foreach_set("uv", values)
+    layers[0].active_render = True
+    try:
+        layers.active = layers[0]
+    except Exception:
+        pass
+
+
+def promote_render_uvs():
+    seen = set()
+    for obj in bpy.data.objects:
+        if obj.type != "MESH" or obj.data is None:
+            continue
+        mesh = obj.data
+        if mesh in seen:
+            continue
+        seen.add(mesh)
+        promote_render_uv(mesh)
+
+
 def join_objects(objs):
     """Join in small batches so a full cell is not duplicated in one operator."""
     pending = [obj for obj in objs if obj.name in bpy.data.objects]
@@ -582,6 +619,72 @@ def concrete_material(project_root):
     return mat
 
 
+def _linear_to_srgb(channel):
+    if channel <= 0.0031308:
+        return 12.92 * channel
+    return 1.055 * (channel ** (1.0 / 2.4)) - 0.055
+
+
+def _marble_roughness_image(source):
+    """Roughness from the marble photo. Bright stone is polished, dark flecks stay duller."""
+    cached = bpy.data.images.get("marble_roughness")
+    if cached:
+        return cached
+    width, height = source.size
+    rough = bpy.data.images.new("marble_roughness", width=width, height=height, alpha=False)
+    src = list(source.pixels)
+    out = [0.0] * len(src)
+    for i in range(0, len(src), 4):
+        red = _linear_to_srgb(src[i])
+        green = _linear_to_srgb(src[i + 1])
+        blue = _linear_to_srgb(src[i + 2])
+        luma = red * 0.2126 + green * 0.7152 + blue * 0.0722
+        value = min(0.72, max(0.12, 0.12 + (1.0 - luma) * 0.5))
+        out[i] = out[i + 1] = out[i + 2] = value
+        out[i + 3] = 1.0
+    rough.pixels = out
+    try:
+        rough.colorspace_settings.name = "Non-Color"
+    except Exception as exc:
+        print(f"Colorspace Non-Color not set on marble roughness: {exc}")
+    try:
+        if not rough.packed_file:
+            rough.pack()
+    except Exception as exc:
+        print(f"Could not pack marble roughness: {exc}")
+    return rough
+
+
+def marble_material(project_root):
+    """Tileable marble packed into the blend. One UV unit is one metre."""
+    cached = bpy.data.materials.get("marble")
+    if cached:
+        return cached
+    path = Path(project_root) / "public" / "img" / "textures" / "marble.jpg"
+    if not path.is_file():
+        print("Marble texture missing, platform stays flat: " + str(path))
+        return placeholder_material("marble", (0.86, 0.82, 0.74))
+
+    mat = bpy.data.materials.new("marble")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, path, "sRGB", (-520, 200))
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    if base.image and "Roughness" in bsdf.inputs:
+        rough = _marble_roughness_image(base.image)
+        rough_node = nodes.new("ShaderNodeTexImage")
+        rough_node.image = rough
+        rough_node.location = (-520, -80)
+        rough_node.interpolation = "Linear"
+        rough_node.extension = "REPEAT"
+        links.new(rough_node.outputs["Color"], bsdf.inputs["Roughness"])
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    return mat
+
+
 def make_curb_mesh(name, points, width, height, color, tops=None, material=None):
     """One mitered curb. points are the base centreline, tops the top edge, both local."""
     sections = _curb_sections(points, float(width) / 2.0)
@@ -675,6 +778,44 @@ def make_box_mesh(name, size, color, material=None, tile=None):
         (3, 7, 4),
     ]
     return _link_mesh(name, verts, faces, color, material=material, tile=tile)
+
+
+def make_platform_mesh(name, corners, height, color, material=None):
+    """Axis-aligned pad. corners are two opposite footprint points in editor space. Base is Y=0."""
+    if not corners or len(corners) < 2:
+        return None
+    x0, _y0, z0 = corners[0]
+    x1, _y1, z1 = corners[1]
+    minx, maxx = min(float(x0), float(x1)), max(float(x0), float(x1))
+    minz, maxz = min(float(z0), float(z1)), max(float(z0), float(z1))
+    if maxx - minx < 0.02 or maxz - minz < 0.02:
+        return None
+    h = max(float(height or 0.5), 0.02)
+    verts = [
+        (minx, 0.0, minz),
+        (maxx, 0.0, minz),
+        (maxx, 0.0, maxz),
+        (minx, 0.0, maxz),
+        (minx, h, minz),
+        (maxx, h, minz),
+        (maxx, h, maxz),
+        (minx, h, maxz),
+    ]
+    faces = [
+        (0, 1, 2),
+        (0, 2, 3),
+        (4, 6, 5),
+        (4, 7, 6),
+        (0, 5, 1),
+        (0, 4, 5),
+        (1, 6, 2),
+        (1, 5, 6),
+        (2, 7, 3),
+        (2, 6, 7),
+        (3, 4, 0),
+        (3, 7, 4),
+    ]
+    return _link_mesh(name, verts, faces, color, material=material, tile=1.0)
 
 
 def make_wedge_mesh(name, size, color):
@@ -1523,6 +1664,40 @@ def build(scene):
                 link_only(obj, colls["Map"])
                 continue
 
+            if gen.get("kind") == "platform":
+                corners = gen.get("corners") or []
+                if len(corners) < 2:
+                    print(f"Skipping platform {name}: needs two corners")
+                    continue
+                obj = make_platform_mesh(
+                    name,
+                    corners,
+                    float(gen.get("height") or 0.5),
+                    (0.86, 0.82, 0.74),
+                    marble_material(project_root),
+                )
+                if obj is None:
+                    print(f"Skipping platform {name}: footprint is too small")
+                    continue
+                obj.name = name
+                position = entry.get("position") or [0, 0, 0]
+                apply_transform(
+                    obj,
+                    position,
+                    entry.get("rotation") or [0, 0, 0],
+                    entry.get("scale") or [1, 1, 1],
+                )
+                set_sk8_mesh_props(obj, entry.get("sk8"))
+                tag_join_piece(
+                    obj,
+                    "generator_platform",
+                    placement_cell(position),
+                    "generator_platform",
+                    "generator_platform",
+                )
+                link_only(obj, colls["Map"])
+                continue
+
             if gen.get("kind") == "kit":
                 export_kit(
                     name,
@@ -1572,6 +1747,7 @@ def build(scene):
             )
             link_only(obj, colls["Markers"])
 
+    promote_render_uvs()
     if EXPORT_OPTIMIZE:
         share_duplicate_materials()
         join_same_pieces()

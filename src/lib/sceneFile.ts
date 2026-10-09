@@ -2,6 +2,7 @@ import type {
   CollisionMode,
   KitGenerator,
   MeshGenerator,
+  PlatformGenerator,
   GrindObject,
   GrindSurface,
   MapScene,
@@ -43,6 +44,18 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
     if (!points) return undefined
     const kit: KitGenerator = { kind: 'kit', assetFile: raw.assetFile, points }
     return kit
+  }
+  if (raw.kind === 'platform') {
+    const points = parsePoints(raw.corners)
+    if (!points || points.length !== 2) return undefined
+    const height = raw.height
+    if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0) return undefined
+    const platform: PlatformGenerator = {
+      kind: 'platform',
+      corners: [points[0], points[1]],
+      height,
+    }
+    return platform
   }
   if (raw.kind !== 'curb') return undefined
   const points = parsePoints(raw.points)
