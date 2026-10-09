@@ -3,6 +3,7 @@ import {
   ContactShadows,
   OrbitControls,
   TransformControls,
+  useTexture,
 } from '@react-three/drei'
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { MOUSE } from 'three'
@@ -15,7 +16,18 @@ import type {
   SpawnObject,
 } from '../types/scene'
 import { createBlueprintMaterial } from '../lib/blueprintMaterial'
+import {
+  CURB_HEIGHT_M,
+  CURB_WIDTH_M,
+  MIN_CURB_THICKNESS_M,
+  buildCurbGeometry,
+  curbSegmentTooShort,
+  curbTopYs,
+  type Vec3,
+} from '../lib/generators'
 import { LibraryMesh } from './meshes/LibraryMeshes'
+import { KitRun } from './KitRun'
+import type { DrawGenerator } from '../lib/kitLayout'
 
 export type TransformMode = 'translate' | 'rotate' | 'scale'
 export type EditorTool = 'select' | 'grind'
@@ -65,6 +77,9 @@ type Props = {
   onGroundClick: (point: THREE.Vector3) => void
   onPlacePiece: (id: string, point: THREE.Vector3) => void
   onRotatePiece: () => void
+  generator: DrawGenerator | null
+  pins: [number, number, number][]
+  onGeneratorClick: (point: THREE.Vector3) => void
 }
 
 const raycaster = new THREE.Raycaster()
@@ -174,6 +189,10 @@ function TransformGizmo({
   onCommit,
   onGestureStart,
   onGestureEnd,
+  showX = true,
+  showY = true,
+  showZ = true,
+  space = 'world',
 }: {
   target: RefObject<THREE.Group | null>
   dragging: RefObject<boolean>
@@ -186,8 +205,13 @@ function TransformGizmo({
   ) => void
   onGestureStart: () => void
   onGestureEnd: () => void
+  showX?: boolean
+  showY?: boolean
+  showZ?: boolean
+  space?: 'world' | 'local'
 }) {
   const controlsRef = useRef<GizmoControls | null>(null)
+  const lock = useRef({ x: 0, y: 0, z: 0 })
   const gl = useThree((s) => s.gl)
 
   useEffect(() => {
@@ -224,6 +248,9 @@ function TransformGizmo({
   function commit() {
     const g = target.current
     if (!g) return
+    if (!showX) g.position.x = lock.current.x
+    if (!showY) g.position.y = lock.current.y
+    if (!showZ) g.position.z = lock.current.z
     const p = g.position
     const r = g.rotation
     const s = g.scale
@@ -241,10 +268,16 @@ function TransformGizmo({
       }}
       object={target as RefObject<THREE.Object3D>}
       mode={mode}
+      space={space}
+      showX={showX}
+      showY={showY}
+      showZ={showZ}
       translationSnap={snap.move}
       rotationSnap={snap.rotate}
       scaleSnap={snap.scale}
       onMouseDown={() => {
+        const g = target.current
+        if (g) lock.current = { x: g.position.x, y: g.position.y, z: g.position.z }
         dragging.current = true
         onGestureStart()
       }}
@@ -271,6 +304,7 @@ function MeshItem({
   assetRevision,
   onSelect,
   onCommit,
+  onPatch,
   onGestureStart,
   onGestureEnd,
 }: {
@@ -286,11 +320,22 @@ function MeshItem({
     rot: [number, number, number],
     scale: [number, number, number],
   ) => void
+  onPatch: (patch: Partial<MeshObject>) => void
   onGestureStart: () => void
   onGestureEnd: () => void
 }) {
   const ref = useRef<THREE.Group>(null)
   const dragging = useRef(false)
+  const handleRef = useRef<THREE.Group>(null)
+  const handleDragging = useRef(false)
+  const [handle, setHandle] = useState<{ index: number; end: 'bottom' | 'top' } | null>(null)
+  const generator = obj.generator?.kind === 'curb' ? obj.generator : null
+  const kit = obj.generator?.kind === 'kit' ? obj.generator : null
+  const editing = selected && tool === 'select' && generator != null
+
+  useEffect(() => {
+    if (!selected) setHandle(null)
+  }, [selected])
 
   useLayoutEffect(() => {
     const g = ref.current
@@ -300,6 +345,36 @@ function MeshItem({
     g.scale.set(...obj.scale)
   }, [obj.position, obj.rotation, obj.scale])
 
+  useLayoutEffect(() => {
+    const g = handleRef.current
+    if (!g || handleDragging.current || !generator || !handle) return
+    const point = generator.points[handle.index]
+    if (!point) return
+    const tops = curbTopYs(generator.points, generator.height, generator.tops)
+    const y = handle.end === 'bottom' ? point[1] : tops[handle.index]
+    g.position.set(point[0], y, point[2])
+  }, [generator, handle])
+
+  function commitHeight() {
+    if (!generator || !handle) return
+    const g = handleRef.current
+    const point = generator.points[handle.index]
+    if (!g || !point) return
+    const tops = curbTopYs(generator.points, generator.height, generator.tops)
+    const points = generator.points.map((entry) => [entry[0], entry[1], entry[2]] as Vec3)
+    let y = g.position.y
+    if (handle.end === 'bottom') y = Math.min(y, tops[handle.index] - MIN_CURB_THICKNESS_M)
+    else y = Math.max(y, points[handle.index][1] + MIN_CURB_THICKNESS_M)
+    g.position.y = y
+    points[handle.index][0] = round4(g.position.x)
+    points[handle.index][2] = round4(g.position.z)
+    if (handle.end === 'bottom') points[handle.index][1] = round4(y)
+    else tops[handle.index] = round4(y)
+    onPatch({
+      generator: { ...generator, points, tops: tops.map((value) => round4(value)) },
+    })
+  }
+
   return (
     <>
       <group
@@ -308,22 +383,64 @@ function MeshItem({
         onPointerDown={(e) => {
           e.stopPropagation()
           if (e.button !== 0 || gizmoOwnsPointer.current) return
+          const picked = e.intersections.find((hit) => hit.object.userData.curbHandle)?.object.userData
+            .curbHandle as { index: number; end: 'bottom' | 'top' } | undefined
+          if (picked) {
+            setHandle(picked)
+            return
+          }
+          setHandle(null)
           onSelect()
         }}
       >
-        <LibraryMesh
-          libraryId={obj.libraryId}
-          assetFile={obj.assetFile}
-          assetRevision={assetRevision}
-        />
+        {generator ? (
+          <>
+            <CurbRibbon
+              points={generator.points}
+              tops={generator.tops}
+              width={generator.width}
+              height={generator.height}
+            />
+            {editing && (
+              <CurbEditPins
+                points={generator.points}
+                height={generator.height}
+                tops={generator.tops}
+                active={handle}
+                onPick={(index, end) => setHandle({ index, end })}
+              />
+            )}
+            {editing && handle && <group ref={handleRef} />}
+          </>
+        ) : kit ? (
+          <KitRun assetFile={kit.assetFile} revision={assetRevision} points={kit.points} />
+        ) : (
+          <LibraryMesh
+            libraryId={obj.libraryId}
+            assetFile={obj.assetFile}
+            assetRevision={assetRevision}
+          />
+        )}
       </group>
-      {selected && tool === 'select' && (
+      {selected && tool === 'select' && !handle && (
         <TransformGizmo
           target={ref}
           dragging={dragging}
           mode={transformMode}
           snap={snap}
           onCommit={onCommit}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+      {editing && handle && (
+        <TransformGizmo
+          target={handleRef}
+          dragging={handleDragging}
+          mode="translate"
+          space="world"
+          snap={snap}
+          onCommit={commitHeight}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
         />
@@ -471,7 +588,7 @@ function PiecePlacementLayer({
 
   useEffect(() => {
     const el = gl.domElement
-    el.style.cursor = placePieceId ? 'crosshair' : ''
+    if (placePieceId) el.style.cursor = 'crosshair'
     const clickSlop = 8
     let rightStart: { x: number; y: number } | null = null
     let orbiting = false
@@ -538,7 +655,7 @@ function PiecePlacementLayer({
     el.addEventListener('pointerup', up)
     el.addEventListener('pointerleave', leave)
     return () => {
-      el.style.cursor = ''
+      if (placePieceId) el.style.cursor = ''
       el.removeEventListener('pointermove', move, true)
       el.removeEventListener('pointerdown', down, true)
       el.removeEventListener('pointerup', up)
@@ -723,6 +840,257 @@ function FrameSelection({ selectedId }: { selectedId: string | null }) {
   return null
 }
 
+function CurbEditPins({
+  points,
+  height,
+  tops,
+  active,
+  onPick,
+}: {
+  points: Vec3[]
+  height: number
+  tops?: number[]
+  active: { index: number; end: 'bottom' | 'top' } | null
+  onPick: (index: number, end: 'bottom' | 'top') => void
+}) {
+  const topYs = curbTopYs(points, height, tops)
+  return (
+    <>
+      {points.map((point, index) => {
+        const topY = topYs[index]
+        const span = Math.max(topY - point[1], MIN_CURB_THICKNESS_M)
+        return (
+          <group key={index}>
+            <mesh position={[point[0], point[1] + span / 2, point[2]]} raycast={() => {}} renderOrder={3}>
+              <cylinderGeometry args={[0.025, 0.025, span, 6]} />
+              <meshBasicMaterial color="#ff9f1c" toneMapped={false} depthTest={false} />
+            </mesh>
+            <CurbHandleSphere
+              position={[point[0], point[1], point[2]]}
+              color={active?.index === index && active.end === 'bottom' ? '#fff4d6' : '#ffb703'}
+              handle={{ index, end: 'bottom' }}
+              onPick={() => onPick(index, 'bottom')}
+            />
+            <CurbHandleSphere
+              position={[point[0], topY, point[2]]}
+              color={active?.index === index && active.end === 'top' ? '#fff4d6' : '#ff6b00'}
+              handle={{ index, end: 'top' }}
+              onPick={() => onPick(index, 'top')}
+            />
+          </group>
+        )
+      })}
+    </>
+  )
+}
+
+function CurbHandleSphere({
+  position,
+  color,
+  handle,
+  onPick,
+}: {
+  position: [number, number, number]
+  color: string
+  handle: { index: number; end: 'bottom' | 'top' }
+  onPick: () => void
+}) {
+  return (
+    <mesh
+      position={position}
+      renderOrder={4}
+      userData={{ curbHandle: handle }}
+      onPointerDown={(event) => {
+        event.stopPropagation()
+        if (event.button !== 0 || gizmoOwnsPointer.current) return
+        onPick()
+      }}
+    >
+      <sphereGeometry args={[0.11, 16, 12]} />
+      <meshBasicMaterial color={color} toneMapped={false} depthTest={false} />
+    </mesh>
+  )
+}
+
+const CONCRETE_MAPS = [
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_BaseColor.png`,
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_Normal.png`,
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_Roughness.png`,
+] as const
+
+useTexture.preload([...CONCRETE_MAPS])
+
+function CurbMaterial({ ghost }: { ghost?: boolean }) {
+  const [colorMap, normalMap, roughnessMap] = useTexture([...CONCRETE_MAPS])
+  const material = useMemo(() => {
+    for (const map of [colorMap, normalMap, roughnessMap]) {
+      map.wrapS = THREE.RepeatWrapping
+      map.wrapT = THREE.RepeatWrapping
+      map.needsUpdate = true
+    }
+    colorMap.colorSpace = THREE.SRGBColorSpace
+    normalMap.colorSpace = THREE.NoColorSpace
+    roughnessMap.colorSpace = THREE.NoColorSpace
+    return new THREE.MeshStandardMaterial({
+      map: colorMap,
+      normalMap,
+      roughnessMap,
+      normalScale: new THREE.Vector2(0.65, 0.65),
+      roughness: 1,
+      metalness: 0,
+      transparent: !!ghost,
+      opacity: ghost ? 0.45 : 1,
+      depthWrite: !ghost,
+    })
+  }, [colorMap, ghost, normalMap, roughnessMap])
+
+  useEffect(() => () => material.dispose(), [material])
+  return <primitive object={material} attach="material" />
+}
+
+function CurbRibbon({
+  points,
+  width,
+  height,
+  tops,
+  ghost,
+}: {
+  points: Vec3[]
+  width: number
+  height: number
+  tops?: number[]
+  ghost?: boolean
+}) {
+  const geometry = useMemo(
+    () => buildCurbGeometry(points, width, height, tops),
+    [points, width, height, tops],
+  )
+  useEffect(() => () => geometry?.dispose(), [geometry])
+  if (!geometry) return null
+  return (
+    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+      <CurbMaterial ghost={ghost} />
+    </mesh>
+  )
+}
+
+function KitGhost({
+  assetFile,
+  revision,
+  pins,
+  to,
+}: {
+  assetFile: string
+  revision: number
+  pins: Vec3[]
+  to: THREE.Vector3
+}) {
+  const y = to.y < 0.02 ? 0 : to.y
+  const cursor: Vec3 = [to.x, y, to.z]
+  const last = pins[pins.length - 1]
+  if (curbSegmentTooShort(last, cursor)) return null
+  const preview = pins.length >= 2 ? [pins[pins.length - 2], last, cursor] : [last, cursor]
+  return (
+    <group userData={{ placementGhost: true }}>
+      <KitRun assetFile={assetFile} revision={revision} points={preview} ghost tail />
+    </group>
+  )
+}
+
+function CurbGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
+  const y = to.y < 0.02 ? 0 : to.y
+  const cursor: Vec3 = [to.x, y, to.z]
+  const last = pins[pins.length - 1]
+  if (curbSegmentTooShort(last, cursor)) return null
+  const preview = pins.length >= 2 ? [pins[pins.length - 2], last, cursor] : [last, cursor]
+  return (
+    <group userData={{ placementGhost: true }}>
+      <CurbRibbon points={preview} width={CURB_WIDTH_M} height={CURB_HEIGHT_M} ghost />
+    </group>
+  )
+}
+
+function CurbPin({ position, ghost }: { position: [number, number, number]; ghost?: boolean }) {
+  return (
+    <group position={position} userData={ghost ? { placementGhost: true } : undefined}>
+      <mesh position={[0, 0.55, 0]} raycast={() => {}}>
+        <cylinderGeometry args={[0.035, 0.035, 1.1, 8]} />
+        <meshBasicMaterial
+          color="#ff9f1c"
+          toneMapped={false}
+          transparent={ghost}
+          opacity={ghost ? 0.45 : 1}
+          depthWrite={!ghost}
+        />
+      </mesh>
+      <mesh position={[0, 1.15, 0]} raycast={() => {}}>
+        <sphereGeometry args={[0.09, 14, 10]} />
+        <meshBasicMaterial
+          color="#ff9f1c"
+          toneMapped={false}
+          transparent={ghost}
+          opacity={ghost ? 0.45 : 1}
+          depthWrite={!ghost}
+        />
+      </mesh>
+    </group>
+  )
+}
+
+function GeneratorLayer({
+  active,
+  moveSnap,
+  onClickPoint,
+  onPreview,
+}: {
+  active: boolean
+  moveSnap: number | null
+  onClickPoint: (point: THREE.Vector3) => void
+  onPreview: (point: THREE.Vector3 | null) => void
+}) {
+  const camera = useThree((s) => s.camera)
+  const scene = useThree((s) => s.scene)
+  const gl = useThree((s) => s.gl)
+  const onClickRef = useRef(onClickPoint)
+  const onPreviewRef = useRef(onPreview)
+  const moveSnapRef = useRef(moveSnap)
+  onClickRef.current = onClickPoint
+  onPreviewRef.current = onPreview
+  moveSnapRef.current = moveSnap
+
+  useEffect(() => {
+    const el = gl.domElement
+    if (!active) {
+      onPreviewRef.current(null)
+      return
+    }
+    el.style.cursor = 'crosshair'
+    const move = (event: PointerEvent) => {
+      onPreviewRef.current(snapPointFromEvent(event, camera, scene, el, moveSnapRef.current))
+    }
+    const down = (event: PointerEvent) => {
+      if (event.button !== 0) return
+      const point = snapPointFromEvent(event, camera, scene, el, moveSnapRef.current)
+      if (!point) return
+      event.preventDefault()
+      event.stopPropagation()
+      onClickRef.current(point)
+    }
+    const leave = () => onPreviewRef.current(null)
+    el.addEventListener('pointermove', move, true)
+    el.addEventListener('pointerdown', down, true)
+    el.addEventListener('pointerleave', leave)
+    return () => {
+      el.style.cursor = ''
+      el.removeEventListener('pointermove', move, true)
+      el.removeEventListener('pointerdown', down, true)
+      el.removeEventListener('pointerleave', leave)
+    }
+  }, [active, camera, scene, gl])
+
+  return null
+}
+
 function SceneContents(props: Props) {
   const {
     scene,
@@ -742,8 +1110,12 @@ function SceneContents(props: Props) {
     onGroundClick,
     onPlacePiece,
     onRotatePiece,
+    generator,
+    pins,
+    onGeneratorClick,
   } = props
   const [previewPoint, setPreviewPoint] = useState<THREE.Vector3 | null>(null)
+  const [generatorPreview, setGeneratorPreview] = useState<THREE.Vector3 | null>(null)
 
   useEffect(() => {
     if (!placePieceId) setPreviewPoint(null)
@@ -784,11 +1156,18 @@ function SceneContents(props: Props) {
               tool={tool}
               transformMode={transformMode}
               snap={snap}
-              assetRevision={obj.assetFile ? (assetRevisions[obj.assetFile] ?? 0) : 0}
+              assetRevision={
+                obj.assetFile
+                  ? (assetRevisions[obj.assetFile] ?? 0)
+                  : obj.generator?.kind === 'kit'
+                    ? (assetRevisions[obj.generator.assetFile] ?? 0)
+                    : 0
+              }
               onSelect={() => onSelect(obj.id)}
               onCommit={(pos, rot, scale) => {
                 onPatchObject(obj.id, { position: pos, rotation: rot, scale })
               }}
+              onPatch={(patch) => onPatchObject(obj.id, patch)}
               onGestureStart={onTransformStart}
               onGestureEnd={onTransformEnd}
             />
@@ -828,12 +1207,41 @@ function SceneContents(props: Props) {
         </group>
       )}
 
+      {generator && pins.map((pin, index) => <CurbPin key={index} position={pin} />)}
+      {generator && generatorPreview && (
+        <CurbPin
+          ghost
+          position={[
+            generatorPreview.x,
+            generatorPreview.y < 0.02 ? 0 : generatorPreview.y,
+            generatorPreview.z,
+          ]}
+        />
+      )}
+      {generator?.kind === 'curb' && pins.length > 0 && generatorPreview && (
+        <CurbGhost pins={pins} to={generatorPreview} />
+      )}
+      {generator?.kind === 'kit' && pins.length > 0 && generatorPreview && (
+        <KitGhost
+          assetFile={generator.assetFile}
+          revision={assetRevisions[generator.assetFile] ?? 0}
+          pins={pins}
+          to={generatorPreview}
+        />
+      )}
+
       <PiecePlacementLayer
         placePieceId={placePieceId}
         moveSnap={snap.move}
         onPlace={onPlacePiece}
         onPreview={setPreviewPoint}
         onRotate={onRotatePiece}
+      />
+      <GeneratorLayer
+        active={generator != null}
+        moveSnap={snap.move}
+        onClickPoint={onGeneratorClick}
+        onPreview={setGeneratorPreview}
       />
 
       <ContactShadows opacity={0.12} scale={160} blur={2.4} far={40} />

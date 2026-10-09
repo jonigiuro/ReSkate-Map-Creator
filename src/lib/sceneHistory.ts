@@ -4,22 +4,43 @@ import type { MapScene } from '../types/scene'
 export type SceneSnap = {
   scene: MapScene
   selectedId: string | null
+  /** Pins for the generator that is being drawn. */
+  pins: [number, number, number][]
+  /** Mesh being extended by the current curb stroke. */
+  strokeId: string | null
 }
 
 const HISTORY_LIMIT = 100
 
-function cloneSnap(scene: MapScene, selectedId: string | null): SceneSnap {
-  return { scene: structuredClone(scene), selectedId }
+function cloneSnap(
+  scene: MapScene,
+  selectedId: string | null,
+  pins: [number, number, number][],
+  strokeId: string | null,
+): SceneSnap {
+  return {
+    scene: structuredClone(scene),
+    selectedId,
+    pins: structuredClone(pins),
+    strokeId,
+  }
 }
 
 function sameSnap(a: SceneSnap, b: SceneSnap) {
-  return a.selectedId === b.selectedId && JSON.stringify(a.scene) === JSON.stringify(b.scene)
+  return (
+    a.selectedId === b.selectedId &&
+    a.strokeId === b.strokeId &&
+    JSON.stringify(a.scene) === JSON.stringify(b.scene) &&
+    JSON.stringify(a.pins ?? []) === JSON.stringify(b.pins ?? [])
+  )
 }
 
 /** Undo and redo snapshots. A gizmo drag is one step, from pointer down to pointer up. */
 export function useSceneHistory(scene: MapScene, selectedId: string | null) {
   const sceneRef = useRef(scene)
   const selectedRef = useRef(selectedId)
+  const pinsRef = useRef<[number, number, number][]>([])
+  const strokeIdRef = useRef<string | null>(null)
   sceneRef.current = scene
   selectedRef.current = selectedId
 
@@ -28,7 +49,7 @@ export function useSceneHistory(scene: MapScene, selectedId: string | null) {
   const gesture = useRef<SceneSnap | null>(null)
 
   function take(): SceneSnap {
-    return cloneSnap(sceneRef.current, selectedRef.current)
+    return cloneSnap(sceneRef.current, selectedRef.current, pinsRef.current, strokeIdRef.current)
   }
 
   function remember(before: SceneSnap) {
@@ -79,6 +100,8 @@ export function useSceneHistory(scene: MapScene, selectedId: string | null) {
   return {
     sceneRef,
     selectedRef,
+    pinsRef,
+    strokeIdRef,
     beginGesture,
     finishGesture,
     checkpoint,

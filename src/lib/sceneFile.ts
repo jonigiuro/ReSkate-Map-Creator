@@ -1,5 +1,7 @@
 import type {
   CollisionMode,
+  KitGenerator,
+  MeshGenerator,
   GrindObject,
   GrindSurface,
   MapScene,
@@ -20,6 +22,44 @@ function vec3(value: unknown, label: string): [number, number, number] {
     throw new Error(`${label} must be three numbers.`)
   }
   return [value[0], value[1], value[2]]
+}
+
+function parsePoints(raw: unknown): [number, number, number][] | undefined {
+  if (!Array.isArray(raw) || raw.length < 2) return undefined
+  const points: [number, number, number][] = []
+  for (const point of raw) {
+    if (!Array.isArray(point) || point.length !== 3) return undefined
+    if (!point.every((part) => typeof part === 'number' && Number.isFinite(part))) return undefined
+    points.push([point[0], point[1], point[2]])
+  }
+  return points
+}
+
+function parseGenerator(raw: unknown): MeshGenerator | undefined {
+  if (!isRecord(raw)) return undefined
+  if (raw.kind === 'kit') {
+    if (typeof raw.assetFile !== 'string' || !raw.assetFile) return undefined
+    const points = parsePoints(raw.points)
+    if (!points) return undefined
+    const kit: KitGenerator = { kind: 'kit', assetFile: raw.assetFile, points }
+    return kit
+  }
+  if (raw.kind !== 'curb') return undefined
+  const points = parsePoints(raw.points)
+  if (!points) return undefined
+  const width = raw.width
+  const height = raw.height
+  if (typeof width !== 'number' || typeof height !== 'number') return undefined
+  if (![width, height].every((n) => Number.isFinite(n) && n > 0)) return undefined
+  let tops: number[] | undefined
+  if (
+    Array.isArray(raw.tops) &&
+    raw.tops.length === points.length &&
+    raw.tops.every((value) => typeof value === 'number' && Number.isFinite(value))
+  ) {
+    tops = raw.tops
+  }
+  return { kind: 'curb', points, width, height, tops }
 }
 
 function parseMesh(raw: Record<string, unknown>, index: number): MeshObject {
@@ -46,6 +86,8 @@ function parseMesh(raw: Record<string, unknown>, index: number): MeshObject {
     },
   }
   if (typeof raw.assetFile === 'string' && raw.assetFile) mesh.assetFile = raw.assetFile
+  const generator = parseGenerator(raw.generator)
+  if (generator) mesh.generator = generator
   return mesh
 }
 

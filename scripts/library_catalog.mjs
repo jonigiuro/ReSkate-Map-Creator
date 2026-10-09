@@ -118,8 +118,55 @@ async function walkDir(dir, rel, acc) {
 
 const LIBRARY_ROOT = 'Objects'
 
+/** Blends in Objects/Generators are drawn as runs, not dropped as single pieces. */
+async function scanGeneratorKits(objectsDir, rootEntries) {
+  const folder = rootEntries.find(
+    (entry) => entry.isDirectory() && entry.name.toLowerCase() === 'generators',
+  )
+  if (!folder) return []
+  const dir = path.join(objectsDir, folder.name)
+  const kits = []
+  let children = []
+  try {
+    children = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  for (const child of children) {
+    if (child.name.startsWith('.')) continue
+    if (child.isFile() && modelExt(child.name) === '.blend') {
+      const assetFile = toPosix(`${LIBRARY_ROOT}/${folder.name}/${child.name}`)
+      const fileStat = await stat(path.join(dir, child.name))
+      kits.push({
+        id: assetFile,
+        label: child.name.slice(0, -'.blend'.length),
+        assetFile,
+        revision: Math.round(fileStat.mtimeMs),
+      })
+      continue
+    }
+    if (!child.isDirectory()) continue
+    const sub = path.join(dir, child.name)
+    const files = (await readdir(sub, { withFileTypes: true })).filter(
+      (entry) => entry.isFile() && isModelFile(entry.name),
+    )
+    if (files.length === 0) continue
+    const chosen = chooseModel(child.name, files)
+    const assetFile = toPosix(`${LIBRARY_ROOT}/${folder.name}/${child.name}/${chosen.name}`)
+    const fileStat = await stat(path.join(sub, chosen.name))
+    kits.push({
+      id: assetFile,
+      label: child.name,
+      assetFile,
+      revision: Math.round(fileStat.mtimeMs),
+    })
+  }
+  kits.sort((a, b) => a.label.localeCompare(b.label))
+  return kits
+}
+
 export async function scanProjectLibrary(projectRoot) {
-  const acc = { categories: [], pieces: [] }
+  const acc = { categories: [], pieces: [], kits: [] }
   const objectsDir = path.join(projectRoot, LIBRARY_ROOT)
   let entries = []
   try {
@@ -130,8 +177,10 @@ export async function scanProjectLibrary(projectRoot) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name)) continue
+    if (entry.name.toLowerCase() === 'generators') continue
     await walkDir(path.join(objectsDir, entry.name), `${LIBRARY_ROOT}/${entry.name}`, acc)
   }
+  acc.kits = await scanGeneratorKits(objectsDir, entries)
   for (const category of acc.categories) {
     if (category.parentId === LIBRARY_ROOT) category.parentId = null
   }

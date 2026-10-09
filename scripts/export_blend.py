@@ -19,7 +19,13 @@ import bpy
 from mathutils import Matrix, Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sk8_materials import ensure_sk8_material, material_share_token
+from sk8_materials import (
+    assign_collision_mode,
+    collision_mode_of,
+    ensure_sk8_material,
+    ensure_sk8_object,
+    material_share_token,
+)
 
 
 GRIND_SURFACES = {
@@ -430,6 +436,214 @@ def _link_mesh(name, verts_three, faces, color, material=None, tile=None, loop_u
     mat = material or placeholder_material(f"{name}_mat", color)
     obj.data.materials.append(mat)
     return obj
+
+
+def _vadd(a, b):
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def _vsub(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _vscale(a, s):
+    return (a[0] * s, a[1] * s, a[2] * s)
+
+
+def _vdot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _vcross(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _vnorm(a):
+    length = math.sqrt(_vdot(a, a))
+    if length < 1e-12:
+        return None
+    return _vscale(a, 1.0 / length)
+
+
+def _horiz_dir(a, b):
+    dx = float(b[0]) - float(a[0])
+    dz = float(b[2]) - float(a[2])
+    length = math.hypot(dx, dz)
+    if length < 1e-8:
+        return (0.0, 0.0, 1.0)
+    return (dx / length, 0.0, dz / length)
+
+
+def _left_of(direction):
+    """cross((0, 1, 0), direction) for a horizontal direction."""
+    return (direction[2], 0.0, -direction[0])
+
+
+def _curb_sections(points, half):
+    dirs = [_horiz_dir(points[i], points[i + 1]) for i in range(len(points) - 1)]
+    sections = []
+
+    def push(point, offset, index):
+        centre = (float(point[0]), float(point[1]), float(point[2]))
+        sections.append((_vadd(centre, offset), _vsub(centre, offset), index))
+
+    for i, point in enumerate(points):
+        if i == 0 or i == len(points) - 1:
+            push(point, _vscale(_left_of(dirs[0 if i == 0 else i - 1]), half), i)
+            continue
+        incoming = _left_of(dirs[i - 1])
+        outgoing = _left_of(dirs[i])
+        miter = _vnorm(_vadd(incoming, outgoing))
+        if miter is None:
+            push(point, _vscale(incoming, half), i)
+            push(point, _vscale(outgoing, half), i)
+            continue
+        denom = _vdot(miter, incoming)
+        if denom < 0.25:
+            push(point, _vscale(incoming, half), i)
+            push(point, _vscale(outgoing, half), i)
+            continue
+        push(point, _vscale(miter, min(half / denom, half * 4.0)), i)
+    return sections
+
+
+def _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward):
+    normal = _vcross(_vsub(b, a), _vsub(c, a))
+    if _vdot(normal, outward) < 0:
+        b, c = c, b
+        ub, uc = uc, ub
+    if _vdot(normal, normal) < 1e-12:
+        return
+    start = len(verts)
+    verts.extend((a, b, c))
+    faces.append((start, start + 1, start + 2))
+    uvs.extend((ua, ub, uc))
+
+
+def _side_outward(p0, p1, centre):
+    edge = _vnorm((p1[0] - p0[0], 0.0, p1[2] - p0[2])) or (0.0, 0.0, 1.0)
+    normal = (edge[2], 0.0, -edge[0])
+    mid = _vscale(_vadd(p0, p1), 0.5)
+    if _vdot(normal, _vsub(mid, centre)) < 0:
+        normal = _vscale(normal, -1.0)
+    return normal
+
+
+CURB_TILE_M = 1.0
+
+
+def _edge_distances(sections, side):
+    distances = [0.0]
+    for index in range(1, len(sections)):
+        previous = sections[index - 1][side]
+        current = sections[index][side]
+        step = math.sqrt(sum((current[axis] - previous[axis]) ** 2 for axis in range(3)))
+        distances.append(distances[-1] + step)
+    return distances
+
+
+def concrete_material(project_root):
+    """Tileable concrete packed into the blend. One UV unit is one metre."""
+    cached = bpy.data.materials.get("concrete")
+    if cached:
+        return cached
+    folder = Path(project_root) / "public" / "img" / "textures" / "concrete"
+    files = {
+        "base": folder / "Concrete_BaseColor.png",
+        "normal": folder / "Concrete_Normal.png",
+        "rough": folder / "Concrete_Roughness.png",
+    }
+    missing = [str(path) for path in files.values() if not path.is_file()]
+    if missing:
+        print("Concrete textures missing, curb stays flat: " + ", ".join(missing))
+        return placeholder_material("concrete", (0.78, 0.76, 0.72))
+
+    mat = bpy.data.materials.new("concrete")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, files["base"], "sRGB", (-520, 280))
+    rough = _image_texture(nodes, files["rough"], "Non-Color", (-520, 0))
+    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-520, -280))
+    normal_map = nodes.new("ShaderNodeNormalMap")
+    normal_map.location = (-220, -280)
+    normal_map.inputs["Strength"].default_value = 0.65
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    return mat
+
+
+def make_curb_mesh(name, points, width, height, color, tops=None, material=None):
+    """One mitered curb. points are the base centreline, tops the top edge, both local."""
+    sections = _curb_sections(points, float(width) / 2.0)
+    if not isinstance(tops, (list, tuple)) or len(tops) != len(points):
+        tops = [float(point[1]) + float(height) for point in points]
+    verts = []
+    faces = []
+    uvs = []
+    left_dist = _edge_distances(sections, 0)
+    right_dist = _edge_distances(sections, 1)
+    across = float(width) / CURB_TILE_M
+
+    def bottom(section, side):
+        return section[side]
+
+    def top(section, side):
+        vertex = section[side]
+        return (vertex[0], float(tops[section[2]]), vertex[2])
+
+    def rise(section, side):
+        return (top(section, side)[1] - bottom(section, side)[1]) / CURB_TILE_M
+
+    for i in range(len(sections) - 1):
+        a = sections[i]
+        b = sections[i + 1]
+        centre = _vscale(_vadd(_vadd(a[0], a[1]), _vadd(b[0], b[1])), 0.25)
+        left = _side_outward(a[0], b[0], centre)
+        right = _side_outward(a[1], b[1], centre)
+        u_l0 = left_dist[i] / CURB_TILE_M
+        u_l1 = left_dist[i + 1] / CURB_TILE_M
+        u_r0 = right_dist[i] / CURB_TILE_M
+        u_r1 = right_dist[i + 1] / CURB_TILE_M
+        top_l0, top_r0 = (u_l0, 0.0), (u_r0, across)
+        top_l1, top_r1 = (u_l1, 0.0), (u_r1, across)
+        side_l0, side_lt0 = (u_l0, 0.0), (u_l0, rise(a, 0))
+        side_l1, side_lt1 = (u_l1, 0.0), (u_l1, rise(b, 0))
+        side_r0, side_rt0 = (u_r0, 0.0), (u_r0, rise(a, 1))
+        side_r1, side_rt1 = (u_r1, 0.0), (u_r1, rise(b, 1))
+        _add_tri(verts, faces, uvs, bottom(a, 0), bottom(b, 0), bottom(b, 1), top_l0, top_l1, top_r1, (0.0, -1.0, 0.0))
+        _add_tri(verts, faces, uvs, bottom(a, 0), bottom(b, 1), bottom(a, 1), top_l0, top_r1, top_r0, (0.0, -1.0, 0.0))
+        _add_tri(verts, faces, uvs, top(a, 0), top(a, 1), top(b, 1), top_l0, top_r0, top_r1, (0.0, 1.0, 0.0))
+        _add_tri(verts, faces, uvs, top(a, 0), top(b, 1), top(b, 0), top_l0, top_r1, top_l1, (0.0, 1.0, 0.0))
+        _add_tri(verts, faces, uvs, bottom(a, 0), top(a, 0), top(b, 0), side_l0, side_lt0, side_lt1, left)
+        _add_tri(verts, faces, uvs, bottom(a, 0), top(b, 0), bottom(b, 0), side_l0, side_lt1, side_l1, left)
+        _add_tri(verts, faces, uvs, bottom(a, 1), bottom(b, 1), top(b, 1), side_r0, side_r1, side_rt1, right)
+        _add_tri(verts, faces, uvs, bottom(a, 1), top(b, 1), top(a, 1), side_r0, side_rt1, side_rt0, right)
+
+    start_out = _horiz_dir(points[1], points[0])
+    end_out = _horiz_dir(points[-2], points[-1])
+    first = sections[0]
+    last = sections[-1]
+
+    def cap(section):
+        return (0.0, 0.0), (across, 0.0), (across, rise(section, 1)), (0.0, rise(section, 0))
+
+    start_cap = cap(first)
+    end_cap = cap(last)
+    _add_tri(verts, faces, uvs, bottom(first, 0), bottom(first, 1), top(first, 1), start_cap[0], start_cap[1], start_cap[2], start_out)
+    _add_tri(verts, faces, uvs, bottom(first, 0), top(first, 1), top(first, 0), start_cap[0], start_cap[2], start_cap[3], start_out)
+    _add_tri(verts, faces, uvs, bottom(last, 0), top(last, 1), bottom(last, 1), end_cap[0], end_cap[2], end_cap[1], end_out)
+    _add_tri(verts, faces, uvs, bottom(last, 0), top(last, 0), top(last, 1), end_cap[0], end_cap[3], end_cap[2], end_out)
+    return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs)
 
 
 def make_box_mesh(name, size, color, material=None, tile=None):
@@ -855,6 +1069,385 @@ def append_authored_asset(name, blend_path, position, rotation, scale, colls):
     return baked[0][0] if baked else kept[0]
 
 
+def _kit_role(name):
+    """_start, _middle, or _end, including Bench_middle_collision."""
+    lower = (name or "").lower()
+    for role in ("start", "middle", "end"):
+        token = f"_{role}"
+        if lower.endswith(token) or f"{token}_" in lower:
+            return role
+    return None
+
+
+def _object_kit_role(obj):
+    role = _kit_role(obj.name)
+    if role:
+        return role
+    if obj.type == "MESH" and obj.data is not None:
+        return _kit_role(obj.data.name)
+    return None
+
+
+def _three_basis():
+    """Blender Z-up point (x, y, z) → Three Y-up (x, z, -y)."""
+    return Matrix(
+        (
+            (1.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 1.0, 0.0),
+            (0.0, -1.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 1.0),
+        )
+    )
+
+
+def _layout_kit(points, lengths):
+    """Same packing as src/lib/kitLayout.ts. Middles stretch to fill each straight span."""
+    if len(points) < 2:
+        return []
+    stamps = []
+    last = len(points) - 2
+    eps = 1e-3
+
+    def at(a, b, distance, length):
+        t = 0.0 if length <= eps else distance / length
+        return (
+            round(a[0] + (b[0] - a[0]) * t, 4),
+            round(a[1] + (b[1] - a[1]) * t, 4),
+            round(a[2] + (b[2] - a[2]) * t, 4),
+        )
+
+    for i in range(last + 1):
+        a = points[i]
+        b = points[i + 1]
+        dx = b[0] - a[0]
+        dz = b[2] - a[2]
+        seg_len = math.hypot(dx, dz)
+        if seg_len < 0.05:
+            continue
+        yaw = math.atan2(dx, dz)
+        cursor = 0.0
+        limit = seg_len
+        if i == 0 and lengths["start"] > 0.05 and lengths["start"] <= seg_len + eps:
+            stamps.append(
+                {
+                    "role": "start",
+                    "from": at(a, b, 0.0, seg_len),
+                    "to": at(a, b, lengths["start"], seg_len),
+                    "yaw": yaw,
+                    "miter_start": None,
+                    "miter_end": points[i + 2] if i < last and abs(lengths["start"] - seg_len) <= eps else None,
+                }
+            )
+            cursor = lengths["start"]
+        if i == last and lengths["end"] > 0.05 and cursor + lengths["end"] <= seg_len + eps:
+            placed = seg_len - lengths["end"]
+            stamps.append(
+                {
+                    "role": "end",
+                    "from": at(a, b, placed, seg_len),
+                    "to": at(a, b, seg_len, seg_len),
+                    "yaw": yaw,
+                    "miter_start": points[i - 1] if i > 0 and placed <= eps else None,
+                    "miter_end": None,
+                }
+            )
+            limit = placed
+        middle = lengths["middle"]
+        if middle <= 0.05:
+            continue
+        room = limit - cursor
+        if room <= 0.05:
+            continue
+        count = max(1, math.floor((room + eps) / middle))
+        piece = room / count
+        for k in range(count):
+            distance = cursor + k * piece
+            stamps.append(
+                {
+                    "role": "middle",
+                    "from": at(a, b, distance, seg_len),
+                    "to": at(a, b, distance + piece, seg_len),
+                    "yaw": yaw,
+                    "miter_start": points[i - 1] if i > 0 and k == 0 else None,
+                    "miter_end": points[i + 2] if i < last and k == count - 1 else None,
+                }
+            )
+    return stamps
+
+
+def _rebase_kit_points(points):
+    """Longest horizontal side becomes +Z. Start face at z = 0, bottom at y = 0, centered in x."""
+    if not points:
+        return [], 0.0
+    min_x = min(p.x for p in points)
+    max_x = max(p.x for p in points)
+    min_y = min(p.y for p in points)
+    max_z = max(p.z for p in points)
+    min_z = min(p.z for p in points)
+    axis = "x" if (max_x - min_x) > (max_z - min_z) else "z"
+
+    def turn(p):
+        if axis == "x":
+            return Vector((-p.z, p.y, p.x))
+        return Vector((p.x, p.y, p.z))
+
+    turned = [turn(p) for p in points]
+    tmin_x = min(p.x for p in turned)
+    tmax_x = max(p.x for p in turned)
+    tmin_y = min(p.y for p in turned)
+    tmin_z = min(p.z for p in turned)
+    center_x = (tmin_x + tmax_x) * 0.5
+    length = (max_x - min_x) if axis == "x" else (max_z - min_z)
+    shifted = [Vector((p.x - center_x, p.y - tmin_y, p.z - tmin_z)) for p in turned]
+    return shifted, length
+
+
+def _slant_kit_points(points, length, end, corner, incoming, outgoing, piece_from, yaw):
+    dir_in = Vector((corner[0] - incoming[0], 0.0, corner[2] - incoming[2]))
+    dir_out = Vector((outgoing[0] - corner[0], 0.0, outgoing[2] - corner[2]))
+    if dir_in.length_squared < 1e-8 or dir_out.length_squared < 1e-8:
+        return
+    dir_in.normalize()
+    dir_out.normalize()
+    if dir_in.dot(dir_out) > 0.998:
+        return
+    bisector = dir_in + dir_out
+    normal = dir_in if bisector.length_squared < 1e-8 else bisector.normalized()
+    c = math.cos(yaw)
+    s = math.sin(yaw)
+    forward = Vector((s, 0.0, c))
+    denom = normal.dot(forward)
+    if abs(denom) < 1e-6:
+        return
+    origin = Vector(piece_from)
+    corner_v = Vector(corner)
+    band = max(0.01, length * 0.02)
+    for point in points:
+        on_cap = point.z <= band if end == "start" else point.z >= length - band
+        if not on_cap:
+            continue
+        world = Vector((point.x * c + point.z * s, point.y, -point.x * s + point.z * c)) + origin
+        travel = normal.dot(corner_v - world) / denom
+        world = world + forward * travel
+        local = world - origin
+        point.x = local.x * c + local.z * -s
+        point.y = local.y
+        point.z = local.x * s + local.z * c
+
+
+def _scale_length_uvs(mesh, authored_z, factor):
+    """Repeat the UV that runs along the piece so a tile keeps its size."""
+    if abs(factor - 1.0) < 1e-4:
+        return
+    layers = getattr(mesh, "uv_layers", None)
+    if not layers:
+        return
+    for layer in layers:
+        sum_u = 0.0
+        sum_v = 0.0
+        for loop in mesh.loops:
+            z = authored_z[loop.vertex_index]
+            uv = layer.data[loop.index].uv
+            sum_u += uv.x * z
+            sum_v += uv.y * z
+        along_u = abs(sum_u) >= abs(sum_v)
+        for item in layer.data:
+            uv = item.uv
+            if along_u:
+                item.uv = (uv.x * factor, uv.y)
+            else:
+                item.uv = (uv.x, uv.y * factor)
+
+
+def _wrap_kit_point(point, yaw, origin):
+    c = math.cos(yaw)
+    s = math.sin(yaw)
+    return (
+        origin[0] + point.x * c + point.z * s,
+        origin[1] + point.y,
+        origin[2] + -point.x * s + point.z * c,
+    )
+
+
+def _descendant_meshes(role, objects):
+    found = []
+    if role.type == "MESH" and role.data is not None:
+        found.append(role)
+    for obj in objects:
+        if obj.type != "MESH" or obj.data is None or obj in found:
+            continue
+        parent = obj.parent
+        while parent is not None:
+            if parent == role:
+                found.append(obj)
+                break
+            parent = parent.parent
+    return found
+
+
+def export_kit(name, asset_file, points, position, rotation, scale, sk8, colls, project_root):
+    """
+    Copy the _start, _middle, and _end meshes along the drawn path.
+    The source blend is not left in the map, and the copies are not cell-joined.
+    """
+    if not isinstance(points, list) or len(points) < 2:
+        print(f"Skipping kit {name}: needs at least two points")
+        return
+    blend_path = Path(asset_file)
+    if not blend_path.is_absolute():
+        blend_path = project_root / asset_file
+    blend_path = blend_path.resolve()
+    if not blend_path.is_file():
+        print(f"Skipping kit {name}: blend not found at {blend_path}")
+        return
+
+    ensure_sk8_material()
+    ensure_sk8_object()
+    before_objects = set(bpy.data.objects)
+    before_images = set(bpy.data.images)
+    before_materials = set(bpy.data.materials)
+    with bpy.data.libraries.load(str(blend_path), link=False) as (data_from, data_to):
+        data_to.objects = list(data_from.objects)
+    imported = [obj for obj in bpy.data.objects if obj not in before_objects]
+    scene_coll = bpy.context.scene.collection
+    for obj in imported:
+        if obj.name not in scene_coll.objects:
+            scene_coll.objects.link(obj)
+    bpy.context.view_layer.update()
+    tag_imported_materials(before_materials, blend_path.as_posix())
+
+    roles = {role: [] for role in ("start", "middle", "end")}
+    for obj in imported:
+        role = _object_kit_role(obj)
+        if not role:
+            continue
+        parent = obj.parent
+        nested = False
+        while parent is not None:
+            if _object_kit_role(parent):
+                nested = True
+                break
+            parent = parent.parent
+        if not nested:
+            roles[role].append(obj)
+    if not any(roles.values()):
+        print(f"Skipping kit {name}: no objects named _start, _middle, or _end in {blend_path.name}")
+        for obj in imported:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        return
+
+    basis = _three_basis()
+    basis_inv = basis.inverted()
+    prepared = {}
+    seen_meshes = set()
+    for role, roots in roles.items():
+        parts = []
+        cloud = []
+        for root in roots:
+            for mesh_obj in _descendant_meshes(root, imported):
+                if mesh_obj in seen_meshes:
+                    continue
+                seen_meshes.add(mesh_obj)
+                mesh_three = basis @ mesh_obj.matrix_world @ basis_inv
+                local = [mesh_three @ (basis @ vert.co) for vert in mesh_obj.data.vertices]
+                mode = collision_mode_of(mesh_obj)
+                parts.append(
+                    {
+                        "source": mesh_obj.data,
+                        "local": local,
+                        "collision_mode": mode,
+                        "hide_from_pause_map": bool(mesh_obj.get("sk8_hide_from_pause_map", False)),
+                    }
+                )
+                cloud.extend(local)
+                print(f"Kit {name} {role}: {mesh_obj.name} collision={mode}")
+        shifted_all, length = _rebase_kit_points(cloud)
+        if length < 0.05 or not parts:
+            continue
+        cursor = 0
+        baked_parts = []
+        for part in parts:
+            count = len(part["local"])
+            baked_parts.append(
+                {
+                    "source": part["source"],
+                    "points": shifted_all[cursor : cursor + count],
+                    "collision_mode": part["collision_mode"],
+                    "hide_from_pause_map": part["hide_from_pause_map"],
+                }
+            )
+            cursor += count
+        prepared[role] = {"length": length, "parts": baked_parts}
+
+    lengths = {
+        "start": prepared.get("start", {}).get("length", 0.0),
+        "middle": prepared.get("middle", {}).get("length", 0.0),
+        "end": prepared.get("end", {}).get("length", 0.0),
+    }
+    stamps = _layout_kit(points, lengths)
+    made = 0
+    for index, stamp in enumerate(stamps):
+        proto = prepared.get(stamp["role"])
+        if not proto:
+            continue
+        for part_index, part in enumerate(proto["parts"]):
+            shaped = [Vector(p) for p in part["points"]]
+            authored_z = [p.z for p in shaped]
+            run = math.hypot(stamp["to"][0] - stamp["from"][0], stamp["to"][2] - stamp["from"][2])
+            factor = run / proto["length"] if proto["length"] else 1.0
+            if abs(factor - 1.0) > 1e-4:
+                for point in shaped:
+                    point.z *= factor
+            if stamp["miter_start"] is not None:
+                _slant_kit_points(
+                    shaped,
+                    run,
+                    "start",
+                    stamp["from"],
+                    stamp["miter_start"],
+                    stamp["to"],
+                    stamp["from"],
+                    stamp["yaw"],
+                )
+            if stamp["miter_end"] is not None:
+                _slant_kit_points(
+                    shaped,
+                    run,
+                    "end",
+                    stamp["to"],
+                    stamp["from"],
+                    stamp["miter_end"],
+                    stamp["from"],
+                    stamp["yaw"],
+                )
+            mesh = part["source"].copy()
+            _scale_length_uvs(mesh, authored_z, factor)
+            for vert, point in zip(mesh.vertices, shaped):
+                wrapped = _wrap_kit_point(point, stamp["yaw"], stamp["from"])
+                vert.co = three_local_to_blender(*wrapped)
+            mesh.update()
+            piece_name = f"{name}_{stamp['role']}_{index + 1}"
+            if len(proto["parts"]) > 1:
+                piece_name = f"{piece_name}_{part_index + 1}"
+            obj = bpy.data.objects.new(piece_name, mesh)
+            obj.rotation_mode = "XYZ"
+            apply_transform(obj, position, rotation, scale)
+            assign_collision_mode(obj, part.get("collision_mode") or "triangle_mesh")
+            obj["sk8_hide_from_pause_map"] = bool(part.get("hide_from_pause_map", False))
+            obj["sk8_object_surface_authored"] = True
+            obj["reskate_map_creator"] = "generator_kit"
+            link_only(obj, colls["Map"])
+            made += 1
+
+    for obj in imported:
+        data = obj.data if obj.type == "MESH" else None
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if data is not None and data.users == 0:
+            bpy.data.meshes.remove(data)
+    pack_images_from(blend_path, before_images)
+    print(f"Kit {name} from {blend_path.name}: {made} pieces")
+
+
 def apply_transform(obj, position, rotation, scale):
     obj.location = three_to_blender_pos(position)
     obj.rotation_euler = three_to_blender_euler(rotation)
@@ -866,6 +1459,7 @@ def build(scene):
     apply_export_options(scene)
     # Before any library .blend is read, so Invisible (Collision Only) is restored.
     ensure_sk8_material()
+    ensure_sk8_object()
     disable_undo()
     clear_scene()
     colls = ensure_collections()
@@ -890,6 +1484,56 @@ def build(scene):
                     entry.get("rotation") or [0, 0, 0],
                     entry.get("scale") or [1, 1, 1],
                     colls,
+                )
+                continue
+
+            gen = entry.get("generator") or {}
+            if gen.get("kind") == "curb":
+                points = gen.get("points") or []
+                if len(points) < 2:
+                    print(f"Skipping curb {name}: needs at least two points")
+                    continue
+                width = float(gen.get("width") or 0.5)
+                height = float(gen.get("height") or 0.5)
+                obj = make_curb_mesh(
+                    name,
+                    points,
+                    width,
+                    height,
+                    (0.78, 0.76, 0.72),
+                    gen.get("tops"),
+                    concrete_material(project_root),
+                )
+                obj.name = name
+                position = entry.get("position") or [0, 0, 0]
+                apply_transform(
+                    obj,
+                    position,
+                    entry.get("rotation") or [0, 0, 0],
+                    entry.get("scale") or [1, 1, 1],
+                )
+                set_sk8_mesh_props(obj, entry.get("sk8"))
+                tag_join_piece(
+                    obj,
+                    "generator_curb",
+                    placement_cell(position),
+                    "generator_curb",
+                    "generator_curb",
+                )
+                link_only(obj, colls["Map"])
+                continue
+
+            if gen.get("kind") == "kit":
+                export_kit(
+                    name,
+                    gen.get("assetFile") or "",
+                    gen.get("points") or [],
+                    entry.get("position") or [0, 0, 0],
+                    entry.get("rotation") or [0, 0, 0],
+                    entry.get("scale") or [1, 1, 1],
+                    entry.get("sk8"),
+                    colls,
+                    project_root,
                 )
                 continue
 

@@ -146,7 +146,7 @@ class PreviewErrorBoundary extends Component<
   }
 }
 
-function useAuthoredPreviewUrl(assetFile: string, revision: number) {
+export function useAuthoredPreviewUrl(assetFile: string, revision: number) {
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const http = typeof window !== 'undefined' && window.location.protocol !== 'file:'
 

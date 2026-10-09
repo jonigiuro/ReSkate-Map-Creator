@@ -35,6 +35,7 @@ type LibraryHelpers = {
       assetFile: string
       revision: number
     }[]
+    kits: { id: string; label: string; assetFile: string; revision: number }[]
   }>
   ensureAssetPreview: (options: {
     projectRoot: string

@@ -15,12 +15,33 @@ export interface Sk8MeshProps {
   hide_from_pause_map: boolean
 }
 
+/** One curb run. Points are the base centreline in the object's local space. */
+export interface CurbGenerator {
+  kind: 'curb'
+  points: [number, number, number][]
+  /** Top edge at each point, local Y. One entry per point. */
+  tops?: number[]
+  width: number
+  height: number
+}
+
+/** A run of authored _start, _middle, and _end meshes. Points are the path in local space. */
+export interface KitGenerator {
+  kind: 'kit'
+  assetFile: string
+  points: [number, number, number][]
+}
+
+export type MeshGenerator = CurbGenerator | KitGenerator
+
 export interface MeshObject {
   id: string
   kind: 'mesh'
   libraryId: LibraryId
   /** Project-relative .blend, .fbx, or .obj. Set for objects dropped in from a folder. */
   assetFile?: string
+  /** Present when the mesh was drawn with a generator. */
+  generator?: MeshGenerator
   name: string
   position: [number, number, number]
   rotation: [number, number, number]

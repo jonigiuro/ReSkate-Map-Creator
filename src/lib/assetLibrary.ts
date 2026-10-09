@@ -12,23 +12,39 @@ export type AssetPiece = {
   revision: number
 }
 
+export type AssetKit = {
+  id: string
+  label: string
+  assetFile: string
+  revision: number
+}
+
 export type AssetCatalog = {
   categories: AssetCategory[]
   pieces: AssetPiece[]
+  kits: AssetKit[]
 }
 
-export const EMPTY_CATALOG: AssetCatalog = { categories: [], pieces: [] }
+export const EMPTY_CATALOG: AssetCatalog = { categories: [], pieces: [], kits: [] }
+
+function withKits(catalog: Partial<AssetCatalog> | null | undefined): AssetCatalog {
+  return {
+    categories: catalog?.categories ?? [],
+    pieces: catalog?.pieces ?? [],
+    kits: catalog?.kits ?? [],
+  }
+}
 
 export async function fetchAssetCatalog(): Promise<AssetCatalog> {
   if (window.location.protocol === 'file:' && window.reskateDesktop?.listLibrary) {
-    return window.reskateDesktop.listLibrary()
+    return withKits(await window.reskateDesktop.listLibrary())
   }
   const res = await fetch('/api/library')
   if (!res.ok) {
     const data = (await res.json().catch(() => null)) as { error?: string } | null
     throw new Error(data?.error || `Library scan failed (${res.status})`)
   }
-  return (await res.json()) as AssetCatalog
+  return withKits((await res.json()) as AssetCatalog)
 }
 
 // Keep in step with PREVIEW_PIPELINE in scripts/library_catalog.mjs so cached meshes reload.

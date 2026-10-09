@@ -10,6 +10,15 @@ import {
 } from './lib/assetLibrary'
 import { createDefaultScene, createNewScene } from './lib/defaultScene'
 import { uid } from './lib/ids'
+import {
+  CURB_HEIGHT_M,
+  CURB_WIDTH_M,
+  curbLocalPoints,
+  curbOrigin,
+  curbRunLength,
+  curbSegmentTooShort,
+} from './lib/generators'
+import type { DrawGenerator } from './lib/kitLayout'
 import { getPiece } from './lib/library'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
 import { useSceneHistory } from './lib/sceneHistory'
@@ -28,6 +37,9 @@ export default function App() {
   const [catalog, setCatalog] = useState<AssetCatalog>(EMPTY_CATALOG)
   const [categoryPath, setCategoryPath] = useState<string[]>([])
   const [activePiece, setActivePiece] = useState<string | null>(null)
+  const [activeGenerator, setActiveGenerator] = useState<DrawGenerator | null>(null)
+  const [pins, setPins] = useState<[number, number, number][]>([])
+  history.pinsRef.current = pins
   const [placeYaw, setPlaceYaw] = useState(0)
   const [transformMode, setTransformMode] = useState<TransformMode>('translate')
   const [snapMove, setSnapMove] = useState(false)
@@ -63,7 +75,7 @@ export default function App() {
         if (cancel) return
         setCatalog(next)
         setCategoryPath((path) => {
-          if (path.length === 0) return path
+          if (path.length === 0 || path[0] === 'generators') return path
           const intact = path.every((id, index) => {
             const category = next.categories.find((item) => item.id === id)
             if (!category) return false
@@ -168,17 +180,30 @@ export default function App() {
     setError(null)
   }
 
+  function restoreSnap(snap: {
+    scene: MapScene
+    selectedId: string | null
+    pins?: [number, number, number][]
+    strokeId?: string | null
+  }) {
+    const nextPins = snap.pins ?? []
+    history.sceneRef.current = snap.scene
+    history.selectedRef.current = snap.selectedId
+    history.pinsRef.current = nextPins
+    history.strokeIdRef.current = snap.strokeId ?? null
+    setScene(snap.scene)
+    setSelectedId(snap.selectedId)
+    setPins(nextPins)
+    setError(null)
+  }
+
   function undo() {
     const previous = history.undo()
     if (!previous) {
       setStatus('Nothing to undo')
       return
     }
-    history.sceneRef.current = previous.scene
-    history.selectedRef.current = previous.selectedId
-    setScene(previous.scene)
-    setSelectedId(previous.selectedId)
-    setError(null)
+    restoreSnap(previous)
     setStatus('Undone')
   }
 
@@ -188,11 +213,7 @@ export default function App() {
       setStatus('Nothing to redo')
       return
     }
-    history.sceneRef.current = next.scene
-    history.selectedRef.current = next.selectedId
-    setScene(next.scene)
-    setSelectedId(next.selectedId)
-    setError(null)
+    restoreSnap(next)
     setStatus('Redone')
   }
 
@@ -291,6 +312,10 @@ export default function App() {
       if (event.metaKey || event.ctrlKey || event.altKey || typing) return
       if (event.key === 'Escape') {
         setActivePiece(null)
+        setActiveGenerator(null)
+        history.pinsRef.current = []
+        history.strokeIdRef.current = null
+        setPins([])
         return
       }
       if (event.key === 'Delete') {
@@ -350,10 +375,162 @@ export default function App() {
     setError(null)
   }
 
+  function clearPins() {
+    history.pinsRef.current = []
+    history.strokeIdRef.current = null
+    setPins([])
+  }
+
   function togglePiece(id: string) {
+    setActiveGenerator(null)
+    clearPins()
     setActivePiece((current) => (current === id ? null : id))
     setPlaceYaw(0)
     setSelectedId(null)
+  }
+
+  function toggleCurb() {
+    setActivePiece(null)
+    setSelectedId(null)
+    clearPins()
+    setActiveGenerator((current) => (current?.kind === 'curb' ? null : { kind: 'curb' }))
+  }
+
+  function toggleKit(kit: { assetFile: string; label: string }) {
+    setActivePiece(null)
+    setSelectedId(null)
+    clearPins()
+    setActiveGenerator((current) =>
+      current?.kind === 'kit' && current.assetFile === kit.assetFile
+        ? null
+        : { kind: 'kit', assetFile: kit.assetFile, label: kit.label },
+    )
+  }
+
+  function clickCurb(point: THREE.Vector3) {
+    const y = point.y < 0.02 ? 0 : point.y
+    const nextPoint: [number, number, number] = [round4(point.x), round4(y), round4(point.z)]
+    const prevPins = history.pinsRef.current
+    const previous = prevPins.at(-1)
+    if (previous && curbSegmentTooShort(previous, nextPoint)) {
+      setStatus('That curb is too short.')
+      return
+    }
+    const before = history.checkpoint()
+    const nextPins = [...prevPins, nextPoint]
+    history.pinsRef.current = nextPins
+    if (previous) {
+      const prev = history.sceneRef.current
+      const origin = curbOrigin(nextPins)
+      const local = curbLocalPoints(nextPins, origin)
+      const strokeId = history.strokeIdRef.current
+      const existing = prev.objects.find(
+        (obj): obj is MeshObject =>
+          obj.kind === 'mesh' && obj.id === strokeId && obj.generator?.kind === 'curb',
+      )
+      const generator = {
+        kind: 'curb' as const,
+        points: local,
+        tops: local.map((point) => round4(point[1] + CURB_HEIGHT_M)),
+        width: CURB_WIDTH_M,
+        height: CURB_HEIGHT_M,
+      }
+      if (existing) {
+        applyScene({
+          ...prev,
+          objects: prev.objects.map((obj) =>
+            obj.id === existing.id && obj.kind === 'mesh'
+              ? { ...obj, position: origin, rotation: [0, 0, 0], scale: [1, 1, 1], generator }
+              : obj,
+          ),
+        })
+        setStatus(`Extended curb to ${curbRunLength(nextPins)} m`)
+      } else {
+        const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'curb').length
+        const id = uid('mesh')
+        const obj: MeshObject = {
+          id,
+          kind: 'mesh',
+          libraryId: 'generator_curb',
+          name: `Curb_${count + 1}`,
+          position: origin,
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+          generator,
+          sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
+        }
+        history.strokeIdRef.current = id
+        applyScene({ ...prev, objects: [...prev.objects, obj] })
+        setStatus(`Added curb, ${curbRunLength(nextPins)} m`)
+      }
+    } else {
+      setStatus('Pinned the curb start')
+    }
+    setPins(nextPins)
+    history.remember(before)
+    setError(null)
+  }
+
+  function clickKit(point: THREE.Vector3, kit: { assetFile: string; label: string }) {
+    const y = point.y < 0.02 ? 0 : point.y
+    const nextPoint: [number, number, number] = [round4(point.x), round4(y), round4(point.z)]
+    const prevPins = history.pinsRef.current
+    const previous = prevPins.at(-1)
+    if (previous && curbSegmentTooShort(previous, nextPoint)) {
+      setStatus('That segment is too short.')
+      return
+    }
+    const before = history.checkpoint()
+    const nextPins = [...prevPins, nextPoint]
+    history.pinsRef.current = nextPins
+    if (previous) {
+      const prev = history.sceneRef.current
+      const origin = curbOrigin(nextPins)
+      const local = curbLocalPoints(nextPins, origin)
+      const strokeId = history.strokeIdRef.current
+      const existing = prev.objects.find(
+        (obj): obj is MeshObject =>
+          obj.kind === 'mesh' && obj.id === strokeId && obj.generator?.kind === 'kit',
+      )
+      const generator = {
+        kind: 'kit' as const,
+        assetFile: kit.assetFile,
+        points: local,
+      }
+      if (existing) {
+        applyScene({
+          ...prev,
+          objects: prev.objects.map((obj) =>
+            obj.id === existing.id && obj.kind === 'mesh'
+              ? { ...obj, position: origin, rotation: [0, 0, 0], scale: [1, 1, 1], generator }
+              : obj,
+          ),
+        })
+        setStatus(`Extended ${kit.label} to ${curbRunLength(nextPins)} m`)
+      } else {
+        const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'kit').length
+        const id = uid('mesh')
+        const obj: MeshObject = {
+          id,
+          kind: 'mesh',
+          libraryId: 'generator_kit',
+          name: `${kit.label}_${count + 1}`,
+          position: origin,
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+          generator,
+          sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
+        }
+        history.strokeIdRef.current = id
+        applyScene({ ...prev, objects: [...prev.objects, obj] })
+        setStatus(`Added ${kit.label}, ${curbRunLength(nextPins)} m`)
+      }
+    } else {
+      setStatus(`Pinned the start of ${kit.label}`)
+    }
+    setPins(nextPins)
+    history.remember(before)
+    setError(null)
   }
 
   function rotatePlacement() {
@@ -361,7 +538,7 @@ export default function App() {
   }
 
   function onGroundClick() {
-    if (activePiece) return
+    if (activePiece || activeGenerator) return
     if (tool === 'select') setSelectedId(null)
   }
 
@@ -468,6 +645,10 @@ export default function App() {
     setSelectedId(spawn?.id ?? next.objects[0]?.id ?? null)
     setTool('select')
     setActivePiece(null)
+    setActiveGenerator(null)
+    history.pinsRef.current = []
+    history.strokeIdRef.current = null
+    setPins([])
     setPlaceYaw(0)
     clipboardRef.current = null
     setError(null)
@@ -570,9 +751,10 @@ export default function App() {
   const folderPieces = insideFolder
     ? catalog.pieces.filter((piece) => piece.categoryId === currentCategoryId)
     : []
-  const assetRevisions = Object.fromEntries(
-    catalog.pieces.map((piece) => [piece.assetFile, piece.revision]),
-  )
+  const assetRevisions = Object.fromEntries([
+    ...catalog.pieces.map((piece) => [piece.assetFile, piece.revision] as const),
+    ...(catalog.kits ?? []).map((kit) => [kit.assetFile, kit.revision] as const),
+  ])
   const active = catalog.pieces.find((piece) => piece.id === activePiece)
 
   function subtreePieceCount(categoryId: string) {
@@ -592,6 +774,7 @@ export default function App() {
   }
 
   function crumbLabel(id: string) {
+    if (id === 'generators') return 'Generators'
     return catalog.categories.find((category) => category.id === id)?.label ?? id
   }
 
@@ -702,9 +885,11 @@ export default function App() {
         <aside className="panel library">
           <h2>Library</h2>
           <p className="hint">
-            {categoryPath.length === 0
-              ? 'Open a category, then click a piece. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
-              : 'Click a piece to pick it up. It follows the cursor. Right-click turns it 90°. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid; height stays on the surface under the cursor.'}
+            {categoryPath[0] === 'generators'
+              ? 'Click Curbs, or a kit from Objects/Generators. Name those blend objects with _start, _middle, and _end, and set them in a row. The first click drops a pin. Keep clicking to extend the run. Straight pieces stretch so they meet. A corner slants the two faces that meet. Escape leaves the tool.'
+              : categoryPath.length === 0
+                ? 'Open a category, then click a piece. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
+                : 'Click a piece to pick it up. It follows the cursor. Right-click turns it 90°. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid; height stays on the surface under the cursor.'}
           </p>
           {categoryPath.length > 0 && (
             <>
@@ -734,7 +919,58 @@ export default function App() {
             </>
           )}
           <ul className="lib-list">
-            {categoryPath.length === 0 &&
+            {categoryPath.length === 0 && (
+              <li>
+                <button type="button" className="lib" onClick={() => setCategoryPath(['generators'])}>
+                  <span className="swatch folder" />
+                  <span>
+                    <strong>Generators</strong>
+                    <small>
+                      {(catalog.kits ?? []).length === 0
+                        ? '1 generator'
+                        : `${(catalog.kits ?? []).length + 1} generators`}
+                    </small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath[0] === 'generators' && (
+              <li>
+                <button
+                  type="button"
+                  className={activeGenerator?.kind === 'curb' ? 'lib active' : 'lib'}
+                  aria-pressed={activeGenerator?.kind === 'curb'}
+                  onClick={toggleCurb}
+                >
+                  <span className="swatch" style={{ background: '#c8c2b8' }} />
+                  <span>
+                    <strong>Curbs</strong>
+                    <small>{activeGenerator?.kind === 'curb' ? 'Click the map to draw' : 'Click to draw'}</small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath[0] === 'generators' &&
+              (catalog.kits ?? []).map((kit) => {
+                const pressed = activeGenerator?.kind === 'kit' && activeGenerator.assetFile === kit.assetFile
+                return (
+                  <li key={kit.id}>
+                    <button
+                      type="button"
+                      className={pressed ? 'lib active' : 'lib'}
+                      aria-pressed={pressed}
+                      onClick={() => toggleKit(kit)}
+                    >
+                      <span className="swatch" style={{ background: '#d7c4a3' }} />
+                      <span>
+                        <strong>{kit.label}</strong>
+                        <small>{pressed ? 'Click the map to draw' : 'Click to draw'}</small>
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
+            {categoryPath[0] !== 'generators' && categoryPath.length === 0 &&
               catalog.categories
                 .filter((category) => category.parentId === null)
                 .map((category) => {
@@ -757,7 +993,7 @@ export default function App() {
                     </li>
                   )
                 })}
-            {categoryPath.length === 0 &&
+            {categoryPath[0] !== 'generators' && categoryPath.length === 0 &&
               catalog.pieces
                 .filter((piece) => piece.categoryId === null)
                 .map((piece) => (
@@ -773,7 +1009,7 @@ export default function App() {
                     />
                   </li>
                 ))}
-            {folderCategories.map((category) => {
+            {categoryPath[0] !== 'generators' && folderCategories.map((category) => {
               const count = subtreePieceCount(category.id)
               return (
                 <li key={category.id}>
@@ -793,7 +1029,7 @@ export default function App() {
                 </li>
               )
             })}
-            {folderPieces.map((piece) => (
+            {categoryPath[0] !== 'generators' && folderPieces.map((piece) => (
               <li key={piece.id}>
                 <PieceButton
                   id={piece.id}
@@ -862,13 +1098,27 @@ export default function App() {
             onRotatePiece={rotatePlacement}
             assetRevisions={assetRevisions}
             onSelect={(id) => {
-              if (activePiece) return
+              if (activePiece || activeGenerator) return
               setSelectedId(id)
+              const picked = id ? history.sceneRef.current.objects.find((obj) => obj.id === id) : null
+              if (picked?.kind === 'mesh' && picked.generator?.kind === 'curb') {
+                setStatus('Drag a pin sideways to move it. Up and down sets that sphere, top or base.')
+              } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'kit') {
+                setStatus('Drag the gizmo to move the whole run.')
+              } else if (id) {
+                setStatus(null)
+              }
             }}
             onPatchObject={(id, patch) => patchObject(id, patch, 'gesture')}
             onTransformStart={() => history.beginGesture()}
             onTransformEnd={() => history.finishGesture()}
             onPlacePiece={placePiece}
+            generator={activeGenerator}
+            pins={pins}
+            onGeneratorClick={(point) => {
+              if (activeGenerator?.kind === 'kit') clickKit(point, activeGenerator)
+              else clickCurb(point)
+            }}
           />
 
           <div className="status-bar">
@@ -877,7 +1127,13 @@ export default function App() {
             </span>
             {status && <span className="ok">{status}</span>}
             {error && <span className="err">{error}</span>}
-            {tool === 'select' && (
+            {activeGenerator?.kind === 'curb' ? (
+              <span>Click the map to drop a pin. The next click builds a 0.5 m wide curb. Another click turns the corner on the same mesh. Escape leaves Curbs.</span>
+            ) : activeGenerator?.kind === 'kit' ? (
+              <span>
+                Click the map to drop a pin. The next clicks extend {activeGenerator.label} and turn the corner. Escape leaves the tool.
+              </span>
+            ) : tool === 'select' && (
               <span>
                 Click to select. Right-drag orbits, middle-drag pans. C frames the selection. Ctrl+C
                 copies, Ctrl+V pastes. Ctrl+Z undoes, Ctrl+Y redoes. Delete removes. Right-click
@@ -928,7 +1184,23 @@ export default function App() {
           )}
           {selected?.kind === 'mesh' && !selected.assetFile && (
             <div className="fields">
-              <p className="badge">PLACEHOLDER MESH</p>
+              <p className="badge">
+                {selected.generator?.kind === 'curb'
+                  ? 'CURB'
+                  : selected.generator?.kind === 'kit'
+                    ? 'KIT'
+                    : 'PLACEHOLDER MESH'}
+              </p>
+              {selected.generator?.kind === 'curb' && (
+                <p className="hint">
+                  Drag a sphere sideways to move the whole pin. Drag it up or down to set that end's top or base.
+                </p>
+              )}
+              {selected.generator?.kind === 'kit' && (
+                <p className="hint">
+                  Straight pieces stretch so they meet. Corners slant the faces that meet.
+                </p>
+              )}
               <label>
                 Name
                 <input
@@ -1128,6 +1400,18 @@ function duplicateObject(
       rotation: [...source.rotation],
       scale: [...source.scale],
       sk8: { ...source.sk8 },
+      generator: source.generator
+        ? source.generator.kind === 'curb'
+          ? {
+              ...source.generator,
+              points: source.generator.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+              tops: source.generator.tops?.map((y) => y),
+            }
+          : {
+              ...source.generator,
+              points: source.generator.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+            }
+        : undefined,
     }
   }
   if (source.kind === 'grind') {
