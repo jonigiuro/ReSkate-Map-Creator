@@ -1,3 +1,5 @@
+Edit: I see it's slowly getting some traction, sorry for the small library of assets. I'm working at growing it.
+Undo/Redo are also coming.
 # ReSkate Map Creator (MVP)
 
 An easy to use, vibe-coded, editor for people that don't want to learn blender just for mapping.
