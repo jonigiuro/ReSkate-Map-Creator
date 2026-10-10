@@ -7,7 +7,7 @@ const source = path.join(root, 'Objects')
 // Sit beside the unpacked exe. A portable self-extractor is what Avast treats as a dropper,
 // and it also makes every launch unpack before a window can appear.
 const dest = path.join(root, 'release', 'win-unpacked', 'Objects')
-const skip = new Set(['Private'])
+const skip = new Set(['Private', 'OfficialMeshes', 'OfficialMeshes - Copy'])
 
 await rm(dest, { recursive: true, force: true })
 await mkdir(dest, { recursive: true })

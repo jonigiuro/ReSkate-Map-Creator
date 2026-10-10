@@ -8,7 +8,6 @@ import {
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { MOUSE } from 'three'
 import * as THREE from 'three'
-import { toCreasedNormals } from 'three-stdlib'
 import type {
   MapScene,
   MeshObject,
@@ -862,91 +861,176 @@ function frameObject(
   controls.update()
 }
 
-const _outlineSize = new THREE.Vector2()
+/** Same translucent fill and edge lines as a library piece while it is being placed. */
+const GHOST_EDGE_THRESHOLD = 30
 
-/**
- * Back-face shell pushed out by a few pixels. Stays the same width at any zoom.
- * Geometry is copied so the source mesh is left alone.
- */
-function outlineGeometry(geometry: THREE.BufferGeometry) {
-  const source = geometry.index ? geometry : geometry.clone()
-  const creased = toCreasedNormals(source, Math.PI)
-  if (!geometry.index && creased !== source) source.dispose()
-  return creased
+type HeldMesh = {
+  mesh: THREE.Mesh
+  material: THREE.Material | THREE.Material[]
+  castShadow: boolean
+  receiveShadow: boolean
+  edges: THREE.LineSegments
+  geometry: THREE.BufferGeometry
+  before: THREE.Object3D['onBeforeRender']
+  after: THREE.Object3D['onAfterRender']
 }
 
-function SelectionOutline({ selectedId }: { selectedId: string | null }) {
-  const gl = useThree((s) => s.gl)
+/** Edit pins stay solid. They are handles, not the object. */
+function isSelectionBody(mesh: THREE.Mesh) {
+  if (!mesh.isMesh || !mesh.geometry || mesh.userData.selectionOutline || mesh.userData.curbHandle) {
+    return false
+  }
+  const position = mesh.geometry.getAttribute('position')
+  if (!position || position.count < 3) return false
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+  return materials.every((item) => !item || item.depthTest !== false)
+}
+
+function holdMesh(mesh: THREE.Mesh, fill: THREE.Material, lines: THREE.Material): HeldMesh {
+  const before = mesh.onBeforeRender
+  const after = mesh.onAfterRender
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry, GHOST_EDGE_THRESHOLD), lines)
+  edges.userData.placementOutline = true
+  edges.raycast = () => {}
+  edges.castShadow = false
+  edges.receiveShadow = false
+  edges.renderOrder = 2
+  const held: HeldMesh = {
+    mesh,
+    material: mesh.material,
+    castShadow: mesh.castShadow,
+    receiveShadow: mesh.receiveShadow,
+    edges,
+    geometry: mesh.geometry,
+    before,
+    after,
+  }
+  mesh.add(edges)
+  mesh.material = fill
+  mesh.castShadow = false
+  mesh.receiveShadow = false
+  // A negative scale flips winding. Keep one side drawing, matching a mirrored placement ghost.
+  mesh.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
+    before.call(mesh, renderer, scene, camera, geometry, material, group)
+    if (mesh.matrixWorld.determinant() >= 0) return
+    const context = renderer.getContext() as WebGLRenderingContext
+    context.frontFace(context.CW)
+  }
+  mesh.onAfterRender = (renderer, scene, camera, geometry, material, group) => {
+    const context = renderer.getContext() as WebGLRenderingContext
+    context.frontFace(context.CCW)
+    after.call(mesh, renderer, scene, camera, geometry, material, group)
+  }
+  return held
+}
+
+function releaseHeld(held: HeldMesh) {
+  held.mesh.material = held.material
+  held.mesh.castShadow = held.castShadow
+  held.mesh.receiveShadow = held.receiveShadow
+  held.mesh.onBeforeRender = held.before
+  held.mesh.onAfterRender = held.after
+  held.mesh.remove(held.edges)
+  held.edges.geometry.dispose()
+}
+
+function syncHeld(held: HeldMesh, fill: THREE.Material) {
+  if (held.mesh.material !== fill) {
+    held.material = held.mesh.material
+    held.mesh.material = fill
+  }
+  if (held.mesh.castShadow) {
+    held.castShadow = true
+    held.mesh.castShadow = false
+  }
+  if (held.mesh.receiveShadow) {
+    held.receiveShadow = true
+    held.mesh.receiveShadow = false
+  }
+  if (held.mesh.geometry !== held.geometry) {
+    held.geometry = held.mesh.geometry
+    held.edges.geometry.dispose()
+    held.edges.geometry = new THREE.EdgesGeometry(held.mesh.geometry, GHOST_EDGE_THRESHOLD)
+  }
+}
+
+function SelectionGhost({ selectedId }: { selectedId: string | null }) {
   const scene = useThree((s) => s.scene)
-  const material = useMemo(() => {
-    return new THREE.ShaderMaterial({
-      toneMapped: false,
-      side: THREE.BackSide,
-      depthTest: true,
-      depthWrite: false,
-      uniforms: {
-        uColor: { value: new THREE.Color('#fff4d2') },
-        uThickness: { value: 6 },
-        uSize: { value: new THREE.Vector2(1, 1) },
-      },
-      vertexShader: `
-        uniform float uThickness;
-        uniform vec2 uSize;
-        void main() {
-          vec4 clipPosition = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          vec4 clipNormal = projectionMatrix * modelViewMatrix * vec4(normal, 0.0);
-          vec2 nxy = clipNormal.xy;
-          float len = length(nxy);
-          if (len > 0.0001) {
-            clipPosition.xy += (nxy / len) * uThickness / uSize * clipPosition.w * 2.0;
-          }
-          gl_Position = clipPosition;
-        }
-      `,
-      fragmentShader: `
-        uniform vec3 uColor;
-        void main() {
-          gl_FragColor = vec4(uColor, 1.0);
-        }
-      `,
+  const fill = useMemo(
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: '#8aa0ad',
+        transparent: true,
+        opacity: 0.45,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    [],
+  )
+  const lines = useMemo(
+    () =>
+      new THREE.LineBasicMaterial({
+        color: '#ffe2a8',
+        toneMapped: false,
+      }),
+    [],
+  )
+  const heldRef = useRef<HeldMesh[]>([])
+
+  useEffect(
+    () => () => {
+      fill.dispose()
+      lines.dispose()
+    },
+    [fill, lines],
+  )
+
+  const collect = (root: THREE.Object3D) => {
+    const meshes: THREE.Mesh[] = []
+    root.traverse((node) => {
+      const mesh = node as THREE.Mesh
+      if (isSelectionBody(mesh)) meshes.push(mesh)
     })
-  }, [])
+    return meshes
+  }
 
-  useEffect(() => () => material.dispose(), [material])
+  const apply = (meshes: THREE.Mesh[]) => {
+    heldRef.current = meshes.map((mesh) => holdMesh(mesh, fill, lines))
+  }
 
-  useFrame(() => {
-    gl.getDrawingBufferSize(_outlineSize)
-    material.uniforms.uSize.value.copy(_outlineSize)
-  })
+  const clear = () => {
+    for (const held of heldRef.current) releaseHeld(held)
+    heldRef.current = []
+  }
 
   useLayoutEffect(() => {
-    gl.getDrawingBufferSize(_outlineSize)
-    material.uniforms.uSize.value.copy(_outlineSize)
-    const hulls: THREE.Mesh[] = []
+    clear()
     if (!selectedId) return () => {}
-    const found: { current: THREE.Object3D | null } = { current: null }
+    let root: THREE.Object3D | null = null
     scene.traverse((obj) => {
-      if (obj.userData.focusId === selectedId) found.current = obj
+      if (obj.userData.focusId === selectedId) root = obj
     })
-    found.current?.traverse((node) => {
-      const mesh = node as THREE.Mesh
-      if (!mesh.isMesh || !mesh.geometry || mesh.userData.selectionOutline) return
-      const hull = new THREE.Mesh(outlineGeometry(mesh.geometry), material)
-      hull.userData.selectionOutline = true
-      hull.raycast = () => {}
-      hull.castShadow = false
-      hull.receiveShadow = false
-      hull.renderOrder = 2
-      mesh.add(hull)
-      hulls.push(hull)
+    if (root) apply(collect(root))
+    return clear
+  }, [fill, lines, scene, selectedId])
+
+  useFrame(() => {
+    if (!selectedId) return
+    let root: THREE.Object3D | null = null
+    scene.traverse((obj) => {
+      if (obj.userData.focusId === selectedId) root = obj
     })
-    return () => {
-      for (const hull of hulls) {
-        hull.parent?.remove(hull)
-        hull.geometry.dispose()
-      }
+    if (!root) return
+    const meshes = collect(root)
+    const held = heldRef.current
+    const same = meshes.length === held.length && meshes.every((mesh, index) => mesh === held[index].mesh)
+    if (!same) {
+      clear()
+      apply(meshes)
+      return
     }
-  }, [gl, material, scene, selectedId])
+    for (const item of held) syncHeld(item, fill)
+  })
 
   return null
 }
@@ -1405,7 +1489,7 @@ function SceneContents(props: Props) {
         maxDistance={2000}
       />
       <FrameSelection selectedId={selectedId} />
-      <SelectionOutline selectedId={selectedId} />
+      <SelectionGhost selectedId={selectedId} />
 
       <ambientLight intensity={0.22} />
       <hemisphereLight args={['#d5e2ee', '#3a332c', 0.28]} />
@@ -1580,6 +1664,40 @@ function Skybox() {
   return null
 }
 
+/** Handles are drawn through meshes. A click on that visible sphere should hit the handle, not the mesh in front. */
+function isEditHandle(object: THREE.Object3D) {
+  return object.userData.curbHandle != null || object.userData.platformPin != null
+}
+
+function preferEditHandles(hits: THREE.Intersection[]) {
+  let found = false
+  for (const hit of hits) {
+    if (isEditHandle(hit.object)) {
+      found = true
+      break
+    }
+  }
+  if (!found) return hits
+  const handles: THREE.Intersection[] = []
+  const rest: THREE.Intersection[] = []
+  for (const hit of hits) {
+    if (isEditHandle(hit.object)) handles.push(hit)
+    else rest.push(hit)
+  }
+  return handles.concat(rest)
+}
+
+function EditHandlePriority() {
+  const set = useThree((s) => s.set)
+  useLayoutEffect(() => {
+    set((state) => ({ events: { ...state.events, filter: preferEditHandles } }))
+    return () => {
+      set((state) => ({ events: { ...state.events, filter: undefined } }))
+    }
+  }, [set])
+  return null
+}
+
 export function Viewport(props: Props) {
   return (
     <div
@@ -1592,6 +1710,7 @@ export function Viewport(props: Props) {
         shadows
         camera={{ position: [48, 36, 58], fov: 45, near: 0.5, far: 5000 }}
       >
+        <EditHandlePriority />
         <Skybox />
         <fog attach="fog" args={['#c9dadf', 180, 1100]} />
         <Suspense fallback={null}>
