@@ -438,3 +438,172 @@ export function buildPlatformGeometry(corners: [Vec3, Vec3], height: number) {
   geometry.computeBoundingSphere()
   return geometry
 }
+
+/** Round rail along a centreline. Eight flat faces, one of them on top when the run is level. */
+export const RAIL_RADIUS_M = 0.05
+export const RAIL_SIDES = 8
+/** Rail centre above the foot of the post, until a sphere is dragged. */
+export const RAIL_HEIGHT_M = 0.5
+
+/** Foot of the post on the surface under the cursor. The rail sits RAIL_HEIGHT_M above it. */
+export function railBaseFromHit(point: Vec3): Vec3 {
+  const surfaceY = point[1] < 0.02 ? 0 : point[1]
+  return [round4(point[0]), round4(surfaceY), round4(point[2])]
+}
+
+/** Rail centre at each post. The post runs from the foot up to this height. */
+export function railTopYs(points: Vec3[], tops?: number[]) {
+  return points.map((point, index) => {
+    const listed = tops?.[index]
+    const top = typeof listed === 'number' && Number.isFinite(listed) ? listed : point[1] + RAIL_HEIGHT_M
+    return Math.max(top, point[1] + MIN_CURB_THICKNESS_M)
+  })
+}
+
+function direction(from: Vec3, to: Vec3) {
+  const dir = new THREE.Vector3(to[0] - from[0], to[1] - from[1], to[2] - from[2])
+  if (dir.lengthSq() < 1e-12) return new THREE.Vector3(0, 0, 1)
+  return dir.normalize()
+}
+
+function initialSide(tangent: THREE.Vector3) {
+  const ref = Math.abs(tangent.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : UP
+  return new THREE.Vector3().crossVectors(ref, tangent).normalize()
+}
+
+/** Pipe plus a vertical post at each pin. Points are the feet. Tops are the rail centre. */
+export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: number[], sides = RAIL_SIDES) {
+  if (!bases || bases.length < 2 || radius <= 0 || sides < 3) return null
+  const topYs = railTopYs(bases, tops)
+  const points: Vec3[] = bases.map((point, index) => [point[0], topYs[index], point[2]])
+  const segDirs = points.slice(1).map((point, index) => direction(points[index], point))
+  const tangents: THREE.Vector3[] = []
+  const scales: number[] = []
+  for (let i = 0; i < points.length; i++) {
+    if (i === 0) {
+      tangents.push(segDirs[0])
+      scales.push(1)
+      continue
+    }
+    if (i === points.length - 1) {
+      tangents.push(segDirs[segDirs.length - 1])
+      scales.push(1)
+      continue
+    }
+    const sum = segDirs[i - 1].clone().add(segDirs[i])
+    const tangent = sum.lengthSq() < 1e-10 ? segDirs[i].clone() : sum.normalize()
+    tangents.push(tangent)
+    const denom = Math.abs(tangent.dot(segDirs[i]))
+    scales.push(denom < 0.25 ? 4 : Math.min(1 / denom, 4))
+  }
+
+  let side = initialSide(tangents[0])
+  const rings: THREE.Vector3[][] = []
+  const distances = [0]
+  for (let i = 0; i < points.length; i++) {
+    const tangent = tangents[i]
+    side = side.clone().addScaledVector(tangent, -side.dot(tangent))
+    if (side.lengthSq() < 1e-8) side = initialSide(tangent)
+    else side.normalize()
+    const binormal = new THREE.Vector3().crossVectors(tangent, side).normalize()
+    side = new THREE.Vector3().crossVectors(binormal, tangent).normalize()
+    const centre = new THREE.Vector3(...points[i])
+    const ringRadius = radius * scales[i]
+    const ring: THREE.Vector3[] = []
+    for (let k = 0; k < sides; k++) {
+      const ang = ((k + 0.5) * Math.PI * 2) / sides
+      ring.push(
+        centre
+          .clone()
+          .addScaledVector(side, Math.cos(ang) * ringRadius)
+          .addScaledVector(binormal, Math.sin(ang) * ringRadius),
+      )
+    }
+    rings.push(ring)
+    if (i < points.length - 1) {
+      distances.push(distances[i] + centre.distanceTo(new THREE.Vector3(...points[i + 1])))
+    }
+  }
+
+  const positions: number[] = []
+  const normals: number[] = []
+  const uvs: number[] = []
+  const tangentsAttr: number[] = []
+  const tri = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    outward: THREE.Vector3,
+  ) => addTri(positions, normals, uvs, tangentsAttr, a, b, c, ua, ub, uc, outward)
+
+  for (let i = 0; i < rings.length - 1; i++) {
+    const axis = new THREE.Vector3(...points[i]).add(new THREE.Vector3(...points[i + 1])).multiplyScalar(0.5)
+    const u0 = distances[i]
+    const u1 = distances[i + 1]
+    for (let k = 0; k < sides; k++) {
+      const k2 = (k + 1) % sides
+      const a = rings[i][k]
+      const b = rings[i][k2]
+      const c = rings[i + 1][k2]
+      const d = rings[i + 1][k]
+      const outward = a.clone().add(b).add(c).add(d).multiplyScalar(0.25).sub(axis)
+      const v0 = k / sides
+      const v1 = (k + 1) / sides
+      tri(a, b, c, [u0, v0], [u0, v1], [u1, v1], outward)
+      tri(a, c, d, [u0, v0], [u1, v1], [u1, v0], outward)
+    }
+  }
+
+  const start = new THREE.Vector3(...points[0])
+  const end = new THREE.Vector3(...points[points.length - 1])
+  const startOut = tangents[0].clone().negate()
+  const endOut = tangents[tangents.length - 1]
+  const endU = distances[distances.length - 1]
+  for (let k = 0; k < sides; k++) {
+    const k2 = (k + 1) % sides
+    tri(start, rings[0][k2], rings[0][k], [0, 0], [0, 0], [0, 0], startOut)
+    tri(end, rings[rings.length - 1][k], rings[rings.length - 1][k2], [endU, 0], [endU, 0], [endU, 0], endOut)
+  }
+
+  for (let i = 0; i < bases.length; i++) {
+    const x = bases[i][0]
+    const z = bases[i][2]
+    const y0 = bases[i][1]
+    const y1 = topYs[i]
+    if (y1 - y0 < 1e-4) continue
+    const bottom = new THREE.Vector3(x, y0, z)
+    const top = new THREE.Vector3(x, y1, z)
+    const lower: THREE.Vector3[] = []
+    const upper: THREE.Vector3[] = []
+    for (let k = 0; k < sides; k++) {
+      const ang = ((k + 0.5) * Math.PI * 2) / sides
+      const ox = Math.cos(ang) * radius
+      const oz = Math.sin(ang) * radius
+      lower.push(new THREE.Vector3(x + ox, y0, z + oz))
+      upper.push(new THREE.Vector3(x + ox, y1, z + oz))
+    }
+    const axis = bottom.clone().add(top).multiplyScalar(0.5)
+    for (let k = 0; k < sides; k++) {
+      const k2 = (k + 1) % sides
+      const outward = lower[k].clone().add(lower[k2]).add(upper[k2]).add(upper[k]).multiplyScalar(0.25).sub(axis)
+      const v0 = k / sides
+      const v1 = (k + 1) / sides
+      tri(lower[k], lower[k2], upper[k2], [y0, v0], [y0, v1], [y1, v1], outward)
+      tri(lower[k], upper[k2], upper[k], [y0, v0], [y1, v1], [y1, v0], outward)
+      tri(bottom, lower[k2], lower[k], [0, 0], [0, 0], [0, 0], new THREE.Vector3(0, -1, 0))
+      tri(top, upper[k], upper[k2], [0, 0], [0, 0], [0, 0], UP)
+    }
+  }
+
+  if (positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(tangentsAttr, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}

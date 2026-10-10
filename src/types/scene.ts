@@ -39,7 +39,16 @@ export interface PlatformGenerator {
   height: number
 }
 
-export type MeshGenerator = CurbGenerator | KitGenerator | PlatformGenerator
+/** Round rail. Points are the feet of the posts. Tops are the rail centre at each pin. */
+export interface RailGenerator {
+  kind: 'rail'
+  points: [number, number, number][]
+  /** Rail centre at each point, local Y. One entry per point. */
+  tops?: number[]
+  radius: number
+}
+
+export type MeshGenerator = CurbGenerator | KitGenerator | PlatformGenerator | RailGenerator
 
 export interface MeshObject {
   id: string

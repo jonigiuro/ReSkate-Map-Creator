@@ -22,8 +22,13 @@ import {
   MIN_CURB_THICKNESS_M,
   MIN_PLATFORM_HEIGHT_M,
   PLATFORM_HEIGHT_M,
+  RAIL_HEIGHT_M,
+  RAIL_RADIUS_M,
   buildCurbGeometry,
+  railBaseFromHit,
+  railTopYs,
   buildPlatformGeometry,
+  buildRailGeometry,
   curbSegmentTooShort,
   curbTopYs,
   platformFootprintTooSmall,
@@ -338,9 +343,11 @@ function MeshItem({
   const [pin, setPin] = useState<number | null>(null)
   const generator = obj.generator?.kind === 'curb' ? obj.generator : null
   const platform = obj.generator?.kind === 'platform' ? obj.generator : null
+  const rail = obj.generator?.kind === 'rail' ? obj.generator : null
   const kit = obj.generator?.kind === 'kit' ? obj.generator : null
   const editing = selected && tool === 'select' && generator != null
   const editingPlatform = selected && tool === 'select' && platform != null
+  const editingRail = selected && tool === 'select' && rail != null
 
   useEffect(() => {
     if (!selected) {
@@ -374,6 +381,16 @@ function MeshItem({
     if (!corner) return
     g.position.set(corner[0], platform.height, corner[2])
   }, [platform, pin])
+
+  useLayoutEffect(() => {
+    const g = handleRef.current
+    if (!g || handleDragging.current || !rail || !handle) return
+    const point = rail.points[handle.index]
+    if (!point) return
+    const tops = railTopYs(rail.points, rail.tops)
+    const y = handle.end === 'bottom' ? point[1] : tops[handle.index]
+    g.position.set(point[0], y, point[2])
+  }, [rail, handle])
 
   function commitHeight() {
     if (!generator || !handle) return
@@ -414,6 +431,26 @@ function MeshItem({
     corners[pin] = [round4(x), 0, round4(z)]
     onPatch({
       generator: { ...platform, corners, height: round4(y) },
+    })
+  }
+
+  function commitRail() {
+    if (!rail || !handle) return
+    const g = handleRef.current
+    const point = rail.points[handle.index]
+    if (!g || !point) return
+    const tops = railTopYs(rail.points, rail.tops)
+    const points = rail.points.map((entry) => [entry[0], entry[1], entry[2]] as Vec3)
+    let y = g.position.y
+    if (handle.end === 'bottom') y = Math.min(y, tops[handle.index] - MIN_CURB_THICKNESS_M)
+    else y = Math.max(y, points[handle.index][1] + MIN_CURB_THICKNESS_M)
+    g.position.y = y
+    points[handle.index][0] = round4(g.position.x)
+    points[handle.index][2] = round4(g.position.z)
+    if (handle.end === 'bottom') points[handle.index][1] = round4(y)
+    else tops[handle.index] = round4(y)
+    onPatch({
+      generator: { ...rail, points, tops: tops.map((value) => round4(value)) },
     })
   }
 
@@ -487,6 +524,20 @@ function MeshItem({
               ))}
             {editingPlatform && pin != null && <group ref={handleRef} />}
           </>
+        ) : rail ? (
+          <>
+            <RailMesh points={rail.points} radius={rail.radius} tops={rail.tops} />
+            {editingRail && (
+              <CurbEditPins
+                points={rail.points}
+                height={RAIL_HEIGHT_M}
+                tops={rail.tops}
+                active={handle}
+                onPick={(index, end) => setHandle({ index, end })}
+              />
+            )}
+            {editingRail && handle && <group ref={handleRef} />}
+          </>
         ) : kit ? (
           <KitRun assetFile={kit.assetFile} revision={assetRevision} points={kit.points} />
         ) : (
@@ -529,6 +580,18 @@ function MeshItem({
           space="world"
           snap={snap}
           onCommit={commitPlatform}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+      {editingRail && handle && (
+        <TransformGizmo
+          target={handleRef}
+          dragging={handleDragging}
+          mode="translate"
+          space="world"
+          snap={snap}
+          onCommit={commitRail}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
         />
@@ -1006,9 +1069,13 @@ const CONCRETE_MAPS = [
   `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_Roughness.png`,
 ] as const
 
-const MARBLE_MAP = `${import.meta.env.BASE_URL}img/textures/marble.jpg`
+const STRIPED_CONCRETE_MAPS = [
+  `${import.meta.env.BASE_URL}img/textures/striped_concrete/striped_conrete_albedo.png`,
+  `${import.meta.env.BASE_URL}img/textures/striped_concrete/triped_concrete_normal.jfif`,
+  `${import.meta.env.BASE_URL}img/textures/striped_concrete/striped_concrete_roughness.jfif`,
+] as const
 
-useTexture.preload([...CONCRETE_MAPS, MARBLE_MAP])
+useTexture.preload([...CONCRETE_MAPS, ...STRIPED_CONCRETE_MAPS])
 
 function CurbMaterial({ ghost }: { ghost?: boolean }) {
   const [colorMap, normalMap, roughnessMap] = useTexture([...CONCRETE_MAPS])
@@ -1038,62 +1105,31 @@ function CurbMaterial({ ghost }: { ghost?: boolean }) {
   return <primitive object={material} attach="material" />
 }
 
-/** Bright stone is polished. Dark flecks stay duller. Same curve as the blend export. */
-function marbleRoughnessMap(image: CanvasImageSource, width: number, height: number) {
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d', { willReadFrequently: true })
-  if (!ctx || width < 1 || height < 1) return null
-  ctx.drawImage(image, 0, 0, width, height)
-  const pixels = ctx.getImageData(0, 0, width, height)
-  const data = pixels.data
-  for (let i = 0; i < data.length; i += 4) {
-    const luma = (data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722) / 255
-    const rough = Math.min(0.72, Math.max(0.12, 0.12 + (1 - luma) * 0.5))
-    const value = Math.round(rough * 255)
-    data[i] = value
-    data[i + 1] = value
-    data[i + 2] = value
-    data[i + 3] = 255
-  }
-  ctx.putImageData(pixels, 0, 0)
-  const map = new THREE.CanvasTexture(canvas)
-  map.wrapS = THREE.RepeatWrapping
-  map.wrapT = THREE.RepeatWrapping
-  map.colorSpace = THREE.NoColorSpace
-  map.needsUpdate = true
-  return map
-}
-
-function MarbleMaterial({ ghost }: { ghost?: boolean }) {
-  const colorMap = useTexture(MARBLE_MAP)
+function PlatformMaterial({ ghost }: { ghost?: boolean }) {
+  const [colorMap, normalMap, roughnessMap] = useTexture([...STRIPED_CONCRETE_MAPS])
   const material = useMemo(() => {
-    colorMap.wrapS = THREE.RepeatWrapping
-    colorMap.wrapT = THREE.RepeatWrapping
+    for (const map of [colorMap, normalMap, roughnessMap]) {
+      map.wrapS = THREE.RepeatWrapping
+      map.wrapT = THREE.RepeatWrapping
+      map.needsUpdate = true
+    }
     colorMap.colorSpace = THREE.SRGBColorSpace
-    colorMap.needsUpdate = true
-    const image = colorMap.image as HTMLImageElement | undefined
-    const roughnessMap =
-      image && image.width > 0 ? marbleRoughnessMap(image, image.width, image.height) : null
+    normalMap.colorSpace = THREE.NoColorSpace
+    roughnessMap.colorSpace = THREE.NoColorSpace
     return new THREE.MeshStandardMaterial({
       map: colorMap,
-      roughnessMap: roughnessMap ?? undefined,
+      normalMap,
+      roughnessMap,
+      normalScale: new THREE.Vector2(0.65, 0.65),
       roughness: 1,
       metalness: 0,
       transparent: !!ghost,
       opacity: ghost ? 0.45 : 1,
       depthWrite: !ghost,
     })
-  }, [colorMap, ghost])
+  }, [colorMap, ghost, normalMap, roughnessMap])
 
-  useEffect(
-    () => () => {
-      material.roughnessMap?.dispose()
-      material.dispose()
-    },
-    [material],
-  )
+  useEffect(() => () => material.dispose(), [material])
   return <primitive object={material} attach="material" />
 }
 
@@ -1160,7 +1196,7 @@ function PlatformMesh({
   if (!geometry) return null
   return (
     <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-      <MarbleMaterial ghost={ghost} />
+      <PlatformMaterial ghost={ghost} />
     </mesh>
   )
 }
@@ -1173,6 +1209,56 @@ function PlatformGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
   return (
     <group position={origin} userData={{ placementGhost: true }}>
       <PlatformMesh corners={corners} height={PLATFORM_HEIGHT_M} ghost />
+    </group>
+  )
+}
+
+function RailMaterial({ ghost }: { ghost?: boolean }) {
+  const material = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#b8bcc0',
+        metalness: 0.85,
+        roughness: 0.35,
+        transparent: !!ghost,
+        opacity: ghost ? 0.45 : 1,
+        depthWrite: !ghost,
+      }),
+    [ghost],
+  )
+  useEffect(() => () => material.dispose(), [material])
+  return <primitive object={material} attach="material" />
+}
+
+function RailMesh({
+  points,
+  radius,
+  tops,
+  ghost,
+}: {
+  points: Vec3[]
+  radius: number
+  tops?: number[]
+  ghost?: boolean
+}) {
+  const geometry = useMemo(() => buildRailGeometry(points, radius, tops), [points, radius, tops])
+  useEffect(() => () => geometry?.dispose(), [geometry])
+  if (!geometry) return null
+  return (
+    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+      <RailMaterial ghost={ghost} />
+    </mesh>
+  )
+}
+
+function RailGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
+  const cursor = railBaseFromHit([to.x, to.y, to.z])
+  const last = pins[pins.length - 1]
+  if (curbSegmentTooShort(last, cursor)) return null
+  const preview = pins.length >= 2 ? [pins[pins.length - 2], last, cursor] : [last, cursor]
+  return (
+    <group userData={{ placementGhost: true }}>
+      <RailMesh points={preview} radius={RAIL_RADIUS_M} ghost />
     </group>
   )
 }
@@ -1394,19 +1480,26 @@ function SceneContents(props: Props) {
       {generator && generatorPreview && (
         <CurbPin
           ghost
-          position={[
-            generatorPreview.x,
-            generator.kind === 'platform' && pins[0]
-              ? pins[0][1]
-              : generatorPreview.y < 0.02
-                ? 0
-                : generatorPreview.y,
-            generatorPreview.z,
-          ]}
+          position={
+            generator.kind === 'rail'
+              ? railBaseFromHit([generatorPreview.x, generatorPreview.y, generatorPreview.z])
+              : [
+                  generatorPreview.x,
+                  generator.kind === 'platform' && pins[0]
+                    ? pins[0][1]
+                    : generatorPreview.y < 0.02
+                      ? 0
+                      : generatorPreview.y,
+                  generatorPreview.z,
+                ]
+          }
         />
       )}
       {generator?.kind === 'curb' && pins.length > 0 && generatorPreview && (
         <CurbGhost pins={pins} to={generatorPreview} />
+      )}
+      {generator?.kind === 'rail' && pins.length > 0 && generatorPreview && (
+        <RailGhost pins={pins} to={generatorPreview} />
       )}
       {generator?.kind === 'platform' && pins.length > 0 && generatorPreview && (
         <PlatformGhost pins={pins} to={generatorPreview} />

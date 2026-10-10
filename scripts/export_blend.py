@@ -619,67 +619,37 @@ def concrete_material(project_root):
     return mat
 
 
-def _linear_to_srgb(channel):
-    if channel <= 0.0031308:
-        return 12.92 * channel
-    return 1.055 * (channel ** (1.0 / 2.4)) - 0.055
-
-
-def _marble_roughness_image(source):
-    """Roughness from the marble photo. Bright stone is polished, dark flecks stay duller."""
-    cached = bpy.data.images.get("marble_roughness")
+def striped_concrete_material(project_root):
+    """Tileable striped concrete packed into the blend. One UV unit is one metre."""
+    cached = bpy.data.materials.get("striped_concrete")
     if cached:
         return cached
-    width, height = source.size
-    rough = bpy.data.images.new("marble_roughness", width=width, height=height, alpha=False)
-    src = list(source.pixels)
-    out = [0.0] * len(src)
-    for i in range(0, len(src), 4):
-        red = _linear_to_srgb(src[i])
-        green = _linear_to_srgb(src[i + 1])
-        blue = _linear_to_srgb(src[i + 2])
-        luma = red * 0.2126 + green * 0.7152 + blue * 0.0722
-        value = min(0.72, max(0.12, 0.12 + (1.0 - luma) * 0.5))
-        out[i] = out[i + 1] = out[i + 2] = value
-        out[i + 3] = 1.0
-    rough.pixels = out
-    try:
-        rough.colorspace_settings.name = "Non-Color"
-    except Exception as exc:
-        print(f"Colorspace Non-Color not set on marble roughness: {exc}")
-    try:
-        if not rough.packed_file:
-            rough.pack()
-    except Exception as exc:
-        print(f"Could not pack marble roughness: {exc}")
-    return rough
+    folder = Path(project_root) / "public" / "img" / "textures" / "striped_concrete"
+    files = {
+        "base": folder / "striped_conrete_albedo.png",
+        "normal": folder / "triped_concrete_normal.jfif",
+        "rough": folder / "striped_concrete_roughness.jfif",
+    }
+    missing = [str(path) for path in files.values() if not path.is_file()]
+    if missing:
+        print("Striped concrete textures missing, platform stays flat: " + ", ".join(missing))
+        return placeholder_material("striped_concrete", (0.62, 0.6, 0.58))
 
-
-def marble_material(project_root):
-    """Tileable marble packed into the blend. One UV unit is one metre."""
-    cached = bpy.data.materials.get("marble")
-    if cached:
-        return cached
-    path = Path(project_root) / "public" / "img" / "textures" / "marble.jpg"
-    if not path.is_file():
-        print("Marble texture missing, platform stays flat: " + str(path))
-        return placeholder_material("marble", (0.86, 0.82, 0.74))
-
-    mat = bpy.data.materials.new("marble")
+    mat = bpy.data.materials.new("striped_concrete")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     bsdf = nodes.get("Principled BSDF")
-    base = _image_texture(nodes, path, "sRGB", (-520, 200))
+    base = _image_texture(nodes, files["base"], "sRGB", (-520, 280))
+    rough = _image_texture(nodes, files["rough"], "Non-Color", (-520, 0))
+    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-520, -280))
+    normal_map = nodes.new("ShaderNodeNormalMap")
+    normal_map.location = (-220, -280)
+    normal_map.inputs["Strength"].default_value = 0.65
     links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
-    if base.image and "Roughness" in bsdf.inputs:
-        rough = _marble_roughness_image(base.image)
-        rough_node = nodes.new("ShaderNodeTexImage")
-        rough_node.image = rough
-        rough_node.location = (-520, -80)
-        rough_node.interpolation = "Linear"
-        rough_node.extension = "REPEAT"
-        links.new(rough_node.outputs["Color"], bsdf.inputs["Roughness"])
+    links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
     if "Metallic" in bsdf.inputs:
         bsdf.inputs["Metallic"].default_value = 0.0
     return mat
@@ -746,6 +716,179 @@ def make_curb_mesh(name, points, width, height, color, tops=None, material=None)
     _add_tri(verts, faces, uvs, bottom(first, 0), top(first, 1), top(first, 0), start_cap[0], start_cap[2], start_cap[3], start_out)
     _add_tri(verts, faces, uvs, bottom(last, 0), top(last, 1), bottom(last, 1), end_cap[0], end_cap[2], end_cap[1], end_out)
     _add_tri(verts, faces, uvs, bottom(last, 0), top(last, 0), top(last, 1), end_cap[0], end_cap[3], end_cap[2], end_out)
+    return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs)
+
+
+def rail_material():
+    """Plain metal for generated rails. One UV unit is one metre along the pipe."""
+    cached = bpy.data.materials.get("rail")
+    if cached:
+        return cached
+    mat = bpy.data.materials.new("rail")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = (0.72, 0.74, 0.76, 1.0)
+        if "Metallic" in bsdf.inputs:
+            bsdf.inputs["Metallic"].default_value = 0.85
+        bsdf.inputs["Roughness"].default_value = 0.35
+    return mat
+
+
+def _direction(a, b):
+    delta = (float(b[0]) - float(a[0]), float(b[1]) - float(a[1]), float(b[2]) - float(a[2]))
+    return _vnorm(delta) or (0.0, 0.0, 1.0)
+
+
+def _initial_side(tangent):
+    ref = (1.0, 0.0, 0.0) if abs(tangent[1]) > 0.9 else (0.0, 1.0, 0.0)
+    side = _vnorm(_vcross(ref, tangent))
+    return side or (1.0, 0.0, 0.0)
+
+
+RAIL_HEIGHT_M = 0.5
+MIN_POST_M = 0.02
+
+
+def _rail_top_ys(points, tops):
+    """Rail centre above each foot. Missing tops use the default post height."""
+    result = []
+    listed = tops if isinstance(tops, (list, tuple)) and len(tops) == len(points) else None
+    for index, point in enumerate(points):
+        base = float(point[1])
+        top = base + RAIL_HEIGHT_M
+        if listed is not None:
+            try:
+                top = float(listed[index])
+            except (TypeError, ValueError):
+                top = base + RAIL_HEIGHT_M
+        result.append(max(top, base + MIN_POST_M))
+    return result
+
+
+def _add_vertical_post(verts, faces, uvs, x, z, y0, y1, radius, sides):
+    """Eight-sided post from the foot up to the rail centre."""
+    if y1 - y0 < 1e-4:
+        return
+    bottom = (x, y0, z)
+    top = (x, y1, z)
+    lower = []
+    upper = []
+    for k in range(sides):
+        ang = (k + 0.5) * (2.0 * math.pi) / sides
+        ox = math.cos(ang) * radius
+        oz = math.sin(ang) * radius
+        lower.append((x + ox, y0, z + oz))
+        upper.append((x + ox, y1, z + oz))
+    axis = _vscale(_vadd(bottom, top), 0.5)
+    for k in range(sides):
+        k2 = (k + 1) % sides
+        outward = _vsub(_vscale(_vadd(_vadd(lower[k], lower[k2]), _vadd(upper[k2], upper[k])), 0.25), axis)
+        v0 = k / sides
+        v1 = (k + 1) / sides
+        _add_tri(verts, faces, uvs, lower[k], lower[k2], upper[k2], (y0, v0), (y0, v1), (y1, v1), outward)
+        _add_tri(verts, faces, uvs, lower[k], upper[k2], upper[k], (y0, v0), (y1, v1), (y1, v0), outward)
+        _add_tri(verts, faces, uvs, bottom, lower[k2], lower[k], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, -1.0, 0.0))
+        _add_tri(verts, faces, uvs, top, upper[k], upper[k2], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 1.0, 0.0))
+
+
+def make_rail_mesh(name, points, radius, color, material=None, tops=None):
+    """Eight-sided pipe on posts. points are the feet, tops the rail centre."""
+    if len(points) < 2 or float(radius) <= 0:
+        return None
+    bases = points
+    top_ys = _rail_top_ys(bases, tops)
+    points = [(float(point[0]), top_ys[index], float(point[2])) for index, point in enumerate(bases)]
+    sides = 8
+    seg = [_direction(points[i], points[i + 1]) for i in range(len(points) - 1)]
+    tangents = []
+    scales = []
+    for i in range(len(points)):
+        if i == 0:
+            tangents.append(seg[0])
+            scales.append(1.0)
+            continue
+        if i == len(points) - 1:
+            tangents.append(seg[-1])
+            scales.append(1.0)
+            continue
+        tangent = _vnorm(_vadd(seg[i - 1], seg[i])) or seg[i]
+        denom = abs(_vdot(tangent, seg[i]))
+        tangents.append(tangent)
+        scales.append(4.0 if denom < 0.25 else min(1.0 / denom, 4.0))
+
+    side = _initial_side(tangents[0])
+    rings = []
+    distances = [0.0]
+    centres = [(float(point[0]), float(point[1]), float(point[2])) for point in points]
+    for i, centre in enumerate(centres):
+        tangent = tangents[i]
+        projected = _vsub(side, _vscale(tangent, _vdot(side, tangent)))
+        side = _vnorm(projected) or _initial_side(tangent)
+        binormal = _vnorm(_vcross(tangent, side)) or (0.0, 1.0, 0.0)
+        side = _vnorm(_vcross(binormal, tangent)) or side
+        ring_r = float(radius) * scales[i]
+        ring = []
+        for k in range(sides):
+            ang = (k + 0.5) * (2.0 * math.pi) / sides
+            offset = _vadd(_vscale(side, math.cos(ang) * ring_r), _vscale(binormal, math.sin(ang) * ring_r))
+            ring.append(_vadd(centre, offset))
+        rings.append(ring)
+        if i < len(centres) - 1:
+            step = _vsub(centres[i + 1], centre)
+            distances.append(distances[-1] + math.sqrt(_vdot(step, step)))
+
+    verts = []
+    faces = []
+    uvs = []
+    for i in range(len(rings) - 1):
+        axis = _vscale(_vadd(centres[i], centres[i + 1]), 0.5)
+        u0 = distances[i]
+        u1 = distances[i + 1]
+        for k in range(sides):
+            k2 = (k + 1) % sides
+            a = rings[i][k]
+            b = rings[i][k2]
+            c = rings[i + 1][k2]
+            d = rings[i + 1][k]
+            outward = _vsub(_vscale(_vadd(_vadd(a, b), _vadd(c, d)), 0.25), axis)
+            v0 = k / sides
+            v1 = (k + 1) / sides
+            _add_tri(verts, faces, uvs, a, b, c, (u0, v0), (u0, v1), (u1, v1), outward)
+            _add_tri(verts, faces, uvs, a, c, d, (u0, v0), (u1, v1), (u1, v0), outward)
+
+    start_out = _vscale(tangents[0], -1.0)
+    end_out = tangents[-1]
+    end_u = distances[-1]
+    for k in range(sides):
+        k2 = (k + 1) % sides
+        _add_tri(verts, faces, uvs, centres[0], rings[0][k2], rings[0][k], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), start_out)
+        _add_tri(
+            verts,
+            faces,
+            uvs,
+            centres[-1],
+            rings[-1][k],
+            rings[-1][k2],
+            (end_u, 0.0),
+            (end_u, 0.0),
+            (end_u, 0.0),
+            end_out,
+        )
+    for index, point in enumerate(bases):
+        _add_vertical_post(
+            verts,
+            faces,
+            uvs,
+            float(point[0]),
+            float(point[2]),
+            float(point[1]),
+            top_ys[index],
+            float(radius),
+            sides,
+        )
+    if not faces:
+        return None
     return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs)
 
 
@@ -1664,6 +1807,41 @@ def build(scene):
                 link_only(obj, colls["Map"])
                 continue
 
+            if gen.get("kind") == "rail":
+                points = gen.get("points") or []
+                if len(points) < 2:
+                    print(f"Skipping rail {name}: needs at least two points")
+                    continue
+                obj = make_rail_mesh(
+                    name,
+                    points,
+                    float(gen.get("radius") or 0.05),
+                    (0.72, 0.74, 0.76),
+                    rail_material(),
+                    gen.get("tops"),
+                )
+                if obj is None:
+                    print(f"Skipping rail {name}: could not build the pipe")
+                    continue
+                obj.name = name
+                position = entry.get("position") or [0, 0, 0]
+                apply_transform(
+                    obj,
+                    position,
+                    entry.get("rotation") or [0, 0, 0],
+                    entry.get("scale") or [1, 1, 1],
+                )
+                set_sk8_mesh_props(obj, entry.get("sk8"))
+                tag_join_piece(
+                    obj,
+                    "generator_rail",
+                    placement_cell(position),
+                    "generator_rail",
+                    "generator_rail",
+                )
+                link_only(obj, colls["Map"])
+                continue
+
             if gen.get("kind") == "platform":
                 corners = gen.get("corners") or []
                 if len(corners) < 2:
@@ -1673,8 +1851,8 @@ def build(scene):
                     name,
                     corners,
                     float(gen.get("height") or 0.5),
-                    (0.86, 0.82, 0.74),
-                    marble_material(project_root),
+                    (0.62, 0.6, 0.58),
+                    striped_concrete_material(project_root),
                 )
                 if obj is None:
                     print(f"Skipping platform {name}: footprint is too small")

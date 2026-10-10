@@ -3,6 +3,7 @@ import type {
   KitGenerator,
   MeshGenerator,
   PlatformGenerator,
+  RailGenerator,
   GrindObject,
   GrindSurface,
   MapScene,
@@ -56,6 +57,22 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
       height,
     }
     return platform
+  }
+  if (raw.kind === 'rail') {
+    const points = parsePoints(raw.points)
+    if (!points) return undefined
+    const radius = raw.radius
+    if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) return undefined
+    let tops: number[] | undefined
+    if (
+      Array.isArray(raw.tops) &&
+      raw.tops.length === points.length &&
+      raw.tops.every((value) => typeof value === 'number' && Number.isFinite(value))
+    ) {
+      tops = raw.tops
+    }
+    const rail: RailGenerator = { kind: 'rail', points, radius, tops }
+    return rail
   }
   if (raw.kind !== 'curb') return undefined
   const points = parsePoints(raw.points)

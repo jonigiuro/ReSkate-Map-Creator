@@ -56,6 +56,23 @@ function blendExportPlugin(): Plugin {
   return {
     name: 'reskate-blend-export',
     configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = (req.url ?? '').split('?')[0]
+        if (!url.endsWith('.jfif')) {
+          next()
+          return
+        }
+        const setHeader = res.setHeader.bind(res)
+        res.setHeader = (name, value) => {
+          if (String(name).toLowerCase() === 'content-type' && (value == null || value === '' || value === 'application/octet-stream')) {
+            return setHeader(name, 'image/jpeg')
+          }
+          return setHeader(name, value)
+        }
+        res.setHeader('Content-Type', 'image/jpeg')
+        next()
+      })
+
       server.middlewares.use('/api/export-blend', (req, res, next) => {
         if (req.method !== 'POST') {
           next()
