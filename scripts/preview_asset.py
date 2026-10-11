@@ -12,6 +12,7 @@ import bpy
 from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from export_blend import apply_plant_leaves
 from sk8_materials import ensure_sk8_material, material_invisible
 
 
@@ -67,6 +68,49 @@ def drop_invisible_collision():
     if removed:
         label = "part" if removed == 1 else "parts"
         print(f"Hid {removed} collision-only {label} from the preview")
+
+
+def promote_surface_for_gltf():
+    """The glTF exporter keeps Principled BSDF and drops a plain Diffuse shader.
+
+    These plants are a green Diffuse BSDF. EEVEE (the library thumbnail) shows
+    that green, and the exported mesh comes out the default gray. Swap the
+    surface for an equivalent Principled shader. The source file is not saved.
+    """
+    for mat in bpy.data.materials:
+        tree = mat.node_tree
+        if tree is None:
+            continue
+        output = next((node for node in tree.nodes if node.type == "OUTPUT_MATERIAL"), None)
+        if output is None:
+            continue
+        surface = output.inputs.get("Surface")
+        if surface is None or not surface.is_linked:
+            continue
+        shader = surface.links[0].from_node
+        if shader.type != "BSDF_DIFFUSE":
+            continue
+        principled = tree.nodes.new("ShaderNodeBsdfPrincipled")
+        principled.location = shader.location
+        color = shader.inputs.get("Color")
+        base = principled.inputs.get("Base Color")
+        if color is not None and base is not None:
+            if color.is_linked:
+                tree.links.new(color.links[0].from_socket, base)
+            else:
+                base.default_value = color.default_value
+        normal = shader.inputs.get("Normal")
+        principled_normal = principled.inputs.get("Normal")
+        if normal is not None and normal.is_linked and principled_normal is not None:
+            tree.links.new(normal.links[0].from_socket, principled_normal)
+        roughness = principled.inputs.get("Roughness")
+        if roughness is not None and not roughness.is_linked:
+            roughness.default_value = 1.0
+        metallic = principled.inputs.get("Metallic")
+        if metallic is not None and not metallic.is_linked:
+            metallic.default_value = 0.0
+        tree.links.new(principled.outputs[0], surface)
+        tree.nodes.remove(shader)
 
 
 def curves_to_mesh():
@@ -170,6 +214,18 @@ def three_bounds():
     return {"size": size, "center": center}
 
 
+def project_root_of(source):
+    """Walk up from the asset until the leaves map is in public/img/textures."""
+    current = Path(source).resolve().parent
+    for _ in range(8):
+        if (current / "public" / "img" / "textures" / "leaves" / "leaves.jpg").is_file():
+            return current
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
 def load_source(path):
     """Open a .blend, or import an .fbx / .obj into an empty scene."""
     suffix = Path(path).suffix.lower()
@@ -203,6 +259,10 @@ def main():
     drop_non_geometry()
     drop_invisible_collision()
     curves_to_mesh()
+    root = project_root_of(source)
+    if root is not None:
+        apply_plant_leaves(list(bpy.data.objects), source, root)
+    promote_surface_for_gltf()
     bpy.context.view_layer.update()
     bounds = three_bounds()
     render_thumbnail(Path(glb_path).with_suffix(".png"))

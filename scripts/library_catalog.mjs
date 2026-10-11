@@ -274,7 +274,7 @@ export function resolveLibraryBlender() {
 }
 
 // Bump when the preview mesh changes for the same source file.
-const PREVIEW_PIPELINE = 3
+const PREVIEW_PIPELINE = 5
 
 function cacheDirFor(projectRoot, assetFile) {
   const hash = createHash('sha1').update(assetFile).digest('hex').slice(0, 16)

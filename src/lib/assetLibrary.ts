@@ -48,7 +48,7 @@ export async function fetchAssetCatalog(): Promise<AssetCatalog> {
 }
 
 // Keep in step with PREVIEW_PIPELINE in scripts/library_catalog.mjs so cached meshes reload.
-const PREVIEW_PIPELINE = 3
+const PREVIEW_PIPELINE = 5
 
 export function httpPreviewUrl(assetFile: string, revision: number) {
   return `/api/library-preview?file=${encodeURIComponent(assetFile)}&v=${revision}&p=${PREVIEW_PIPELINE}`

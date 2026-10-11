@@ -71,6 +71,79 @@ def cell_key(cell):
     return ",".join(str(int(v)) for v in cell)
 
 
+def leaves_image_path(project_root):
+    return Path(project_root) / "public" / "img" / "textures" / "leaves" / "leaves.jpg"
+
+
+def is_plant_asset(blend_path):
+    return "plants" in {part.lower() for part in Path(blend_path).parts}
+
+
+def assign_leaves_map(mat, image_path):
+    """The game keeps a packed image on Principled BSDF and drops a Diffuse shader.
+
+    These plants are a flat Diffuse color. Put the leaves map on the base color
+    instead. The material datablock stays, so the mesh slot is unchanged.
+    """
+    mat.use_nodes = True
+    tree = mat.node_tree
+    nodes = tree.nodes
+    links = tree.links
+    output = next((node for node in nodes if node.type == "OUTPUT_MATERIAL"), None)
+    if output is None:
+        output = nodes.new("ShaderNodeOutputMaterial")
+    surface = output.inputs.get("Surface")
+    if surface is not None and surface.is_linked:
+        shader = surface.links[0].from_node
+        if shader.type == "BSDF_PRINCIPLED":
+            base = shader.inputs.get("Base Color")
+            if base is not None and base.is_linked and base.links[0].from_node.type == "TEX_IMAGE":
+                return
+        elif shader.type != "BSDF_DIFFUSE":
+            return
+    else:
+        shader = None
+    principled = nodes.new("ShaderNodeBsdfPrincipled")
+    principled.location = (0, 0)
+    base_node = _image_texture(nodes, image_path, "sRGB", (-520, 200))
+    links.new(base_node.outputs["Color"], principled.inputs["Base Color"])
+    if "Roughness" in principled.inputs:
+        principled.inputs["Roughness"].default_value = 1.0
+    if "Metallic" in principled.inputs:
+        principled.inputs["Metallic"].default_value = 0.0
+    if surface is not None:
+        links.new(principled.outputs["BSDF"], surface)
+    if shader is not None and shader.type == "BSDF_DIFFUSE":
+        nodes.remove(shader)
+    if hasattr(mat, "use_backface_culling"):
+        mat.use_backface_culling = False
+    try:
+        mat.blend_method = "OPAQUE"
+    except (TypeError, AttributeError):
+        pass
+
+
+def apply_plant_leaves(objects, blend_path, project_root):
+    """Swap plant Diffuse shaders for public/img/textures/leaves/leaves.jpg."""
+    if not is_plant_asset(blend_path):
+        return
+    image = leaves_image_path(project_root)
+    if not image.is_file():
+        print(f"Leaves texture missing, plants stay untextured: {image}")
+        return
+    seen = set()
+    for obj in objects:
+        if getattr(obj, "type", None) != "MESH" or obj.data is None:
+            continue
+        for mat in obj.data.materials:
+            if mat is None or mat in seen:
+                continue
+            seen.add(mat)
+            assign_leaves_map(mat, image)
+    if seen:
+        print(f"Leaves map on {len(seen)} plant material(s)")
+
+
 def tag_imported_materials(before, source_id):
     """Mark materials just appended from one asset so later copies can share them."""
     for mat in bpy.data.materials:
@@ -703,6 +776,109 @@ def striped_concrete_material(project_root):
     return mat
 
 
+def brick_material(project_root):
+    """Stylised brick albedo. One UV unit is 0.8 m, set by the planter mesh."""
+    cached = bpy.data.materials.get("brick")
+    if cached:
+        return cached
+    path = Path(project_root) / "public" / "img" / "textures" / "bricks.jpg"
+    if not path.is_file():
+        print("Brick texture missing, planter walls stay flat")
+        return placeholder_material("brick", (0.72, 0.38, 0.28))
+    mat = bpy.data.materials.new("brick")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, path, "sRGB", (-520, 200))
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    if "Roughness" in bsdf.inputs:
+        bsdf.inputs["Roughness"].default_value = 0.92
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    return mat
+
+
+def granite_material(project_root):
+    """Gray stone cap. Uses the concrete maps until a granite set is added."""
+    cached = bpy.data.materials.get("granite")
+    if cached:
+        return cached
+    folder = Path(project_root) / "public" / "img" / "textures" / "concrete"
+    files = {
+        "base": folder / "Concrete_BaseColor.png",
+        "normal": folder / "Concrete_Normal.png",
+        "rough": folder / "Concrete_Roughness.png",
+    }
+    missing = [str(path) for path in files.values() if not path.is_file()]
+    if missing:
+        print("Concrete textures missing, planter rim stays flat: " + ", ".join(missing))
+        return placeholder_material("granite", (0.62, 0.62, 0.6))
+    mat = bpy.data.materials.new("granite")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, files["base"], "sRGB", (-520, 280))
+    rough = _image_texture(nodes, files["rough"], "Non-Color", (-520, 0))
+    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-520, -280))
+    normal_map = nodes.new("ShaderNodeNormalMap")
+    normal_map.location = (-220, -280)
+    normal_map.inputs["Strength"].default_value = 0.65
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    return mat
+
+
+def grass_material(project_root):
+    """Stylised grass. Height is a bump, so the flat patch is not pushed out of shape."""
+    cached = bpy.data.materials.get("grass")
+    if cached:
+        return cached
+    folder = Path(project_root) / "public" / "img" / "textures" / "grass"
+    files = {
+        "base": folder / "Stylized_HandpaintedGrass_01_basecolor.jpg",
+        "normal": folder / "Stylized_HandpaintedGrass_01_normalogl.jpg",
+        "height": folder / "Stylized_HandpaintedGrass_01_height.jpg",
+    }
+    missing = [str(path) for path in files.values() if not path.is_file()]
+    if missing:
+        print("Grass textures missing, planter grass stays flat: " + ", ".join(missing))
+        mat = placeholder_material("grass", (0.56, 0.66, 0.29))
+        bsdf = mat.node_tree.nodes.get("Principled BSDF")
+        if bsdf and "Roughness" in bsdf.inputs:
+            bsdf.inputs["Roughness"].default_value = 0.95
+        return mat
+    mat = bpy.data.materials.new("grass")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, files["base"], "sRGB", (-520, 280))
+    height_tex = _image_texture(nodes, files["height"], "Non-Color", (-520, 0))
+    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-520, -280))
+    normal_map = nodes.new("ShaderNodeNormalMap")
+    normal_map.location = (-220, -280)
+    normal_map.inputs["Strength"].default_value = 1.0
+    bump = nodes.new("ShaderNodeBump")
+    bump.location = (-40, -80)
+    bump.inputs["Strength"].default_value = 0.2
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], bump.inputs["Normal"])
+    links.new(height_tex.outputs["Color"], bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    if "Roughness" in bsdf.inputs:
+        bsdf.inputs["Roughness"].default_value = 0.95
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    return mat
+
+
 def make_curb_mesh(name, points, width, height, color, tops=None, material=None):
     """One mitered curb. points are the base centreline, tops the top edge, both local."""
     sections = _curb_sections(points, float(width) / 2.0)
@@ -1180,6 +1356,223 @@ def make_platform_mesh(name, corners, height, color, material=None):
     return _link_mesh(name, verts, faces, color, material=material, tile=1.0)
 
 
+PLANTER_HEIGHT_M = 0.55
+PLANTER_CAP_M = 0.14
+PLANTER_WALL_M = 0.34
+PLANTER_OVERHANG_M = 0.07
+MIN_PLANTER_THICKNESS_M = 0.2
+BRICK_TILE_M = 0.8
+STONE_TILE_M = 1.0
+
+
+def _planter_insets(span_x, span_z):
+    span = min(span_x, span_z)
+    overhang = PLANTER_OVERHANG_M
+    wall = PLANTER_WALL_M
+    min_opening = 0.2
+    if span < (overhang + wall) * 2 + min_opening:
+        budget = max(0.08, (span - min_opening) * 0.5)
+        overhang = min(PLANTER_OVERHANG_M, budget * 0.2)
+        wall = max(0.04, budget - overhang)
+    if (overhang + wall) * 2 >= span - 0.04:
+        scale = max(0.05, (span - 0.04) / (2 * (overhang + wall)))
+        overhang *= scale
+        wall *= scale
+    return overhang, wall
+
+
+def _planter_fields(corners, tops, side_bases=None, side_tops=None):
+    x0, y0, z0 = corners[0]
+    x1, y1, z1 = corners[1]
+    minx, maxx = min(float(x0), float(x1)), max(float(x0), float(x1))
+    minz, maxz = min(float(z0), float(z1)), max(float(z0), float(z1))
+    if maxx - minx < 1e-4 or maxz - minz < 1e-4:
+        return None
+    listed = list(tops) if isinstance(tops, (list, tuple)) and len(tops) == 2 else None
+    rims = []
+    bases_in = [float(y0), float(y1)]
+    for index in range(2):
+        base = bases_in[index]
+        top = float(listed[index]) if listed else base + PLANTER_HEIGHT_M
+        rims.append(max(top, base + MIN_PLANTER_THICKNESS_M))
+
+    span_x, span_z = maxx - minx, maxz - minz
+    slope_along_x = span_x >= span_z
+    fallback_a = 1 if slope_along_x else 0
+    fallback_b = 0 if slope_along_x else 1
+    has_bases = isinstance(side_bases, (list, tuple)) and len(side_bases) == 2
+    has_tops = isinstance(side_tops, (list, tuple)) and len(side_tops) == 2
+    base_a = float(side_bases[0]) if has_bases else bases_in[fallback_a]
+    base_b = float(side_bases[1]) if has_bases else bases_in[fallback_b]
+    rim_a = max(float(side_tops[0]) if has_tops else rims[fallback_a], base_a + MIN_PLANTER_THICKNESS_M)
+    rim_b = max(float(side_tops[1]) if has_tops else rims[fallback_b], base_b + MIN_PLANTER_THICKNESS_M)
+    heights = (
+        (bases_in[0], rims[0]),
+        (base_a, rim_a),
+        (bases_in[1], rims[1]),
+        (base_b, rim_b),
+    )
+    rise = min(pair[1] - pair[0] for pair in heights)
+    cap = 0.03 if rise < 0.06 else min(PLANTER_CAP_M, rise * 0.45)
+    overhang, wall = _planter_insets(span_x, span_z)
+    dx = float(x1) - float(x0)
+    dz = float(z1) - float(z0)
+
+    def sample(kind, x, z):
+        index = 0 if kind == "base" else 1
+        h0, h_a, h1, h_b = (heights[i][index] for i in range(4))
+        u = 0.0 if abs(dx) < 1e-8 else (x - float(x0)) / dx
+        v = 0.0 if abs(dz) < 1e-8 else (z - float(z0)) / dz
+        along0 = h0 * (1.0 - u) + h_a * u
+        along1 = h_b * (1.0 - u) + h1 * u
+        return along0 * (1.0 - v) + along1 * v
+
+    return {
+        "minx": minx,
+        "maxx": maxx,
+        "minz": minz,
+        "maxz": maxz,
+        "overhang": overhang,
+        "wall": wall,
+        "base": lambda x, z: sample("base", x, z),
+        "rim": lambda x, z: sample("rim", x, z),
+        "brick": lambda x, z: sample("rim", x, z) - cap,
+    }
+
+
+def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_tops=None):
+    """Brick box, granite rim that overhangs it, grass set down to the underside of the rim."""
+    if not corners or len(corners) < 2:
+        return None
+    fields = _planter_fields(corners, tops, side_bases, side_tops)
+    if fields is None:
+        return None
+    minx, maxx = fields["minx"], fields["maxx"]
+    minz, maxz = fields["minz"], fields["maxz"]
+    overhang, wall = fields["overhang"], fields["wall"]
+    base_at, rim_at, brick_at = fields["base"], fields["rim"], fields["brick"]
+    ox0, ox1 = minx + overhang, maxx - overhang
+    oz0, oz1 = minz + overhang, maxz - overhang
+    ix0, ix1 = ox0 + wall, ox1 - wall
+    iz0, iz1 = oz0 + wall, oz1 - wall
+    if ix1 - ix0 < 0.02 or iz1 - iz0 < 0.02:
+        return None
+
+    verts = []
+    faces = []
+    uvs = []
+    slots = []
+    up = (0.0, 1.0, 0.0)
+    down = (0.0, -1.0, 0.0)
+
+    def add(slot, a, b, c, ua, ub, uc, outward):
+        before = len(faces)
+        _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward)
+        if len(faces) != before:
+            slots.append(slot)
+
+    def quad(slot, a, b, c, d, ua, ub, uc, ud, outward):
+        add(slot, a, b, c, ua, ub, uc, outward)
+        add(slot, a, c, d, ua, uc, ud, outward)
+
+    def side(slot, x0, z0, x1, z1, y_low, y_high, outward, tile, u0=0.0):
+        span = math.hypot(x1 - x0, z1 - z0)
+        if span < 1e-5:
+            return
+        a = (x0, y_low(x0, z0), z0)
+        b = (x1, y_low(x1, z1), z1)
+        c = (x1, y_high(x1, z1), z1)
+        d = (x0, y_high(x0, z0), z0)
+        u1 = u0 + span / tile
+        quad(
+            slot,
+            a, b, c, d,
+            (u0, a[1] / tile),
+            (u1, b[1] / tile),
+            (u1, c[1] / tile),
+            (u0, d[1] / tile),
+            outward,
+        )
+
+    def flat(slot, x0, z0, x1, z1, y_at, outward, tile):
+        a = (x0, y_at(x0, z0), z0)
+        b = (x1, y_at(x1, z0), z0)
+        c = (x1, y_at(x1, z1), z1)
+        d = (x0, y_at(x0, z1), z1)
+        quad(
+            slot,
+            a, b, c, d,
+            (x0 / tile, z0 / tile),
+            (x1 / tile, z0 / tile),
+            (x1 / tile, z1 / tile),
+            (x0 / tile, z1 / tile),
+            outward,
+        )
+
+    # One grid for the cap, the brick, and the grass. Lips only grind when the
+    # top and the wall share the edge. A full-width north/south strip used to
+    # own the corners, so the east/west lip was three short edges sitting on
+    # one long wall edge and the game never treated it as a ledge.
+    xs = [minx, ox0, ix0, ix1, ox1, maxx]
+    zs = [minz, oz0, iz0, iz1, oz1, maxz]
+
+    def cells(slot, y_at, outward, tile, keep):
+        for i in range(len(xs) - 1):
+            for j in range(len(zs) - 1):
+                if keep(i, j):
+                    flat(slot, xs[i], zs[j], xs[i + 1], zs[j + 1], y_at, outward, tile)
+
+    def wall_along_x(slot, z, y_low, y_high, outward, tile, i0, i1):
+        for i in range(i0, i1):
+            side(
+                slot, xs[i], z, xs[i + 1], z, y_low, y_high, outward, tile,
+                abs(xs[i] - xs[i0]) / tile,
+            )
+
+    def wall_along_z(slot, x, y_low, y_high, outward, tile, j0, j1):
+        for j in range(j0, j1):
+            side(
+                slot, x, zs[j], x, zs[j + 1], y_low, y_high, outward, tile,
+                abs(zs[j] - zs[j0]) / tile,
+            )
+
+    wall_along_x(0, oz0, base_at, brick_at, (0.0, 0.0, -1.0), BRICK_TILE_M, 1, 4)
+    wall_along_x(0, oz1, base_at, brick_at, (0.0, 0.0, 1.0), BRICK_TILE_M, 1, 4)
+    wall_along_z(0, ox0, base_at, brick_at, (-1.0, 0.0, 0.0), BRICK_TILE_M, 1, 4)
+    wall_along_z(0, ox1, base_at, brick_at, (1.0, 0.0, 0.0), BRICK_TILE_M, 1, 4)
+    cells(0, base_at, down, BRICK_TILE_M, lambda i, j: 1 <= i <= 3 and 1 <= j <= 3)
+
+    wall_along_x(1, minz, brick_at, rim_at, (0.0, 0.0, -1.0), STONE_TILE_M, 0, 5)
+    wall_along_x(1, maxz, brick_at, rim_at, (0.0, 0.0, 1.0), STONE_TILE_M, 0, 5)
+    wall_along_z(1, minx, brick_at, rim_at, (-1.0, 0.0, 0.0), STONE_TILE_M, 0, 5)
+    wall_along_z(1, maxx, brick_at, rim_at, (1.0, 0.0, 0.0), STONE_TILE_M, 0, 5)
+    side(1, ix1, iz1, ix1, iz0, brick_at, rim_at, (-1.0, 0.0, 0.0), STONE_TILE_M)
+    side(1, ix0, iz0, ix0, iz1, brick_at, rim_at, (1.0, 0.0, 0.0), STONE_TILE_M)
+    side(1, ix1, iz1, ix0, iz1, brick_at, rim_at, (0.0, 0.0, -1.0), STONE_TILE_M)
+    side(1, ix0, iz0, ix1, iz0, brick_at, rim_at, (0.0, 0.0, 1.0), STONE_TILE_M)
+    cells(1, rim_at, up, STONE_TILE_M, lambda i, j: not (i == 2 and j == 2))
+    cells(1, brick_at, down, STONE_TILE_M, lambda i, j: not (1 <= i <= 3 and 1 <= j <= 3))
+    flat(2, ix0, iz0, ix1, iz1, brick_at, up, STONE_TILE_M)
+
+    if not faces:
+        return None
+    obj = _link_mesh(
+        name,
+        verts,
+        faces,
+        (0.72, 0.38, 0.28),
+        material=brick_material(project_root),
+        loop_uvs=uvs,
+    )
+    mesh = obj.data
+    mesh.materials.clear()
+    for mat in (brick_material(project_root), granite_material(project_root), grass_material(project_root)):
+        mesh.materials.append(mat)
+    for poly, slot in zip(mesh.polygons, slots):
+        poly.material_index = slot
+    return obj
+
+
 def make_wedge_mesh(name, size, color):
     """Kicker in editor space: width X, height Y, depth +Z. Origin at the low edge."""
     w, d, h = size
@@ -1474,7 +1867,7 @@ def import_foreign_mesh(path):
         raise RuntimeError(f"Unsupported asset type: {path}")
 
 
-def append_authored_asset(name, blend_path, position, rotation, scale, colls):
+def append_authored_asset(name, blend_path, position, rotation, scale, colls, project_root):
     """
     Copy an authored .blend, .fbx, or .obj into the map.
 
@@ -1507,6 +1900,8 @@ def append_authored_asset(name, blend_path, position, rotation, scale, colls):
     else:
         raise RuntimeError(f"Unsupported asset type: {blend_path}")
 
+    fresh = [obj for obj in bpy.data.objects if obj not in before_objects]
+    apply_plant_leaves(fresh, blend_path, project_root)
     tag_imported_materials(before_materials, blend_path.as_posix())
 
     imported = [obj for obj in bpy.data.objects if obj not in before_objects]
@@ -1987,6 +2382,7 @@ def build(scene):
                     entry.get("rotation") or [0, 0, 0],
                     entry.get("scale") or [1, 1, 1],
                     colls,
+                    project_root,
                 )
                 continue
 
@@ -2112,6 +2508,41 @@ def build(scene):
                     placement_cell(position),
                     "generator_platform",
                     "generator_platform",
+                )
+                link_only(obj, colls["Map"])
+                continue
+
+            if gen.get("kind") == "planter":
+                corners = gen.get("corners") or []
+                if len(corners) < 2:
+                    print(f"Skipping planter {name}: needs two corners")
+                    continue
+                obj = make_planter_mesh(
+                    name,
+                    corners,
+                    gen.get("tops"),
+                    project_root,
+                    gen.get("sideBases"),
+                    gen.get("sideTops"),
+                )
+                if obj is None:
+                    print(f"Skipping planter {name}: footprint is too small")
+                    continue
+                obj.name = name
+                position = entry.get("position") or [0, 0, 0]
+                apply_transform(
+                    obj,
+                    position,
+                    entry.get("rotation") or [0, 0, 0],
+                    entry.get("scale") or [1, 1, 1],
+                )
+                set_sk8_mesh_props(obj, entry.get("sk8"))
+                tag_join_piece(
+                    obj,
+                    "generator_planter",
+                    placement_cell(position),
+                    "generator_planter",
+                    "generator_planter",
                 )
                 link_only(obj, colls["Map"])
                 continue

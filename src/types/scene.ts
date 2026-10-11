@@ -48,7 +48,19 @@ export interface RailGenerator {
   radius: number
 }
 
-export type MeshGenerator = CurbGenerator | KitGenerator | PlatformGenerator | RailGenerator
+/** Axis-aligned planter. Corners are two opposite footprint corners. Each corner's Y is its brick base. */
+export interface PlanterGenerator {
+  kind: 'planter'
+  corners: [[number, number, number], [number, number, number]]
+  /** Granite rim at the two clicked corners, local Y. */
+  tops?: [number, number]
+  /** Brick base at (corner1.x, corner0.z) and (corner0.x, corner1.z). */
+  sideBases?: [number, number]
+  /** Granite rim at those same two corners. */
+  sideTops?: [number, number]
+}
+
+export type MeshGenerator = CurbGenerator | KitGenerator | PlatformGenerator | RailGenerator | PlanterGenerator
 
 export interface MeshObject {
   id: string

@@ -2,6 +2,7 @@ import type {
   CollisionMode,
   KitGenerator,
   MeshGenerator,
+  PlanterGenerator,
   PlatformGenerator,
   RailGenerator,
   GrindObject,
@@ -73,6 +74,36 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
     }
     const rail: RailGenerator = { kind: 'rail', points, radius, tops }
     return rail
+  }
+  if (raw.kind === 'planter') {
+    const points = parsePoints(raw.corners)
+    if (!points || points.length !== 2) return undefined
+    let tops: [number, number] | undefined
+    if (
+      Array.isArray(raw.tops) &&
+      raw.tops.length === 2 &&
+      raw.tops.every((value) => typeof value === 'number' && Number.isFinite(value))
+    ) {
+      tops = [raw.tops[0], raw.tops[1]]
+    }
+    const pair = (rawValue: unknown): [number, number] | undefined => {
+      if (
+        Array.isArray(rawValue) &&
+        rawValue.length === 2 &&
+        rawValue.every((value) => typeof value === 'number' && Number.isFinite(value))
+      ) {
+        return [rawValue[0], rawValue[1]]
+      }
+      return undefined
+    }
+    const planter: PlanterGenerator = {
+      kind: 'planter',
+      corners: [points[0], points[1]],
+      tops,
+      sideBases: pair(raw.sideBases),
+      sideTops: pair(raw.sideTops),
+    }
+    return planter
   }
   if (raw.kind !== 'curb') return undefined
   const points = parsePoints(raw.points)

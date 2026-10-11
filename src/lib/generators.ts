@@ -563,6 +563,334 @@ export function buildPlatformGeometry(corners: [Vec3, Vec3], height: number) {
   return geometry
 }
 
+/** Planter. The two corners are the outer granite footprint. Each pin has its own base and rim. */
+export const PLANTER_HEIGHT_M = 0.55
+export const PLANTER_CAP_M = 0.14
+export const PLANTER_WALL_M = 0.34
+export const PLANTER_OVERHANG_M = 0.07
+export const MIN_PLANTER_SPAN_M = 0.5
+export const MIN_PLANTER_THICKNESS_M = 0.2
+const BRICK_TILE_M = 0.8
+const STONE_TILE_M = 1
+
+export function planterFootprintTooSmall(a: Vec3, b: Vec3) {
+  return Math.abs(a[0] - b[0]) < MIN_PLANTER_SPAN_M || Math.abs(a[2] - b[2]) < MIN_PLANTER_SPAN_M
+}
+
+/** Rim at each corner, local Y. Missing tops sit PLANTER_HEIGHT_M above that corner's base. */
+export function planterRimYs(corners: [Vec3, Vec3], tops?: number[]): [number, number] {
+  return [0, 1].map((index) => {
+    const base = corners[index][1]
+    const listed = tops?.[index]
+    const top = typeof listed === 'number' && Number.isFinite(listed) ? listed : base + PLANTER_HEIGHT_M
+    return Math.max(top, base + MIN_PLANTER_THICKNESS_M)
+  }) as [number, number]
+}
+
+type PlanterFields = {
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
+  overhang: number
+  wall: number
+  cap: number
+  baseAt: (x: number, z: number) => number
+  rimAt: (x: number, z: number) => number
+  brickTopAt: (x: number, z: number) => number
+}
+
+function planterInsets(spanX: number, spanZ: number) {
+  const span = Math.min(spanX, spanZ)
+  let overhang = PLANTER_OVERHANG_M
+  let wall = PLANTER_WALL_M
+  const minOpening = 0.2
+  if (span < (overhang + wall) * 2 + minOpening) {
+    const budget = Math.max(0.08, (span - minOpening) * 0.5)
+    overhang = Math.min(PLANTER_OVERHANG_M, budget * 0.2)
+    wall = Math.max(0.04, budget - overhang)
+  }
+  if ((overhang + wall) * 2 >= span - 0.04) {
+    const scale = Math.max(0.05, (span - 0.04) / (2 * (overhang + wall)))
+    overhang *= scale
+    wall *= scale
+  }
+  return { overhang, wall }
+}
+
+export type PlanterLayout = {
+  /** pin0, (pin1.x, pin0.z), pin1, (pin0.x, pin1.z). Y is the brick base. */
+  points: [Vec3, Vec3, Vec3, Vec3]
+  rims: [number, number, number, number]
+}
+
+/** Four corners. Missing side heights copy the pin on the same end of the longer side. */
+export function planterLayout(
+  corners: [Vec3, Vec3],
+  tops?: number[],
+  sideBases?: [number, number],
+  sideTops?: [number, number],
+): PlanterLayout {
+  const rims = planterRimYs(corners, tops)
+  const spanX = Math.abs(corners[0][0] - corners[1][0])
+  const spanZ = Math.abs(corners[0][2] - corners[1][2])
+  const slopeAlongX = spanX >= spanZ
+  const fallbackA = slopeAlongX ? 1 : 0
+  const fallbackB = slopeAlongX ? 0 : 1
+  const baseA = sideBases?.[0] ?? corners[fallbackA][1]
+  const baseB = sideBases?.[1] ?? corners[fallbackB][1]
+  const rimA = Math.max(sideTops?.[0] ?? rims[fallbackA], baseA + MIN_PLANTER_THICKNESS_M)
+  const rimB = Math.max(sideTops?.[1] ?? rims[fallbackB], baseB + MIN_PLANTER_THICKNESS_M)
+  return {
+    points: [
+      corners[0],
+      [corners[1][0], baseA, corners[0][2]],
+      corners[1],
+      [corners[0][0], baseB, corners[1][2]],
+    ],
+    rims: [rims[0], rimA, rims[1], rimB],
+  }
+}
+
+/** Each of the four corners keeps its own base and rim. Height blends between them. */
+function planterFields(
+  corners: [Vec3, Vec3],
+  tops?: number[],
+  sideBases?: [number, number],
+  sideTops?: [number, number],
+): PlanterFields | null {
+  const minX = Math.min(corners[0][0], corners[1][0])
+  const maxX = Math.max(corners[0][0], corners[1][0])
+  const minZ = Math.min(corners[0][2], corners[1][2])
+  const maxZ = Math.max(corners[0][2], corners[1][2])
+  const spanX = maxX - minX
+  const spanZ = maxZ - minZ
+  if (spanX < 1e-4 || spanZ < 1e-4) return null
+  const layout = planterLayout(corners, tops, sideBases, sideTops)
+  const [p0, pA, p1, pB] = layout.points
+  const [r0, rA, r1, rB] = layout.rims
+  const dx = corners[1][0] - corners[0][0]
+  const dz = corners[1][2] - corners[0][2]
+  const rise = Math.min(r0 - p0[1], rA - pA[1], r1 - p1[1], rB - pB[1])
+  const cap = !Number.isFinite(rise) || rise < 0.06 ? 0.03 : Math.min(PLANTER_CAP_M, rise * 0.45)
+  const { overhang, wall } = planterInsets(spanX, spanZ)
+  const sample = (kind: 'base' | 'rim', x: number, z: number) => {
+    const h0 = kind === 'base' ? p0[1] : r0
+    const hA = kind === 'base' ? pA[1] : rA
+    const h1 = kind === 'base' ? p1[1] : r1
+    const hB = kind === 'base' ? pB[1] : rB
+    const u = (x - corners[0][0]) / dx
+    const v = (z - corners[0][2]) / dz
+    const alongPin0 = h0 * (1 - u) + hA * u
+    const alongPin1 = hB * (1 - u) + h1 * u
+    return alongPin0 * (1 - v) + alongPin1 * v
+  }
+  return {
+    minX,
+    maxX,
+    minZ,
+    maxZ,
+    overhang,
+    wall,
+    cap,
+    baseAt: (x, z) => sample('base', x, z),
+    rimAt: (x, z) => sample('rim', x, z),
+    brickTopAt: (x, z) => sample('rim', x, z) - cap,
+  }
+}
+
+type MeshArrays = { positions: number[]; normals: number[]; uvs: number[]; tangents: number[] }
+
+function freshMesh(): MeshArrays {
+  return { positions: [], normals: [], uvs: [], tangents: [] }
+}
+
+function quadMesh(
+  mesh: MeshArrays,
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  c: THREE.Vector3,
+  d: THREE.Vector3,
+  ua: [number, number],
+  ub: [number, number],
+  uc: [number, number],
+  ud: [number, number],
+  outward: THREE.Vector3,
+) {
+  addTri(mesh.positions, mesh.normals, mesh.uvs, mesh.tangents, a, b, c, ua, ub, uc, outward)
+  addTri(mesh.positions, mesh.normals, mesh.uvs, mesh.tangents, a, c, d, ua, uc, ud, outward)
+}
+
+function sideQuad(
+  mesh: MeshArrays,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  yLow: (x: number, z: number) => number,
+  yHigh: (x: number, z: number) => number,
+  outward: THREE.Vector3,
+  tile: number,
+  u0 = 0,
+) {
+  const span = Math.hypot(x1 - x0, z1 - z0)
+  if (span < 1e-5) return
+  const a = new THREE.Vector3(x0, yLow(x0, z0), z0)
+  const b = new THREE.Vector3(x1, yLow(x1, z1), z1)
+  const c = new THREE.Vector3(x1, yHigh(x1, z1), z1)
+  const d = new THREE.Vector3(x0, yHigh(x0, z0), z0)
+  const u1 = u0 + span / tile
+  quadMesh(
+    mesh,
+    a,
+    b,
+    c,
+    d,
+    [u0, a.y / tile],
+    [u1, b.y / tile],
+    [u1, c.y / tile],
+    [u0, d.y / tile],
+    outward,
+  )
+}
+
+function flatQuad(
+  mesh: MeshArrays,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  yAt: (x: number, z: number) => number,
+  outward: THREE.Vector3,
+  tile: number,
+) {
+  const a = new THREE.Vector3(x0, yAt(x0, z0), z0)
+  const b = new THREE.Vector3(x1, yAt(x1, z0), z0)
+  const c = new THREE.Vector3(x1, yAt(x1, z1), z1)
+  const d = new THREE.Vector3(x0, yAt(x0, z1), z1)
+  quadMesh(
+    mesh,
+    a,
+    b,
+    c,
+    d,
+    [x0 / tile, z0 / tile],
+    [x1 / tile, z0 / tile],
+    [x1 / tile, z1 / tile],
+    [x0 / tile, z1 / tile],
+    outward,
+  )
+}
+
+function finishMesh(mesh: MeshArrays) {
+  if (mesh.positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(mesh.positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(mesh.normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(mesh.uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(mesh.tangents, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/** Brick walls, granite cap, and the grass set into the top. Local Y is each pin's base. */
+export function buildPlanterGeometry(
+  corners: [Vec3, Vec3],
+  tops?: number[],
+  sideBases?: [number, number],
+  sideTops?: [number, number],
+) {
+  const fields = planterFields(corners, tops, sideBases, sideTops)
+  if (!fields) return null
+  const { minX, maxX, minZ, maxZ, overhang, wall, baseAt, rimAt, brickTopAt } = fields
+  const ox0 = minX + overhang
+  const ox1 = maxX - overhang
+  const oz0 = minZ + overhang
+  const oz1 = maxZ - overhang
+  const ix0 = ox0 + wall
+  const ix1 = ox1 - wall
+  const iz0 = oz0 + wall
+  const iz1 = oz1 - wall
+  if (ix1 - ix0 < 0.02 || iz1 - iz0 < 0.02) return null
+
+  const brick = freshMesh()
+  const granite = freshMesh()
+  const grass = freshMesh()
+  const down = new THREE.Vector3(0, -1, 0)
+  // Same splits on the top and the walls, so each lip is one shared edge.
+  // Full-width end strips used to swallow the corners and leave the long
+  // sides as T-junctions, which only grind on one axis.
+  const xs = [minX, ox0, ix0, ix1, ox1, maxX]
+  const zs = [minZ, oz0, iz0, iz1, oz1, maxZ]
+
+  const cells = (
+    mesh: MeshArrays,
+    yAt: (x: number, z: number) => number,
+    outward: THREE.Vector3,
+    tile: number,
+    keep: (i: number, j: number) => boolean,
+  ) => {
+    for (let i = 0; i < xs.length - 1; i += 1) {
+      for (let j = 0; j < zs.length - 1; j += 1) {
+        if (keep(i, j)) flatQuad(mesh, xs[i], zs[j], xs[i + 1], zs[j + 1], yAt, outward, tile)
+      }
+    }
+  }
+  const wallAlongX = (
+    mesh: MeshArrays,
+    z: number,
+    yLow: (x: number, z: number) => number,
+    yHigh: (x: number, z: number) => number,
+    outward: THREE.Vector3,
+    tile: number,
+    i0: number,
+    i1: number,
+  ) => {
+    for (let i = i0; i < i1; i += 1) {
+      sideQuad(mesh, xs[i], z, xs[i + 1], z, yLow, yHigh, outward, tile, Math.abs(xs[i] - xs[i0]) / tile)
+    }
+  }
+  const wallAlongZ = (
+    mesh: MeshArrays,
+    x: number,
+    yLow: (x: number, z: number) => number,
+    yHigh: (x: number, z: number) => number,
+    outward: THREE.Vector3,
+    tile: number,
+    j0: number,
+    j1: number,
+  ) => {
+    for (let j = j0; j < j1; j += 1) {
+      sideQuad(mesh, x, zs[j], x, zs[j + 1], yLow, yHigh, outward, tile, Math.abs(zs[j] - zs[j0]) / tile)
+    }
+  }
+
+  wallAlongX(brick, oz0, baseAt, brickTopAt, new THREE.Vector3(0, 0, -1), BRICK_TILE_M, 1, 4)
+  wallAlongX(brick, oz1, baseAt, brickTopAt, new THREE.Vector3(0, 0, 1), BRICK_TILE_M, 1, 4)
+  wallAlongZ(brick, ox0, baseAt, brickTopAt, new THREE.Vector3(-1, 0, 0), BRICK_TILE_M, 1, 4)
+  wallAlongZ(brick, ox1, baseAt, brickTopAt, new THREE.Vector3(1, 0, 0), BRICK_TILE_M, 1, 4)
+  cells(brick, baseAt, down, BRICK_TILE_M, (i, j) => i >= 1 && i <= 3 && j >= 1 && j <= 3)
+
+  wallAlongX(granite, minZ, brickTopAt, rimAt, new THREE.Vector3(0, 0, -1), STONE_TILE_M, 0, 5)
+  wallAlongX(granite, maxZ, brickTopAt, rimAt, new THREE.Vector3(0, 0, 1), STONE_TILE_M, 0, 5)
+  wallAlongZ(granite, minX, brickTopAt, rimAt, new THREE.Vector3(-1, 0, 0), STONE_TILE_M, 0, 5)
+  wallAlongZ(granite, maxX, brickTopAt, rimAt, new THREE.Vector3(1, 0, 0), STONE_TILE_M, 0, 5)
+  sideQuad(granite, ix1, iz1, ix1, iz0, brickTopAt, rimAt, new THREE.Vector3(-1, 0, 0), STONE_TILE_M)
+  sideQuad(granite, ix0, iz0, ix0, iz1, brickTopAt, rimAt, new THREE.Vector3(1, 0, 0), STONE_TILE_M)
+  sideQuad(granite, ix1, iz1, ix0, iz1, brickTopAt, rimAt, new THREE.Vector3(0, 0, -1), STONE_TILE_M)
+  sideQuad(granite, ix0, iz0, ix1, iz0, brickTopAt, rimAt, new THREE.Vector3(0, 0, 1), STONE_TILE_M)
+  cells(granite, rimAt, UP, STONE_TILE_M, (i, j) => !(i === 2 && j === 2))
+  cells(granite, brickTopAt, down, STONE_TILE_M, (i, j) => !(i >= 1 && i <= 3 && j >= 1 && j <= 3))
+
+  flatQuad(grass, ix0, iz0, ix1, iz1, brickTopAt, UP, STONE_TILE_M)
+
+  const brickGeometry = finishMesh(brick)
+  const graniteGeometry = finishMesh(granite)
+  const grassGeometry = finishMesh(grass)
+  if (!brickGeometry || !graniteGeometry || !grassGeometry) return null
+  return { brick: brickGeometry, granite: graniteGeometry, grass: grassGeometry }
+}
+
 /** Round rail along a centreline. Eight flat faces, one of them on top when the run is level. */
 export const RAIL_RADIUS_M = 0.05
 /** Vertical post under each pin. Thinner than the rail it holds up. */

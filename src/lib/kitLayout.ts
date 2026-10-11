@@ -1,10 +1,11 @@
 import * as THREE from 'three'
 
-/** A drawn generator: a built-in curb or platform, or a blend kit from Objects/Generators. */
+/** A drawn generator: a built-in curb, rail, platform, or planter, or a blend kit from Objects/Generators. */
 export type DrawGenerator =
   | { kind: 'curb' }
   | { kind: 'rail' }
   | { kind: 'platform' }
+  | { kind: 'planter' }
   | { kind: 'kit'; assetFile: string; label: string }
 
 export type KitRole = 'start' | 'middle' | 'end'

@@ -19,18 +19,24 @@ import {
   CURB_HEIGHT_M,
   CURB_WIDTH_M,
   MIN_CURB_THICKNESS_M,
+  MIN_PLANTER_SPAN_M,
+  MIN_PLANTER_THICKNESS_M,
   MIN_PLATFORM_HEIGHT_M,
+  PLANTER_HEIGHT_M,
   PLATFORM_HEIGHT_M,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   buildCurbGeometry,
   buildCurbLipGeometry,
+  buildPlanterGeometry,
   railBaseFromHit,
   railTopYs,
   buildPlatformGeometry,
   buildRailGeometry,
   curbSegmentTooShort,
   curbTopYs,
+  planterFootprintTooSmall,
+  planterLayout,
   platformFootprintTooSmall,
   platformFromWorld,
   type Vec3,
@@ -344,10 +350,12 @@ function MeshItem({
   const generator = obj.generator?.kind === 'curb' ? obj.generator : null
   const platform = obj.generator?.kind === 'platform' ? obj.generator : null
   const rail = obj.generator?.kind === 'rail' ? obj.generator : null
+  const planter = obj.generator?.kind === 'planter' ? obj.generator : null
   const kit = obj.generator?.kind === 'kit' ? obj.generator : null
   const editing = selected && tool === 'select' && generator != null
   const editingPlatform = selected && tool === 'select' && platform != null
   const editingRail = selected && tool === 'select' && rail != null
+  const editingPlanter = selected && tool === 'select' && planter != null
 
   useEffect(() => {
     if (!selected) {
@@ -391,6 +399,16 @@ function MeshItem({
     const y = handle.end === 'bottom' ? point[1] : tops[handle.index]
     g.position.set(point[0], y, point[2])
   }, [rail, handle])
+
+  useLayoutEffect(() => {
+    const g = handleRef.current
+    if (!g || handleDragging.current || !planter || !handle) return
+    const layout = planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops)
+    const corner = layout.points[handle.index]
+    if (!corner) return
+    const y = handle.end === 'bottom' ? corner[1] : layout.rims[handle.index]
+    g.position.set(corner[0], y, corner[2])
+  }, [planter, handle])
 
   function commitHeight() {
     if (!generator || !handle) return
@@ -451,6 +469,70 @@ function MeshItem({
     else tops[handle.index] = round4(y)
     onPatch({
       generator: { ...rail, points, tops: tops.map((value) => round4(value)) },
+    })
+  }
+
+  function commitPlanter() {
+    if (!planter || !handle) return
+    const g = handleRef.current
+    if (!g || !planter.corners[0] || !planter.corners[1]) return
+    const layout = planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops)
+    let x = g.position.x
+    let z = g.position.z
+    let y = g.position.y
+    const corners: [Vec3, Vec3] = [
+      [planter.corners[0][0], layout.points[0][1], planter.corners[0][2]],
+      [planter.corners[1][0], layout.points[2][1], planter.corners[1][2]],
+    ]
+    const tops: [number, number] = [layout.rims[0], layout.rims[2]]
+    const sideBases: [number, number] = [layout.points[1][1], layout.points[3][1]]
+    const sideTops: [number, number] = [layout.rims[1], layout.rims[3]]
+    const apart = (value: number, anchor: number) =>
+      Math.abs(value - anchor) < MIN_PLANTER_SPAN_M
+        ? anchor + (value >= anchor ? MIN_PLANTER_SPAN_M : -MIN_PLANTER_SPAN_M)
+        : value
+    if (handle.index === 0 || handle.index === 2) {
+      const pin = handle.index === 0 ? 0 : 1
+      const otherPin = pin === 0 ? 1 : 0
+      x = apart(x, corners[otherPin][0])
+      z = apart(z, corners[otherPin][2])
+      corners[pin][0] = round4(x)
+      corners[pin][2] = round4(z)
+      if (handle.end === 'bottom') {
+        y = Math.min(y, tops[pin] - MIN_PLANTER_THICKNESS_M)
+        corners[pin][1] = round4(y)
+      } else {
+        y = Math.max(y, corners[pin][1] + MIN_PLANTER_THICKNESS_M)
+        tops[pin] = round4(y)
+      }
+    } else if (handle.index === 1) {
+      x = apart(x, corners[0][0])
+      z = apart(z, corners[1][2])
+      corners[1][0] = round4(x)
+      corners[0][2] = round4(z)
+      if (handle.end === 'bottom') {
+        y = Math.min(y, sideTops[0] - MIN_PLANTER_THICKNESS_M)
+        sideBases[0] = round4(y)
+      } else {
+        y = Math.max(y, sideBases[0] + MIN_PLANTER_THICKNESS_M)
+        sideTops[0] = round4(y)
+      }
+    } else {
+      x = apart(x, corners[1][0])
+      z = apart(z, corners[0][2])
+      corners[0][0] = round4(x)
+      corners[1][2] = round4(z)
+      if (handle.end === 'bottom') {
+        y = Math.min(y, sideTops[1] - MIN_PLANTER_THICKNESS_M)
+        sideBases[1] = round4(y)
+      } else {
+        y = Math.max(y, sideBases[1] + MIN_PLANTER_THICKNESS_M)
+        sideTops[1] = round4(y)
+      }
+    }
+    g.position.set(x, y, z)
+    onPatch({
+      generator: { ...planter, corners, tops, sideBases, sideTops },
     })
   }
 
@@ -538,6 +620,25 @@ function MeshItem({
             )}
             {editingRail && handle && <group ref={handleRef} />}
           </>
+        ) : planter ? (
+          <>
+            <PlanterMesh
+              corners={planter.corners}
+              tops={planter.tops}
+              sideBases={planter.sideBases}
+              sideTops={planter.sideTops}
+            />
+            {editingPlanter && (
+              <CurbEditPins
+                points={planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops).points}
+                height={PLANTER_HEIGHT_M}
+                tops={planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops).rims}
+                active={handle}
+                onPick={(index, end) => setHandle({ index, end })}
+              />
+            )}
+            {editingPlanter && handle && <group ref={handleRef} />}
+          </>
         ) : kit ? (
           <KitRun assetFile={kit.assetFile} revision={assetRevision} points={kit.points} />
         ) : (
@@ -592,6 +693,18 @@ function MeshItem({
           space="world"
           snap={snap}
           onCommit={commitRail}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+      {editingPlanter && handle && (
+        <TransformGizmo
+          target={handleRef}
+          dragging={handleDragging}
+          mode="translate"
+          space="world"
+          snap={snap}
+          onCommit={commitPlanter}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
         />
@@ -1148,6 +1261,14 @@ function CurbHandleSphere({
   )
 }
 
+const BRICK_MAP = `${import.meta.env.BASE_URL}img/textures/bricks.jpg`
+
+const GRASS_MAPS = [
+  `${import.meta.env.BASE_URL}img/textures/grass/Stylized_HandpaintedGrass_01_basecolor.jpg`,
+  `${import.meta.env.BASE_URL}img/textures/grass/Stylized_HandpaintedGrass_01_normalogl.jpg`,
+  `${import.meta.env.BASE_URL}img/textures/grass/Stylized_HandpaintedGrass_01_height.jpg`,
+] as const
+
 const CONCRETE_MAPS = [
   `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_BaseColor.png`,
   `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_Normal.png`,
@@ -1170,7 +1291,7 @@ const GALVANIZED_MAPS = [
   galvanizedMap('standard galvanized steel, ideal for structures_Metallic.jpg'),
 ] as const
 
-useTexture.preload([...CONCRETE_MAPS, ...STRIPED_CONCRETE_MAPS, ...GALVANIZED_MAPS])
+useTexture.preload([BRICK_MAP, ...GRASS_MAPS, ...CONCRETE_MAPS, ...STRIPED_CONCRETE_MAPS, ...GALVANIZED_MAPS])
 
 function CurbMaterial({ ghost }: { ghost?: boolean }) {
   const [colorMap, normalMap, roughnessMap] = useTexture([...CONCRETE_MAPS])
@@ -1316,6 +1437,109 @@ function PlatformGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
   return (
     <group position={origin} userData={{ placementGhost: true }}>
       <PlatformMesh corners={corners} height={PLATFORM_HEIGHT_M} ghost />
+    </group>
+  )
+}
+
+function BrickMaterial({ ghost }: { ghost?: boolean }) {
+  const colorMap = useTexture(BRICK_MAP)
+  const material = useMemo(() => {
+    colorMap.wrapS = THREE.RepeatWrapping
+    colorMap.wrapT = THREE.RepeatWrapping
+    colorMap.colorSpace = THREE.SRGBColorSpace
+    colorMap.needsUpdate = true
+    return new THREE.MeshStandardMaterial({
+      map: colorMap,
+      roughness: 0.92,
+      metalness: 0,
+      transparent: !!ghost,
+      opacity: ghost ? 0.45 : 1,
+      depthWrite: !ghost,
+    })
+  }, [colorMap, ghost])
+
+  useEffect(() => () => material.dispose(), [material])
+  return <primitive object={material} attach="material" />
+}
+
+function GrassMaterial({ ghost }: { ghost?: boolean }) {
+  const [colorMap, normalMap, heightMap] = useTexture([...GRASS_MAPS])
+  const material = useMemo(() => {
+    for (const map of [colorMap, normalMap, heightMap]) {
+      map.wrapS = THREE.RepeatWrapping
+      map.wrapT = THREE.RepeatWrapping
+      map.needsUpdate = true
+    }
+    colorMap.colorSpace = THREE.SRGBColorSpace
+    normalMap.colorSpace = THREE.NoColorSpace
+    heightMap.colorSpace = THREE.NoColorSpace
+    return new THREE.MeshStandardMaterial({
+      map: colorMap,
+      normalMap,
+      bumpMap: heightMap,
+      bumpScale: 0.04,
+      normalScale: new THREE.Vector2(1, 1),
+      roughness: 0.95,
+      metalness: 0,
+      transparent: !!ghost,
+      opacity: ghost ? 0.45 : 1,
+      depthWrite: !ghost,
+    })
+  }, [colorMap, ghost, heightMap, normalMap])
+
+  useEffect(() => () => material.dispose(), [material])
+  return <primitive object={material} attach="material" />
+}
+
+function PlanterMesh({
+  corners,
+  tops,
+  sideBases,
+  sideTops,
+  ghost,
+}: {
+  corners: [Vec3, Vec3]
+  tops?: [number, number]
+  sideBases?: [number, number]
+  sideTops?: [number, number]
+  ghost?: boolean
+}) {
+  const parts = useMemo(
+    () => buildPlanterGeometry(corners, tops, sideBases, sideTops),
+    [corners, sideBases, sideTops, tops],
+  )
+  useEffect(
+    () => () => {
+      parts?.brick.dispose()
+      parts?.granite.dispose()
+      parts?.grass.dispose()
+    },
+    [parts],
+  )
+  if (!parts) return null
+  return (
+    <group>
+      <mesh geometry={parts.brick} castShadow={!ghost} receiveShadow={!ghost}>
+        <BrickMaterial ghost={ghost} />
+      </mesh>
+      <mesh geometry={parts.granite} castShadow={!ghost} receiveShadow={!ghost}>
+        <CurbMaterial ghost={ghost} />
+      </mesh>
+      <mesh geometry={parts.grass} receiveShadow={!ghost}>
+        <GrassMaterial ghost={ghost} />
+      </mesh>
+    </group>
+  )
+}
+
+function PlanterGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
+  const first = pins[0]
+  const second: Vec3 = [to.x, first[1], to.z]
+  if (planterFootprintTooSmall(first, second)) return null
+  const { origin, corners } = platformFromWorld(first, second)
+  return (
+    <group position={origin} userData={{ placementGhost: true }}>
+      <PlanterMesh corners={corners} tops={[PLANTER_HEIGHT_M, PLANTER_HEIGHT_M]} ghost />
     </group>
   )
 }
@@ -1605,7 +1829,7 @@ function SceneContents(props: Props) {
               ? railBaseFromHit([generatorPreview.x, generatorPreview.y, generatorPreview.z])
               : [
                   generatorPreview.x,
-                  generator.kind === 'platform' && pins[0]
+                  (generator.kind === 'platform' || generator.kind === 'planter') && pins[0]
                     ? pins[0][1]
                     : generatorPreview.y < 0.02
                       ? 0
@@ -1623,6 +1847,9 @@ function SceneContents(props: Props) {
       )}
       {generator?.kind === 'platform' && pins.length > 0 && generatorPreview && (
         <PlatformGhost pins={pins} to={generatorPreview} />
+      )}
+      {generator?.kind === 'planter' && pins.length > 0 && generatorPreview && (
+        <PlanterGhost pins={pins} to={generatorPreview} />
       )}
       {generator?.kind === 'kit' && pins.length > 0 && generatorPreview && (
         <KitGhost
