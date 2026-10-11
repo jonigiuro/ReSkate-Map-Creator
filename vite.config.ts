@@ -46,6 +46,15 @@ type LibraryHelpers = {
   resolveLibraryBlender: () => Promise<string | null>
 }
 
+async function loadTextureSets() {
+  const file = path.join(root, 'scripts', 'texture_sets.mjs')
+  const version = statSync(file).mtimeMs
+  return import(`${pathToFileURL(file).href}?update=${version}`) as Promise<{
+    scanTextureSets: (projectRoot: string) => Promise<Record<string, unknown>[]>
+    textureSetRecord: (sets: Record<string, unknown>[]) => Record<string, unknown>
+  }>
+}
+
 async function loadLibraryHelpers(): Promise<LibraryHelpers> {
   const file = path.join(root, 'scripts', 'library_catalog.mjs')
   const version = statSync(file).mtimeMs
@@ -85,8 +94,10 @@ function blendExportPlugin(): Plugin {
           try {
             const { findBlender, runBlenderExport } = await loadBlenderHelpers()
             const body = Buffer.concat(chunks).toString('utf8')
-            const scene = JSON.parse(body) as { projectRoot?: string }
+            const scene = JSON.parse(body) as { projectRoot?: string; textureSets?: unknown }
             scene.projectRoot = root
+            const { scanTextureSets, textureSetRecord } = await loadTextureSets()
+            scene.textureSets = textureSetRecord(await scanTextureSets(root))
             const exportsDir = path.join(root, 'exports')
             await mkdir(exportsDir, { recursive: true })
 
@@ -213,6 +224,29 @@ function blendExportPlugin(): Plugin {
             res.setHeader('Content-Type', 'application/json')
             res.setHeader('Cache-Control', 'no-cache')
             res.end(JSON.stringify(catalog))
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: message }))
+          }
+        })()
+      })
+
+      server.middlewares.use('/api/texture-sets', (req, res) => {
+        if (req.method !== 'GET') {
+          res.statusCode = 405
+          res.end()
+          return
+        }
+        void (async () => {
+          try {
+            const { scanTextureSets } = await loadTextureSets()
+            const sets = await scanTextureSets(root)
+            res.statusCode = 200
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-cache')
+            res.end(JSON.stringify(sets))
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             res.statusCode = 500

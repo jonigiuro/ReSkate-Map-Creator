@@ -9,6 +9,7 @@ spawn empty, sk8_collision_mode, sk8_grind_curve fallback properties.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -24,6 +25,7 @@ from sk8_materials import (
     collision_mode_of,
     ensure_sk8_material,
     ensure_sk8_object,
+    material_invisible,
     material_share_token,
 )
 
@@ -956,7 +958,7 @@ def _lip_profile(corner, inward):
     }
 
 
-def make_curb_lip_mesh(name, points, width, height, tops=None, project_root="."):
+def make_curb_lip_mesh(name, points, width, height, tops=None, project_root=".", material=None):
     """Metal trim on both top corners. A separate object so it can have no collision."""
     sections = _curb_sections(points, float(width) / 2.0)
     if len(sections) < 2:
@@ -1026,7 +1028,14 @@ def make_curb_lip_mesh(name, points, width, height, tops=None, project_root=".")
     add_strip(1)
     if not faces:
         return None
-    return _link_mesh(name, verts, faces, (0.72, 0.74, 0.76), material=rail_material(project_root), loop_uvs=uvs)
+    return _link_mesh(
+        name,
+        verts,
+        faces,
+        (0.72, 0.74, 0.76),
+        material=material or rail_material(project_root),
+        loop_uvs=uvs,
+    )
 
 
 def rail_material(project_root):
@@ -1440,7 +1449,7 @@ def _planter_fields(corners, tops, side_bases=None, side_tops=None):
     }
 
 
-def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_tops=None):
+def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_tops=None, materials=None):
     """Brick box, granite rim that overhangs it, grass set down to the underside of the rim."""
     if not corners or len(corners) < 2:
         return None
@@ -1556,17 +1565,22 @@ def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_t
 
     if not faces:
         return None
+    mats = materials or (
+        brick_material(project_root),
+        granite_material(project_root),
+        grass_material(project_root),
+    )
     obj = _link_mesh(
         name,
         verts,
         faces,
         (0.72, 0.38, 0.28),
-        material=brick_material(project_root),
+        material=mats[0],
         loop_uvs=uvs,
     )
     mesh = obj.data
     mesh.materials.clear()
-    for mat in (brick_material(project_root), granite_material(project_root), grass_material(project_root)):
+    for mat in mats:
         mesh.materials.append(mat)
     for poly, slot in zip(mesh.polygons, slots):
         poly.material_index = slot
@@ -1867,7 +1881,175 @@ def import_foreign_mesh(path):
         raise RuntimeError(f"Unsupported asset type: {path}")
 
 
-def append_authored_asset(name, blend_path, position, rotation, scale, colls, project_root):
+def scene_texture_sets(scene):
+    raw = scene.get("textureSets") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+
+
+def entry_overrides(entry):
+    raw = entry.get("materials") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw.items()
+        if isinstance(value, str) and value
+    }
+
+
+def spec_file(project_root, spec, key):
+    raw = spec.get(key)
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path(project_root) / raw
+    if not path.is_file():
+        print(f"Texture missing: {path}")
+        return None
+    return path
+
+
+def retarget_material(mat, spec, project_root):
+    """Replace the shader images. Collision and sound props on the material stay."""
+    if material_invisible(mat):
+        return False
+    albedo = spec_file(project_root, spec, "albedo")
+    if albedo is None:
+        print(f"Texture set {spec.get('id', '')} is missing its color map")
+        return False
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputMaterial")
+    output.location = (300, 0)
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (0, 0)
+    links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+    base = _image_texture(nodes, albedo, "sRGB", (-640, 280))
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    rough = spec_file(project_root, spec, "roughness")
+    if rough is not None:
+        tex = _image_texture(nodes, rough, "Non-Color", (-640, 40))
+        links.new(tex.outputs["Color"], bsdf.inputs["Roughness"])
+    elif "Roughness" in bsdf.inputs:
+        bsdf.inputs["Roughness"].default_value = 0.9
+    metal = spec_file(project_root, spec, "metallic")
+    if metal is not None and "Metallic" in bsdf.inputs:
+        tex = _image_texture(nodes, metal, "Non-Color", (-640, -180))
+        links.new(tex.outputs["Color"], bsdf.inputs["Metallic"])
+    elif "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    normal_path = spec_file(project_root, spec, "normal")
+    height_path = spec_file(project_root, spec, "height")
+    normal_out = None
+    if normal_path is not None:
+        normal_tex = _image_texture(nodes, normal_path, "Non-Color", (-640, -400))
+        normal_map = nodes.new("ShaderNodeNormalMap")
+        normal_map.location = (-280, -400)
+        normal_map.inputs["Strength"].default_value = 1.0
+        links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+        normal_out = normal_map.outputs["Normal"]
+    if height_path is not None:
+        height_tex = _image_texture(nodes, height_path, "Non-Color", (-640, -620))
+        bump = nodes.new("ShaderNodeBump")
+        bump.location = (-80, -240)
+        bump.inputs["Strength"].default_value = 0.2
+        links.new(height_tex.outputs["Color"], bump.inputs["Height"])
+        if normal_out is not None:
+            links.new(normal_out, bump.inputs["Normal"])
+        links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    elif normal_out is not None:
+        links.new(normal_out, bsdf.inputs["Normal"])
+    try:
+        mat.use_backface_culling = False
+    except Exception:
+        pass
+    return True
+
+
+def material_root(name):
+    """Blender treats Plant.002 as another Plant. Later copies may be renamed Plant.001."""
+    current = name or ""
+    while True:
+        stripped = re.sub(r"\.\d+$", "", current)
+        if stripped == current:
+            return current
+        current = stripped
+
+
+def override_id(mat_name, overrides):
+    if mat_name in overrides:
+        return overrides[mat_name]
+    root = material_root(mat_name)
+    matches = [set_id for key, set_id in overrides.items() if material_root(key) == root]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def apply_material_overrides(objects, overrides, texture_sets, project_root):
+    """Swap slot images before materials are tagged, so the share key includes the new maps."""
+    if not overrides:
+        return
+    for obj in objects:
+        if obj.type != "MESH" or obj.data is None:
+            continue
+        for mat in obj.data.materials:
+            if mat is None:
+                continue
+            set_id = override_id(mat.name, overrides)
+            if not set_id or mat.get("reskate_texset") == set_id:
+                continue
+            spec = texture_sets.get(set_id)
+            if not isinstance(spec, dict):
+                print(f"Unknown texture set {set_id} on {mat.name}")
+                continue
+            if retarget_material(mat, spec, project_root):
+                mat["reskate_texset"] = set_id
+                print(f"Texture set {set_id} on {mat.name}")
+
+
+def texset_name(set_id):
+    digest = hashlib.sha1(set_id.encode("utf-8")).hexdigest()[:12]
+    return f"texset_{digest}"
+
+
+def overridden_material(project_root, texture_sets, set_id, fallback):
+    if not set_id:
+        return fallback()
+    spec = texture_sets.get(set_id) if texture_sets else None
+    if not isinstance(spec, dict):
+        print(f"Unknown texture set {set_id}")
+        return fallback()
+    name = texset_name(set_id)
+    cached = bpy.data.materials.get(name)
+    if cached:
+        return cached
+    mat = fallback().copy()
+    mat.name = name
+    if not retarget_material(mat, spec, project_root):
+        bpy.data.materials.remove(mat)
+        return fallback()
+    mat["reskate_mat_key"] = f"texture-set|{set_id}|{material_share_token(mat)}"
+    mat["reskate_texset"] = set_id
+    return mat
+
+
+def append_authored_asset(
+    name,
+    blend_path,
+    position,
+    rotation,
+    scale,
+    colls,
+    project_root,
+    overrides=None,
+    texture_sets=None,
+):
     """
     Copy an authored .blend, .fbx, or .obj into the map.
 
@@ -1902,6 +2084,7 @@ def append_authored_asset(name, blend_path, position, rotation, scale, colls, pr
 
     fresh = [obj for obj in bpy.data.objects if obj not in before_objects]
     apply_plant_leaves(fresh, blend_path, project_root)
+    apply_material_overrides(fresh, overrides or {}, texture_sets or {}, project_root)
     tag_imported_materials(before_materials, blend_path.as_posix())
 
     imported = [obj for obj in bpy.data.objects if obj not in before_objects]
@@ -2183,7 +2366,19 @@ def _descendant_meshes(role, objects):
     return found
 
 
-def export_kit(name, asset_file, points, position, rotation, scale, sk8, colls, project_root):
+def export_kit(
+    name,
+    asset_file,
+    points,
+    position,
+    rotation,
+    scale,
+    sk8,
+    colls,
+    project_root,
+    overrides=None,
+    texture_sets=None,
+):
     """
     Copy the _start, _middle, and _end meshes along the drawn path.
     The source blend is not left in the map, and the copies are not cell-joined.
@@ -2212,6 +2407,7 @@ def export_kit(name, asset_file, points, position, rotation, scale, sk8, colls, 
         if obj.name not in scene_coll.objects:
             scene_coll.objects.link(obj)
     bpy.context.view_layer.update()
+    apply_material_overrides(imported, overrides or {}, texture_sets or {}, project_root)
     tag_imported_materials(before_materials, blend_path.as_posix())
 
     roles = {role: [] for role in ("start", "middle", "end")}
@@ -2365,11 +2561,13 @@ def build(scene):
     objects = scene.get("objects") or []
     project_root = Path(scene.get("projectRoot") or ".")
     assets_root = Path(scene.get("assetsRoot") or project_root)
+    texture_sets = scene_texture_sets(scene)
     for entry in objects:
         kind = entry.get("kind")
         name = entry.get("name") or kind or "Object"
 
         if kind == "mesh":
+            overrides = entry_overrides(entry)
             asset = entry.get("assetFile")
             if asset:
                 blend_path = Path(asset)
@@ -2383,6 +2581,8 @@ def build(scene):
                     entry.get("scale") or [1, 1, 1],
                     colls,
                     project_root,
+                    overrides,
+                    texture_sets,
                 )
                 continue
 
@@ -2401,7 +2601,12 @@ def build(scene):
                     height,
                     (0.78, 0.76, 0.72),
                     gen.get("tops"),
-                    concrete_material(project_root),
+                    overridden_material(
+                        project_root,
+                        texture_sets,
+                        overrides.get("concrete"),
+                        lambda: concrete_material(project_root),
+                    ),
                 )
                 obj.name = name
                 position = entry.get("position") or [0, 0, 0]
@@ -2420,7 +2625,20 @@ def build(scene):
                     "generator_curb",
                 )
                 link_only(obj, colls["Map"])
-                lip = make_curb_lip_mesh(f"{name} lip", points, width, height, gen.get("tops"), project_root)
+                lip = make_curb_lip_mesh(
+                    f"{name} lip",
+                    points,
+                    width,
+                    height,
+                    gen.get("tops"),
+                    project_root,
+                    overridden_material(
+                        project_root,
+                        texture_sets,
+                        overrides.get("galvanized"),
+                        lambda: rail_material(project_root),
+                    ),
+                )
                 if lip is not None:
                     lip.name = f"{name} lip"
                     apply_transform(
@@ -2453,7 +2671,12 @@ def build(scene):
                     points,
                     float(gen.get("radius") or 0.05),
                     (0.72, 0.74, 0.76),
-                    rail_material(project_root),
+                    overridden_material(
+                        project_root,
+                        texture_sets,
+                        overrides.get("galvanized"),
+                        lambda: rail_material(project_root),
+                    ),
                     gen.get("tops"),
                 )
                 if obj is None:
@@ -2488,7 +2711,12 @@ def build(scene):
                     corners,
                     float(gen.get("height") or 0.5),
                     (0.62, 0.6, 0.58),
-                    striped_concrete_material(project_root),
+                    overridden_material(
+                        project_root,
+                        texture_sets,
+                        overrides.get("striped_concrete"),
+                        lambda: striped_concrete_material(project_root),
+                    ),
                 )
                 if obj is None:
                     print(f"Skipping platform {name}: footprint is too small")
@@ -2524,6 +2752,26 @@ def build(scene):
                     project_root,
                     gen.get("sideBases"),
                     gen.get("sideTops"),
+                    (
+                        overridden_material(
+                            project_root,
+                            texture_sets,
+                            overrides.get("brick"),
+                            lambda: brick_material(project_root),
+                        ),
+                        overridden_material(
+                            project_root,
+                            texture_sets,
+                            overrides.get("granite"),
+                            lambda: granite_material(project_root),
+                        ),
+                        overridden_material(
+                            project_root,
+                            texture_sets,
+                            overrides.get("grass"),
+                            lambda: grass_material(project_root),
+                        ),
+                    ),
                 )
                 if obj is None:
                     print(f"Skipping planter {name}: footprint is too small")
@@ -2558,6 +2806,8 @@ def build(scene):
                     entry.get("sk8"),
                     colls,
                     project_root,
+                    overrides,
+                    texture_sets,
                 )
                 continue
 

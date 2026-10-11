@@ -123,6 +123,16 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
   return { kind: 'curb', points, width, height, tops }
 }
 
+function parseMaterials(raw: unknown): Record<string, string> | undefined {
+  if (!isRecord(raw)) return undefined
+  const materials: Record<string, string> = {}
+  for (const [slot, setId] of Object.entries(raw)) {
+    if (!slot || typeof setId !== 'string' || !setId) continue
+    materials[slot] = setId
+  }
+  return Object.keys(materials).length > 0 ? materials : undefined
+}
+
 function parseMesh(raw: Record<string, unknown>, index: number): MeshObject {
   const where = `Object ${index + 1}`
   if (typeof raw.id !== 'string' || typeof raw.name !== 'string' || typeof raw.libraryId !== 'string') {
@@ -147,6 +157,8 @@ function parseMesh(raw: Record<string, unknown>, index: number): MeshObject {
     },
   }
   if (typeof raw.assetFile === 'string' && raw.assetFile) mesh.assetFile = raw.assetFile
+  const materials = parseMaterials(raw.materials)
+  if (materials) mesh.materials = materials
   const generator = parseGenerator(raw.generator)
   if (generator) mesh.generator = generator
   return mesh

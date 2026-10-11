@@ -1,6 +1,8 @@
 import { useGLTF } from '@react-three/drei'
 import { Suspense, useEffect, useMemo } from 'react'
 import * as THREE from 'three'
+import { materialNamesFromObject, setPreviewMaterials } from '../lib/previewMaterials'
+import { assignSlotMaterials, useSlotOverrides } from './TextureSetMaterial'
 import { useAuthoredPreviewUrl } from './meshes/LibraryMeshes'
 import {
   layoutKit,
@@ -87,16 +89,24 @@ function ghostMaterial(source: THREE.Material | THREE.Material[]) {
 
 function KitMeshes({
   url,
+  assetFile,
+  materials,
   points,
   ghost,
   tail,
 }: {
   url: string
+  assetFile: string
+  materials?: Record<string, string>
   points: Vec3[]
   ghost?: boolean
   tail?: boolean
 }) {
   const gltf = useGLTF(url)
+  const overrides = useSlotOverrides(ghost ? undefined : materials, ghost)
+  useEffect(() => {
+    setPreviewMaterials(assetFile, materialNamesFromObject(gltf.scene))
+  }, [assetFile, gltf.scene])
   const prototypes = useMemo(() => prepareKit(gltf.scene), [gltf.scene])
   const stamps = useMemo(() => {
     const laid = layoutKit(points, {
@@ -141,6 +151,11 @@ function KitMeshes({
           slantCap(geometry, stampLen, 'end', stamp.to, stamp.from, stamp.miterEnd, stamp.from, stamp.yaw)
         }
         let material: THREE.Material | THREE.Material[] = source.material
+        if (!ghost && overrides.length > 0) {
+          const holder = new THREE.Mesh(source.geometry, source.material)
+          assignSlotMaterials(holder, overrides)
+          material = holder.material
+        }
         if (ghost) {
           const basic = ghostMaterial(source.material)
           disposables.push(basic)
@@ -154,7 +169,7 @@ function KitMeshes({
       group.add(wrapper)
     }
     return { group, disposables }
-  }, [ghost, prototypes, stamps])
+  }, [ghost, overrides, prototypes, stamps])
 
   useEffect(() => {
     const disposables = view.disposables
@@ -178,12 +193,14 @@ export function KitRun({
   assetFile,
   revision = 0,
   points,
+  materials,
   ghost,
   tail,
 }: {
   assetFile: string
   revision?: number
   points: Vec3[]
+  materials?: Record<string, string>
   ghost?: boolean
   /** Draw only the last segment. Used while the next pin is still a preview. */
   tail?: boolean
@@ -192,7 +209,7 @@ export function KitRun({
   if (!url || points.length < 2) return null
   return (
     <Suspense fallback={null}>
-      <KitMeshes url={url} points={points} ghost={ghost} tail={tail} />
+      <KitMeshes url={url} assetFile={assetFile} materials={materials} points={points} ghost={ghost} tail={tail} />
     </Suspense>
   )
 }

@@ -3,6 +3,8 @@ import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useState, typ
 import * as THREE from 'three'
 import { httpPreviewUrl } from '../../lib/assetLibrary'
 import { getPiece } from '../../lib/library'
+import { materialNamesFromObject, setPreviewMaterials } from '../../lib/previewMaterials'
+import { assignSlotMaterials, useSlotOverrides } from '../TextureSetMaterial'
 
 const ASPHALT_TILE_M = 2
 const publicFile = (file: string) => `${import.meta.env.BASE_URL}${file}`
@@ -192,12 +194,31 @@ function bindMirrorDraw(root: THREE.Object3D, mirrored: boolean) {
   })
 }
 
-function GltfMesh({ url, ghost, mirrored = false }: { url: string; ghost?: boolean; mirrored?: boolean }) {
+function GltfMesh({
+  url,
+  assetFile,
+  materials,
+  ghost,
+  mirrored = false,
+}: {
+  url: string
+  assetFile?: string
+  materials?: Record<string, string>
+  ghost?: boolean
+  mirrored?: boolean
+}) {
   const gltf = useGLTF(url)
+  const overrides = useSlotOverrides(materials, ghost)
+  useEffect(() => {
+    if (!assetFile) return
+    setPreviewMaterials(assetFile, materialNamesFromObject(gltf.scene))
+  }, [assetFile, gltf.scene])
+
   const view = useMemo(() => {
     const clone = gltf.scene.clone(true)
     const disposables: { dispose: () => void }[] = []
     if (!ghost) {
+      assignSlotMaterials(clone, overrides)
       clone.traverse((node) => {
         const mesh = node as THREE.Mesh
         if (!mesh.isMesh) return
@@ -236,7 +257,7 @@ function GltfMesh({ url, ghost, mirrored = false }: { url: string; ghost?: boole
       mesh.add(outline)
     })
     return { clone, disposables }
-  }, [ghost, gltf.scene])
+  }, [ghost, gltf.scene, overrides])
 
   useEffect(() => {
     const disposables = view.disposables
@@ -255,11 +276,13 @@ function GltfMesh({ url, ghost, mirrored = false }: { url: string; ghost?: boole
 function AuthoredMesh({
   assetFile,
   revision,
+  materials,
   ghost,
   mirrored = false,
 }: {
   assetFile: string
   revision: number
+  materials?: Record<string, string>
   ghost?: boolean
   mirrored?: boolean
 }) {
@@ -268,7 +291,7 @@ function AuthoredMesh({
   return (
     <Suspense fallback={<FallbackBox ghost={ghost} />}>
       <PreviewErrorBoundary key={url} fallback={<FallbackBox ghost={ghost} />}>
-        <GltfMesh url={url} ghost={ghost} mirrored={mirrored} />
+        <GltfMesh url={url} assetFile={assetFile} materials={materials} ghost={ghost} mirrored={mirrored} />
       </PreviewErrorBoundary>
     </Suspense>
   )
@@ -402,6 +425,7 @@ export function LibraryMesh({
   libraryId,
   assetFile,
   assetRevision = 0,
+  materials,
   color,
   ghost,
   mirrored = false,
@@ -409,6 +433,7 @@ export function LibraryMesh({
   libraryId: string
   assetFile?: string
   assetRevision?: number
+  materials?: Record<string, string>
   color?: string
   ghost?: boolean
   /** Negative scale reverses triangle winding. Draw the outside, not the inside. */
@@ -419,6 +444,7 @@ export function LibraryMesh({
       <AuthoredMesh
         assetFile={assetFile}
         revision={assetRevision}
+        materials={materials}
         ghost={ghost}
         mirrored={mirrored}
       />

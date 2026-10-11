@@ -74,6 +74,8 @@ export interface MeshObject {
   position: [number, number, number]
   rotation: [number, number, number]
   scale: [number, number, number]
+  /** Slot name to a texture set id. Absent slots keep the material from the file. */
+  materials?: Record<string, string>
   sk8: Sk8MeshProps
 }
 

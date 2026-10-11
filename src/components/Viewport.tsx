@@ -43,6 +43,8 @@ import {
 } from '../lib/generators'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
+import { TextureSetMaterial } from './TextureSetMaterial'
+import { useTextureSets } from '../lib/textureSets'
 import type { DrawGenerator } from '../lib/kitLayout'
 
 export type TransformMode = 'translate' | 'rotate' | 'scale'
@@ -568,6 +570,7 @@ function MeshItem({
               tops={generator.tops}
               width={generator.width}
               height={generator.height}
+              materials={obj.materials}
             />
             {editing && (
               <CurbEditPins
@@ -582,7 +585,7 @@ function MeshItem({
           </>
         ) : platform ? (
           <>
-            <PlatformMesh corners={platform.corners} height={platform.height} />
+            <PlatformMesh corners={platform.corners} height={platform.height} materials={obj.materials} />
             {editingPlatform &&
               platform.corners.map((corner, index) => (
                 <mesh
@@ -608,7 +611,7 @@ function MeshItem({
           </>
         ) : rail ? (
           <>
-            <RailMesh points={rail.points} radius={rail.radius} tops={rail.tops} />
+            <RailMesh points={rail.points} radius={rail.radius} tops={rail.tops} materials={obj.materials} />
             {editingRail && (
               <CurbEditPins
                 points={rail.points}
@@ -627,6 +630,7 @@ function MeshItem({
               tops={planter.tops}
               sideBases={planter.sideBases}
               sideTops={planter.sideTops}
+              materials={obj.materials}
             />
             {editingPlanter && (
               <CurbEditPins
@@ -640,12 +644,13 @@ function MeshItem({
             {editingPlanter && handle && <group ref={handleRef} />}
           </>
         ) : kit ? (
-          <KitRun assetFile={kit.assetFile} revision={assetRevision} points={kit.points} />
+          <KitRun assetFile={kit.assetFile} revision={assetRevision} points={kit.points} materials={obj.materials} />
         ) : (
           <LibraryMesh
             libraryId={obj.libraryId}
             assetFile={obj.assetFile}
             assetRevision={assetRevision}
+            materials={obj.materials}
             mirrored={obj.scale[0] * obj.scale[1] * obj.scale[2] < 0}
           />
         )}
@@ -1293,6 +1298,25 @@ const GALVANIZED_MAPS = [
 
 useTexture.preload([BRICK_MAP, ...GRASS_MAPS, ...CONCRETE_MAPS, ...STRIPED_CONCRETE_MAPS, ...GALVANIZED_MAPS])
 
+function SlotMaterial({
+  setId,
+  ghost,
+  fallback,
+}: {
+  setId?: string
+  ghost?: boolean
+  fallback: 'concrete' | 'platform' | 'brick' | 'grass' | 'rail'
+}) {
+  const sets = useTextureSets()
+  const set = setId ? sets.find((item) => item.id === setId) : undefined
+  if (set) return <TextureSetMaterial set={set} ghost={ghost} />
+  if (fallback === 'platform') return <PlatformMaterial ghost={ghost} />
+  if (fallback === 'brick') return <BrickMaterial ghost={ghost} />
+  if (fallback === 'grass') return <GrassMaterial ghost={ghost} />
+  if (fallback === 'rail') return <RailMaterial ghost={ghost} />
+  return <CurbMaterial ghost={ghost} />
+}
+
 function CurbMaterial({ ghost }: { ghost?: boolean }) {
   const [colorMap, normalMap, roughnessMap] = useTexture([...CONCRETE_MAPS])
   const material = useMemo(() => {
@@ -1354,12 +1378,14 @@ function CurbRibbon({
   width,
   height,
   tops,
+  materials,
   ghost,
 }: {
   points: Vec3[]
   width: number
   height: number
   tops?: number[]
+  materials?: Record<string, string>
   ghost?: boolean
 }) {
   const geometry = useMemo(
@@ -1376,11 +1402,11 @@ function CurbRibbon({
   return (
     <>
       <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-        <CurbMaterial ghost={ghost} />
+        <SlotMaterial setId={materials?.concrete} ghost={ghost} fallback="concrete" />
       </mesh>
       {lip && (
         <mesh geometry={lip} castShadow={!ghost} receiveShadow={!ghost}>
-          <RailMaterial ghost={ghost} />
+          <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
         </mesh>
       )}
     </>
@@ -1413,10 +1439,12 @@ function KitGhost({
 function PlatformMesh({
   corners,
   height,
+  materials,
   ghost,
 }: {
   corners: [Vec3, Vec3]
   height: number
+  materials?: Record<string, string>
   ghost?: boolean
 }) {
   const geometry = useMemo(() => buildPlatformGeometry(corners, height), [corners, height])
@@ -1424,7 +1452,7 @@ function PlatformMesh({
   if (!geometry) return null
   return (
     <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-      <PlatformMaterial ghost={ghost} />
+      <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
     </mesh>
   )
 }
@@ -1496,12 +1524,14 @@ function PlanterMesh({
   tops,
   sideBases,
   sideTops,
+  materials,
   ghost,
 }: {
   corners: [Vec3, Vec3]
   tops?: [number, number]
   sideBases?: [number, number]
   sideTops?: [number, number]
+  materials?: Record<string, string>
   ghost?: boolean
 }) {
   const parts = useMemo(
@@ -1520,13 +1550,13 @@ function PlanterMesh({
   return (
     <group>
       <mesh geometry={parts.brick} castShadow={!ghost} receiveShadow={!ghost}>
-        <BrickMaterial ghost={ghost} />
+        <SlotMaterial setId={materials?.brick} ghost={ghost} fallback="brick" />
       </mesh>
       <mesh geometry={parts.granite} castShadow={!ghost} receiveShadow={!ghost}>
-        <CurbMaterial ghost={ghost} />
+        <SlotMaterial setId={materials?.granite} ghost={ghost} fallback="concrete" />
       </mesh>
       <mesh geometry={parts.grass} receiveShadow={!ghost}>
-        <GrassMaterial ghost={ghost} />
+        <SlotMaterial setId={materials?.grass} ghost={ghost} fallback="grass" />
       </mesh>
     </group>
   )
@@ -1578,11 +1608,13 @@ function RailMesh({
   points,
   radius,
   tops,
+  materials,
   ghost,
 }: {
   points: Vec3[]
   radius: number
   tops?: number[]
+  materials?: Record<string, string>
   ghost?: boolean
 }) {
   const geometry = useMemo(() => buildRailGeometry(points, radius, tops), [points, radius, tops])
@@ -1590,7 +1622,7 @@ function RailMesh({
   if (!geometry) return null
   return (
     <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-      <RailMaterial ghost={ghost} />
+      <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
     </mesh>
   )
 }

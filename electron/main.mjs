@@ -19,6 +19,7 @@ import {
   resolveLibraryBlender,
   scanProjectLibrary,
 } from '../scripts/library_catalog.mjs'
+import { scanTextureSets, textureSetRecord } from '../scripts/texture_sets.mjs'
 
 // Helpful on headless / cloud GPUs so Three.js WebGL can start
 app.commandLine.appendSwitch('enable-unsafe-swiftshader')
@@ -319,10 +320,11 @@ function registerIpc() {
       await mkdir(tmp, { recursive: true })
       const stamp = Date.now()
       const scenePath = path.join(tmp, `scene-${stamp}.json`)
+      const textureSets = textureSetRecord(await scanTextureSets(installDir()))
       await writeFile(
         scenePath,
         JSON.stringify(
-          { ...scene, projectRoot: installDir(), assetsRoot: resourcesRoot() },
+          { ...scene, projectRoot: installDir(), assetsRoot: resourcesRoot(), textureSets },
           null,
           2,
         ),

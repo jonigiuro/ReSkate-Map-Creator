@@ -28,7 +28,9 @@ import {
 } from './lib/generators'
 import type { DrawGenerator } from './lib/kitLayout'
 import { getPiece } from './lib/library'
+import { usePreviewMaterials } from './lib/previewMaterials'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
+import { generatorMaterialSlots, useTextureSets } from './lib/textureSets'
 import { useSceneHistory } from './lib/sceneHistory'
 import type {
   MapScene,
@@ -1565,6 +1567,12 @@ export default function App() {
               </p>
             </div>
           )}
+          {selected?.kind === 'mesh' && (
+            <MaterialFields
+              object={selected}
+              onMaterials={(materials) => patchObject(selected.id, { materials })}
+            />
+          )}
           {selected?.kind === 'spawn' && (
             <div className="fields">
               <p className="badge spawn">SPAWN EMPTY</p>
@@ -1717,6 +1725,7 @@ function duplicateObject(
       rotation: [...source.rotation],
       scale: [...source.scale],
       sk8: { ...source.sk8 },
+      materials: source.materials ? { ...source.materials } : undefined,
       generator: source.generator
         ? source.generator.kind === 'curb'
           ? {
@@ -1901,6 +1910,56 @@ function authoredLabel(assetFile: string) {
   return 'BLENDER'
 }
 
+function MaterialFields({
+  object,
+  onMaterials,
+}: {
+  object: MeshObject
+  onMaterials: (materials: Record<string, string> | undefined) => void
+}) {
+  const sets = useTextureSets()
+  const assetFile =
+    object.assetFile ?? (object.generator?.kind === 'kit' ? object.generator.assetFile : undefined)
+  const previewNames = usePreviewMaterials(assetFile)
+  const generated = generatorMaterialSlots(object.generator?.kind)
+  const slots = generated.length > 0 ? generated : previewNames.map((name) => ({ id: name, label: name }))
+  if (generated.length === 0 && !assetFile) return null
+
+  function choose(slot: string, setId: string) {
+    const next = { ...(object.materials ?? {}) }
+    if (setId) next[slot] = setId
+    else delete next[slot]
+    onMaterials(Object.keys(next).length > 0 ? next : undefined)
+  }
+
+  return (
+    <div className="fields">
+      <p className="meta">Materials</p>
+      {slots.length === 0 ? (
+        <p className="hint">Materials show up when the preview has loaded.</p>
+      ) : (
+        slots.map((slot) => (
+          <label key={slot.id}>
+            {slot.label}
+            <select
+              value={object.materials?.[slot.id] ?? ''}
+              onChange={(event) => choose(slot.id, event.target.value)}
+            >
+              <option value="">Original</option>
+              {sets.map((set) => (
+                <option key={set.id} value={set.id}>
+                  {set.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ))
+      )}
+      <p className="hint">Original keeps the texture from the file. Another choice changes this copy only.</p>
+    </div>
+  )
+}
+
 function AuthoredFields({
   name,
   assetFile,
@@ -1920,8 +1979,8 @@ function AuthoredFields({
       </label>
       <p className="hint">
         {kind === 'BLENDER'
-          ? 'Materials, textures, and collision stay as they were set in Blender. Export copies this .blend in, including those properties.'
-          : `Export imports this .${kind.toLowerCase()} through Blender. The mesh and materials come along.`}
+          ? 'Export copies this .blend in, including collision. A texture set below replaces that slot on this copy only.'
+          : `Export imports this .${kind.toLowerCase()} through Blender. A texture set below replaces that slot on this copy only.`}
       </p>
       <p className="meta">
         <code>{assetFile}</code>
