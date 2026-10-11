@@ -30,7 +30,7 @@ import type { DrawGenerator } from './lib/kitLayout'
 import { getPiece } from './lib/library'
 import { usePreviewMaterials } from './lib/previewMaterials'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
-import { generatorMaterialSlots, useTextureSets } from './lib/textureSets'
+import { generatorMaterialSlots, reloadTextureSets, useTextureSets } from './lib/textureSets'
 import { useSceneHistory } from './lib/sceneHistory'
 import type {
   MapScene,
@@ -990,6 +990,16 @@ export default function App() {
     ...(catalog.kits ?? []).map((kit) => [kit.assetFile, kit.revision] as const),
   ])
   const active = catalog.pieces.find((piece) => piece.id === activePiece)
+  const dedicatedAssets = useMemo(() => {
+    const files = new Set<string>()
+    for (const piece of catalog.pieces) {
+      if (piece.dedicatedTextures) files.add(piece.assetFile)
+    }
+    for (const kit of catalog.kits) {
+      if (kit.dedicatedTextures) files.add(kit.assetFile)
+    }
+    return files
+  }, [catalog])
 
   function subtreePieceCount(categoryId: string) {
     const ids = new Set<string>([categoryId])
@@ -1379,6 +1389,7 @@ export default function App() {
             placeScaleX={placeScaleX}
             onRotatePiece={rotatePlacement}
             assetRevisions={assetRevisions}
+            dedicatedAssets={dedicatedAssets}
             onSelect={(id) => {
               if (activePiece || activeGenerator) return
               setSelectedId(id)
@@ -1477,6 +1488,7 @@ export default function App() {
             <AuthoredFields
               name={selected.name}
               assetFile={selected.assetFile}
+              dedicated={dedicatedAssets.has(selected.assetFile)}
               onName={(name) => patchObject(selected.id, { name })}
             />
           )}
@@ -1570,6 +1582,10 @@ export default function App() {
           {selected?.kind === 'mesh' && (
             <MaterialFields
               object={selected}
+              dedicated={dedicatedAssets.has(
+                selected.assetFile ??
+                  (selected.generator?.kind === 'kit' ? selected.generator.assetFile : ''),
+              )}
               onMaterials={(materials) => patchObject(selected.id, { materials })}
             />
           )}
@@ -1912,18 +1928,30 @@ function authoredLabel(assetFile: string) {
 
 function MaterialFields({
   object,
+  dedicated,
   onMaterials,
 }: {
   object: MeshObject
+  dedicated: boolean
   onMaterials: (materials: Record<string, string> | undefined) => void
 }) {
   const sets = useTextureSets()
+  const [scanning, setScanning] = useState(false)
+  const [scanNote, setScanNote] = useState<string | null>(null)
   const assetFile =
     object.assetFile ?? (object.generator?.kind === 'kit' ? object.generator.assetFile : undefined)
   const previewNames = usePreviewMaterials(assetFile)
   const generated = generatorMaterialSlots(object.generator?.kind)
   const slots = generated.length > 0 ? generated : previewNames.map((name) => ({ id: name, label: name }))
   if (generated.length === 0 && !assetFile) return null
+  if (dedicated) {
+    return (
+      <div className="fields">
+        <p className="meta">Materials</p>
+        <p className="hint">This mesh keeps the textures stored next to its file.</p>
+      </div>
+    )
+  }
 
   function choose(slot: string, setId: string) {
     const next = { ...(object.materials ?? {}) }
@@ -1955,6 +1983,24 @@ function MaterialFields({
           </label>
         ))
       )}
+      <button
+        type="button"
+        className="ghost"
+        disabled={scanning}
+        onClick={() => {
+          setScanning(true)
+          setScanNote(null)
+          void reloadTextureSets()
+            .then((count) => setScanNote(`${count} texture sets`))
+            .catch((err: unknown) => {
+              setScanNote(err instanceof Error ? err.message : 'Rescan failed')
+            })
+            .finally(() => setScanning(false))
+        }}
+      >
+        {scanning ? 'Scanning…' : 'Rescan textures'}
+      </button>
+      {scanNote ? <p className="hint">{scanNote}</p> : null}
       <p className="hint">Original keeps the texture from the file. Another choice changes this copy only.</p>
     </div>
   )
@@ -1963,10 +2009,12 @@ function MaterialFields({
 function AuthoredFields({
   name,
   assetFile,
+  dedicated,
   onName,
 }: {
   name: string
   assetFile: string
+  dedicated: boolean
   onName: (name: string) => void
 }) {
   const kind = authoredLabel(assetFile)
@@ -1978,9 +2026,11 @@ function AuthoredFields({
         <input value={name} onChange={(event) => onName(event.target.value)} />
       </label>
       <p className="hint">
-        {kind === 'BLENDER'
-          ? 'Export copies this .blend in, including collision. A texture set below replaces that slot on this copy only.'
-          : `Export imports this .${kind.toLowerCase()} through Blender. A texture set below replaces that slot on this copy only.`}
+        {dedicated
+          ? 'Export copies this file in, including collision and the textures stored next to it.'
+          : kind === 'BLENDER'
+            ? 'Export copies this .blend in, including collision. A texture set below replaces that slot on this copy only.'
+            : `Export imports this .${kind.toLowerCase()} through Blender. A texture set below replaces that slot on this copy only.`}
       </p>
       <p className="meta">
         <code>{assetFile}</code>

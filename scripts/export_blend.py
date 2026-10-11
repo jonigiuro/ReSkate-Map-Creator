@@ -1881,11 +1881,126 @@ def import_foreign_mesh(path):
         raise RuntimeError(f"Unsupported asset type: {path}")
 
 
-def scene_texture_sets(scene):
-    raw = scene.get("textureSets") or {}
-    if not isinstance(raw, dict):
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".jfif", ".webp"}
+
+
+def _texture_role(file_name):
+    tokens = [
+        token
+        for token in re.split(r"[^a-z0-9]+", Path(file_name).stem.lower())
+        if token
+    ]
+
+    def has(*parts):
+        return any(any(part in token for part in parts) for token in tokens)
+
+    if has("normal"):
+        return "normal"
+    if has("rough"):
+        return "roughness"
+    if has("metallic", "metalness"):
+        return "metallic"
+    if has("height", "displacement", "bump"):
+        return "height"
+    if has("occlusion", "specular", "gloss", "opacity", "ambient"):
+        return "skip"
+    return "albedo"
+
+
+def _texture_affinity(file_name):
+    stem = Path(file_name).stem.lower()
+    stem = re.sub(
+        r"basecolor|albedo|diffuse|normalogl|normal|roughness|metallic|metalness|displacement|height|bump",
+        "",
+        stem,
+    )
+    return re.sub(r"[^a-z0-9]+", "", stem)
+
+
+def _pick_map(albedo_name, maps):
+    if not maps:
+        return None
+    if len(maps) == 1:
+        return maps[0]
+    key = _texture_affinity(albedo_name)
+    for candidate in maps:
+        if _texture_affinity(candidate[1]) == key:
+            return candidate
+    return None
+
+
+def discover_texture_sets(project_root):
+    """Same catalog the editor lists, read from disk at export time.
+
+    The desktop process injects this catalog too, but an editor that was
+    already open does not. The set id is the color map's path under
+    public/img/textures, so export can rebuild the record itself.
+    """
+    root = Path(project_root) / "public" / "img" / "textures"
+    if not root.is_dir():
         return {}
-    return {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+    grouped = {}
+    for path in root.rglob("*"):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        if path.suffix.lower() not in _IMAGE_SUFFIXES:
+            continue
+        rel = path.relative_to(root).as_posix()
+        grouped.setdefault(str(Path(rel).parent.as_posix()), []).append((rel, path.name))
+    found = {}
+    for rel_dir, group in grouped.items():
+        albedos = []
+        maps = {"normal": [], "roughness": [], "metallic": [], "height": []}
+        for rel, name in group:
+            role = _texture_role(name)
+            if role == "skip":
+                continue
+            if role == "albedo":
+                albedos.append((rel, name))
+            else:
+                maps[role].append((rel, name))
+        for rel, name in albedos:
+            spec = {"id": rel, "albedo": f"public/img/textures/{rel}"}
+            for role, key in (
+                ("normal", "normal"),
+                ("roughness", "roughness"),
+                ("metallic", "metallic"),
+                ("height", "height"),
+            ):
+                chosen = _pick_map(name, maps[role])
+                if chosen is not None:
+                    spec[key] = f"public/img/textures/{chosen[0]}"
+            found[rel] = spec
+    return found
+
+
+def asset_has_dedicated_textures(blend_path):
+    """A textures folder, or image files beside the model, means this piece keeps its own maps."""
+    folder = Path(blend_path).parent
+    if not folder.is_dir():
+        return False
+    try:
+        children = list(folder.iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        if child.is_dir() and "texture" in child.name.lower():
+            return True
+        if child.is_file() and child.suffix.lower() in {".jpg", ".jpeg", ".png", ".jfif", ".webp", ".tga", ".tif", ".tiff"}:
+            return True
+    return False
+
+
+def scene_texture_sets(scene, project_root):
+    raw = scene.get("textureSets") or {}
+    provided = {}
+    if isinstance(raw, dict):
+        provided = {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+    found = discover_texture_sets(project_root)
+    found.update(provided)
+    return found
 
 
 def entry_overrides(entry):
@@ -1981,11 +2096,11 @@ def material_root(name):
         current = stripped
 
 
-def override_id(mat_name, overrides):
+def override_key(mat_name, overrides):
     if mat_name in overrides:
-        return overrides[mat_name]
+        return mat_name
     root = material_root(mat_name)
-    matches = [set_id for key, set_id in overrides.items() if material_root(key) == root]
+    matches = [key for key in overrides if material_root(key) == root]
     if len(matches) == 1:
         return matches[0]
     return None
@@ -1995,22 +2110,34 @@ def apply_material_overrides(objects, overrides, texture_sets, project_root):
     """Swap slot images before materials are tagged, so the share key includes the new maps."""
     if not overrides:
         return
+    used = set()
+    present = []
     for obj in objects:
         if obj.type != "MESH" or obj.data is None:
             continue
         for mat in obj.data.materials:
             if mat is None:
                 continue
-            set_id = override_id(mat.name, overrides)
-            if not set_id or mat.get("reskate_texset") == set_id:
+            present.append(mat.name)
+            key = override_key(mat.name, overrides)
+            if not key:
+                continue
+            set_id = overrides[key]
+            if mat.get("reskate_texset") == set_id:
+                used.add(key)
                 continue
             spec = texture_sets.get(set_id)
             if not isinstance(spec, dict):
                 print(f"Unknown texture set {set_id} on {mat.name}")
                 continue
             if retarget_material(mat, spec, project_root):
+                used.add(key)
                 mat["reskate_texset"] = set_id
                 print(f"Texture set {set_id} on {mat.name}")
+    missed = [key for key in overrides if key not in used]
+    if missed:
+        slots = ", ".join(sorted(set(present))) or "(none)"
+        print(f"Texture override missed {', '.join(missed)}. Material slots: {slots}")
 
 
 def texset_name(set_id):
@@ -2060,6 +2187,8 @@ def append_authored_asset(
     blend_path = Path(blend_path).resolve()
     if not blend_path.is_file():
         raise RuntimeError(f"Authored object not found: {blend_path}")
+    if asset_has_dedicated_textures(blend_path):
+        overrides = None
 
     before_objects = set(bpy.data.objects)
     before_images = set(bpy.data.images)
@@ -2393,6 +2522,8 @@ def export_kit(
     if not blend_path.is_file():
         print(f"Skipping kit {name}: blend not found at {blend_path}")
         return
+    if asset_has_dedicated_textures(blend_path):
+        overrides = None
 
     ensure_sk8_material()
     ensure_sk8_object()
@@ -2561,7 +2692,7 @@ def build(scene):
     objects = scene.get("objects") or []
     project_root = Path(scene.get("projectRoot") or ".")
     assets_root = Path(scene.get("assetsRoot") or project_root)
-    texture_sets = scene_texture_sets(scene)
+    texture_sets = scene_texture_sets(scene, project_root)
     for entry in objects:
         kind = entry.get("kind")
         name = entry.get("name") or kind or "Object"

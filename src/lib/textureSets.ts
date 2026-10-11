@@ -23,44 +23,64 @@ type RawTextureSet = {
 const EMPTY: TextureSet[] = []
 let sets: TextureSet[] = EMPTY
 let loaded = false
+let generation = 0
+let requestId = 0
 const listeners = new Set<() => void>()
 
 function emit() {
   for (const listener of listeners) listener()
 }
 
-function textureUrl(projectPath: string) {
+function textureUrl(projectPath: string, version: number) {
   const rel = projectPath.replace(/^public\//, '')
-  return `${import.meta.env.BASE_URL}${encodeURI(rel)}`
+  const url = `${import.meta.env.BASE_URL}${encodeURI(rel)}`
+  return version > 0 ? `${url}?v=${version}` : url
 }
 
-function publish(raw: RawTextureSet[]) {
+function publish(raw: RawTextureSet[], version: number) {
   sets = raw.map((set) => ({
     id: set.id,
     label: set.label,
-    albedo: textureUrl(set.albedo),
-    ...(set.normal ? { normal: textureUrl(set.normal) } : {}),
-    ...(set.roughness ? { roughness: textureUrl(set.roughness) } : {}),
-    ...(set.metallic ? { metallic: textureUrl(set.metallic) } : {}),
-    ...(set.height ? { height: textureUrl(set.height) } : {}),
+    albedo: textureUrl(set.albedo, version),
+    ...(set.normal ? { normal: textureUrl(set.normal, version) } : {}),
+    ...(set.roughness ? { roughness: textureUrl(set.roughness, version) } : {}),
+    ...(set.metallic ? { metallic: textureUrl(set.metallic, version) } : {}),
+    ...(set.height ? { height: textureUrl(set.height, version) } : {}),
   }))
   loaded = true
   emit()
 }
 
-function ensureLoaded() {
-  if (loaded || typeof window === 'undefined') return
-  loaded = true
-  void fetch('/api/texture-sets')
+function loadTextureSets() {
+  const id = ++requestId
+  const version = generation
+  return fetch(`/api/texture-sets?t=${Date.now()}`)
     .then((res) => {
       if (!res.ok) throw new Error(`Texture sets failed (${res.status})`)
       return res.json() as Promise<RawTextureSet[]>
     })
-    .then(publish)
-    .catch(() => {
-      sets = EMPTY
-      emit()
+    .then((raw) => {
+      if (id !== requestId) return sets.length
+      publish(raw, version)
+      return sets.length
     })
+    .catch((err: unknown) => {
+      if (id !== requestId) return sets.length
+      throw err
+    })
+}
+
+function ensureLoaded() {
+  if (loaded || typeof window === 'undefined') return
+  loaded = true
+  void loadTextureSets().catch(() => {})
+}
+
+/** Read public/img/textures again and refresh every material that uses a set. */
+export function reloadTextureSets() {
+  generation += 1
+  loaded = true
+  return loadTextureSets()
 }
 
 export function useTextureSets(): TextureSet[] {

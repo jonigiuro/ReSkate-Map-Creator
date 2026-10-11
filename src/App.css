@@ -457,7 +457,8 @@ button.lib small {
   gap: 0.65rem;
 }
 
-.fields select {
+.fields select,
+.fields button.ghost {
   width: 100%;
 }
 

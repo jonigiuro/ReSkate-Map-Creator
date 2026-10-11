@@ -99,6 +99,7 @@ type Props = {
   generator: DrawGenerator | null
   pins: [number, number, number][]
   onGeneratorClick: (point: THREE.Vector3) => void
+  dedicatedAssets?: ReadonlySet<string>
 }
 
 const raycaster = new THREE.Raycaster()
@@ -314,6 +315,15 @@ function round4(n: number) {
   return Math.round(n * 10000) / 10000
 }
 
+function authoredMaterials(
+  assetFile: string | undefined,
+  materials: MeshObject['materials'],
+  dedicatedAssets: ReadonlySet<string> | undefined,
+) {
+  if (assetFile && dedicatedAssets?.has(assetFile)) return undefined
+  return materials
+}
+
 function MeshItem({
   obj,
   selected,
@@ -326,6 +336,7 @@ function MeshItem({
   onPatch,
   onGestureStart,
   onGestureEnd,
+  dedicatedAssets,
 }: {
   obj: MeshObject
   selected: boolean
@@ -342,6 +353,7 @@ function MeshItem({
   onPatch: (patch: Partial<MeshObject>) => void
   onGestureStart: () => void
   onGestureEnd: () => void
+  dedicatedAssets?: ReadonlySet<string>
 }) {
   const ref = useRef<THREE.Group>(null)
   const dragging = useRef(false)
@@ -644,13 +656,18 @@ function MeshItem({
             {editingPlanter && handle && <group ref={handleRef} />}
           </>
         ) : kit ? (
-          <KitRun assetFile={kit.assetFile} revision={assetRevision} points={kit.points} materials={obj.materials} />
+          <KitRun
+            assetFile={kit.assetFile}
+            revision={assetRevision}
+            points={kit.points}
+            materials={authoredMaterials(kit.assetFile, obj.materials, dedicatedAssets)}
+          />
         ) : (
           <LibraryMesh
             libraryId={obj.libraryId}
             assetFile={obj.assetFile}
             assetRevision={assetRevision}
-            materials={obj.materials}
+            materials={authoredMaterials(obj.assetFile, obj.materials, dedicatedAssets)}
             mirrored={obj.scale[0] * obj.scale[1] * obj.scale[2] < 0}
           />
         )}
@@ -1756,6 +1773,7 @@ function SceneContents(props: Props) {
     generator,
     pins,
     onGeneratorClick,
+    dedicatedAssets,
   } = props
   const [previewPoint, setPreviewPoint] = useState<THREE.Vector3 | null>(null)
   const [generatorPreview, setGeneratorPreview] = useState<THREE.Vector3 | null>(null)
@@ -1813,6 +1831,7 @@ function SceneContents(props: Props) {
               onPatch={(patch) => onPatchObject(obj.id, patch)}
               onGestureStart={onTransformStart}
               onGestureEnd={onTransformEnd}
+              dedicatedAssets={dedicatedAssets}
             />
           )
         }

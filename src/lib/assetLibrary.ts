@@ -10,6 +10,8 @@ export type AssetPiece = {
   categoryId: string | null
   assetFile: string
   revision: number
+  /** Images or a textures folder sit next to the file. The shared list cannot replace them. */
+  dedicatedTextures?: boolean
 }
 
 export type AssetKit = {
@@ -17,6 +19,7 @@ export type AssetKit = {
   label: string
   assetFile: string
   revision: number
+  dedicatedTextures?: boolean
 }
 
 export type AssetCatalog = {

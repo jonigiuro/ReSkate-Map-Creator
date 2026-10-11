@@ -43,6 +43,24 @@ function isModelFile(name) {
   return modelExt(name) !== null
 }
 
+const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.jfif', '.webp', '.tga', '.tif', '.tiff'])
+
+/** True when this piece ships its own maps, so the shared texture list must not replace them. */
+async function hasDedicatedTextures(dir) {
+  let entries = []
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue
+    if (entry.isDirectory() && entry.name.toLowerCase().includes('texture')) return true
+    if (entry.isFile() && IMAGE_EXT.has(path.extname(entry.name).toLowerCase())) return true
+  }
+  return false
+}
+
 function parentIdOf(rel) {
   const parent = path.posix.dirname(rel)
   return parent === '.' ? null : parent
@@ -83,6 +101,7 @@ async function addPiece(dir, rel, models, acc) {
     categoryId: parentIdOf(rel),
     assetFile: toPosix(assetFile),
     revision: Math.round(fileStat.mtimeMs),
+    dedicatedTextures: await hasDedicatedTextures(dir),
   })
 }
 
@@ -144,6 +163,7 @@ async function scanGeneratorKits(objectsDir, rootEntries) {
         label: child.name.slice(0, -'.blend'.length),
         assetFile,
         revision: Math.round(fileStat.mtimeMs),
+        dedicatedTextures: await hasDedicatedTextures(dir),
       })
       continue
     }
@@ -161,6 +181,7 @@ async function scanGeneratorKits(objectsDir, rootEntries) {
       label: child.name,
       assetFile,
       revision: Math.round(fileStat.mtimeMs),
+      dedicatedTextures: await hasDedicatedTextures(sub),
     })
   }
   kits.sort((a, b) => a.label.localeCompare(b.label))
