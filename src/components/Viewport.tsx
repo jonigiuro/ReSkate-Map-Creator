@@ -24,6 +24,7 @@ import {
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   buildCurbGeometry,
+  buildCurbLipGeometry,
   railBaseFromHit,
   railTopYs,
   buildPlatformGeometry,
@@ -1159,7 +1160,17 @@ const STRIPED_CONCRETE_MAPS = [
   `${import.meta.env.BASE_URL}img/textures/striped_concrete/striped_concrete_roughness.jfif`,
 ] as const
 
-useTexture.preload([...CONCRETE_MAPS, ...STRIPED_CONCRETE_MAPS])
+const galvanizedMap = (file: string) =>
+  `${import.meta.env.BASE_URL}img/textures/galvanized_metal/${file.replaceAll(' ', '%20')}`
+
+const GALVANIZED_MAPS = [
+  galvanizedMap('standard galvanized steel, ideal for structures_BaseColor.jpg'),
+  galvanizedMap('standard galvanized steel, ideal for structures_Normal.jpg'),
+  galvanizedMap('standard galvanized steel, ideal for structures_Roughness.jpg'),
+  galvanizedMap('standard galvanized steel, ideal for structures_Metallic.jpg'),
+] as const
+
+useTexture.preload([...CONCRETE_MAPS, ...STRIPED_CONCRETE_MAPS, ...GALVANIZED_MAPS])
 
 function CurbMaterial({ ghost }: { ghost?: boolean }) {
   const [colorMap, normalMap, roughnessMap] = useTexture([...CONCRETE_MAPS])
@@ -1234,12 +1245,24 @@ function CurbRibbon({
     () => buildCurbGeometry(points, width, height, tops),
     [points, width, height, tops],
   )
+  const lip = useMemo(
+    () => buildCurbLipGeometry(points, width, height, tops),
+    [points, width, height, tops],
+  )
   useEffect(() => () => geometry?.dispose(), [geometry])
+  useEffect(() => () => lip?.dispose(), [lip])
   if (!geometry) return null
   return (
-    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-      <CurbMaterial ghost={ghost} />
-    </mesh>
+    <>
+      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+        <CurbMaterial ghost={ghost} />
+      </mesh>
+      {lip && (
+        <mesh geometry={lip} castShadow={!ghost} receiveShadow={!ghost}>
+          <RailMaterial ghost={ghost} />
+        </mesh>
+      )}
+    </>
   )
 }
 
@@ -1298,18 +1321,31 @@ function PlatformGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
 }
 
 function RailMaterial({ ghost }: { ghost?: boolean }) {
-  const material = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: '#b8bcc0',
-        metalness: 0.85,
-        roughness: 0.35,
-        transparent: !!ghost,
-        opacity: ghost ? 0.45 : 1,
-        depthWrite: !ghost,
-      }),
-    [ghost],
-  )
+  const [colorMap, normalMap, roughnessMap, metalnessMap] = useTexture([...GALVANIZED_MAPS])
+  const material = useMemo(() => {
+    for (const map of [colorMap, normalMap, roughnessMap, metalnessMap]) {
+      map.wrapS = THREE.RepeatWrapping
+      map.wrapT = THREE.RepeatWrapping
+      map.needsUpdate = true
+    }
+    colorMap.colorSpace = THREE.SRGBColorSpace
+    normalMap.colorSpace = THREE.NoColorSpace
+    roughnessMap.colorSpace = THREE.NoColorSpace
+    metalnessMap.colorSpace = THREE.NoColorSpace
+    return new THREE.MeshStandardMaterial({
+      map: colorMap,
+      normalMap,
+      roughnessMap,
+      metalnessMap,
+      normalScale: new THREE.Vector2(1, 1),
+      roughness: 1,
+      metalness: 1,
+      transparent: !!ghost,
+      opacity: ghost ? 0.45 : 1,
+      depthWrite: !ghost,
+    })
+  }, [colorMap, ghost, metalnessMap, normalMap, roughnessMap])
+
   useEffect(() => () => material.dispose(), [material])
   return <primitive object={material} attach="material" />
 }

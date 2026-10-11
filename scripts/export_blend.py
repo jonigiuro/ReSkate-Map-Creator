@@ -451,7 +451,7 @@ def asphalt_material(project_root):
     return mat
 
 
-def _link_mesh(name, verts_three, faces, color, material=None, tile=None, loop_uvs=None):
+def _link_mesh(name, verts_three, faces, color, material=None, tile=None, loop_uvs=None, loop_normals=None):
     """verts_three are editor-space (X, Y-up, Z).
 
     Faces are CCW when viewed from outside. The Y-up → Z-up map is a
@@ -468,6 +468,8 @@ def _link_mesh(name, verts_three, faces, color, material=None, tile=None, loop_u
             uv_layer.data[loop_index].uv = uv
     elif tile:
         assign_metre_uvs(mesh, verts_three, faces, tile)
+    if loop_normals:
+        _apply_loop_normals(mesh, loop_normals)
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
     mat = material or placeholder_material(f"{name}_mat", color)
@@ -548,17 +550,43 @@ def _curb_sections(points, half):
     return sections
 
 
-def _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward):
+def _unit(vector, fallback=(0.0, 1.0, 0.0)):
+    return _vnorm(vector) or fallback
+
+
+def _apply_loop_normals(mesh, loop_normals):
+    """Editor-space loop normals. Caps stay face-flat; the pipe stays smooth."""
+    blender_normals = [three_local_to_blender(*normal) for normal in loop_normals]
+    if hasattr(mesh, "shade_smooth"):
+        mesh.shade_smooth()
+    else:
+        for poly in mesh.polygons:
+            poly.use_smooth = True
+    if hasattr(mesh, "normals_split_custom_set"):
+        mesh.normals_split_custom_set(blender_normals)
+
+
+def _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward, loop_normals=None, vertex_normals=None):
     normal = _vcross(_vsub(b, a), _vsub(c, a))
+    na = nb = nc = None
+    if vertex_normals is not None:
+        na, nb, nc = vertex_normals
     if _vdot(normal, outward) < 0:
         b, c = c, b
         ub, uc = uc, ub
+        nb, nc = nc, nb
     if _vdot(normal, normal) < 1e-12:
         return
     start = len(verts)
     verts.extend((a, b, c))
     faces.append((start, start + 1, start + 2))
     uvs.extend((ua, ub, uc))
+    if loop_normals is not None:
+        if vertex_normals is None:
+            face = _unit(normal, outward)
+            loop_normals.extend((face, face, face))
+        else:
+            loop_normals.extend((_unit(na), _unit(nb), _unit(nc)))
 
 
 def _side_outward(p0, p1, centre):
@@ -571,6 +599,26 @@ def _side_outward(p0, p1, centre):
 
 
 CURB_TILE_M = 1.0
+CURB_LIP_M = 0.025
+CURB_LIP_PROUD_M = 0.002
+CURB_LIP_END_GAP_M = 0.004
+METAL_RAIL_PACKED = 2976
+METAL_RAIL_ID = "material_2976"
+
+
+def stamp_metal_rail(mat):
+    """Surface sound. 2976 is Metal Rail, the id the game already uses for metal rails."""
+    if mat is None:
+        return mat
+    mat["sk8_collision_material_packed"] = METAL_RAIL_PACKED
+    mat["collision_material_packed"] = METAL_RAIL_PACKED
+    settings = getattr(mat, "sk8_material", None)
+    if settings is not None and hasattr(settings, "collision_material"):
+        try:
+            settings.collision_material = METAL_RAIL_ID
+        except (TypeError, ValueError):
+            pass
+    return mat
 
 
 def _edge_distances(sections, side):
@@ -587,7 +635,7 @@ def concrete_material(project_root):
     """Tileable concrete packed into the blend. One UV unit is one metre."""
     cached = bpy.data.materials.get("concrete")
     if cached:
-        return cached
+        return stamp_metal_rail(cached)
     folder = Path(project_root) / "public" / "img" / "textures" / "concrete"
     files = {
         "base": folder / "Concrete_BaseColor.png",
@@ -597,7 +645,7 @@ def concrete_material(project_root):
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
         print("Concrete textures missing, curb stays flat: " + ", ".join(missing))
-        return placeholder_material("concrete", (0.78, 0.76, 0.72))
+        return stamp_metal_rail(placeholder_material("concrete", (0.78, 0.76, 0.72)))
 
     mat = bpy.data.materials.new("concrete")
     mat.use_nodes = True
@@ -616,7 +664,7 @@ def concrete_material(project_root):
     links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
     if "Metallic" in bsdf.inputs:
         bsdf.inputs["Metallic"].default_value = 0.0
-    return mat
+    return stamp_metal_rail(mat)
 
 
 def striped_concrete_material(project_root):
@@ -719,20 +767,134 @@ def make_curb_mesh(name, points, width, height, color, tops=None, material=None)
     return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs)
 
 
-def rail_material():
-    """Plain metal for generated rails. One UV unit is one metre along the pipe."""
-    cached = bpy.data.materials.get("rail")
+def _lip_profile(corner, inward):
+    proud = _vscale(inward, -CURB_LIP_PROUD_M)
+    inset = _vscale(inward, CURB_LIP_M)
+    lift = (0.0, CURB_LIP_PROUD_M, 0.0)
+    drop = (0.0, -CURB_LIP_M, 0.0)
+    return {
+        "outer_top": _vadd(_vadd(corner, proud), lift),
+        "inner_top": _vadd(_vadd(corner, inset), lift),
+        "outer_down": _vadd(_vadd(corner, proud), drop),
+        "inner_down": _vadd(_vadd(corner, inset), drop),
+    }
+
+
+def make_curb_lip_mesh(name, points, width, height, tops=None, project_root="."):
+    """Metal trim on both top corners. A separate object so it can have no collision."""
+    sections = _curb_sections(points, float(width) / 2.0)
+    if len(sections) < 2:
+        return None
+    if not isinstance(tops, (list, tuple)) or len(tops) != len(points):
+        tops = [float(point[1]) + float(height) for point in points]
+    verts = []
+    faces = []
+    uvs = []
+
+    def add_strip(side):
+        profiles = []
+        for section in sections:
+            corner = section[side]
+            other = section[1 - side]
+            inward = _vnorm((other[0] - corner[0], 0.0, other[2] - corner[2])) or (1.0, 0.0, 0.0)
+            top = (corner[0], float(tops[section[2]]), corner[2])
+            profiles.append(_lip_profile(top, inward))
+
+        def pull_end(profile, toward):
+            direction = _vnorm(toward)
+            if direction is None:
+                return
+            length = math.sqrt(_vdot(toward, toward))
+            pull = min(CURB_LIP_END_GAP_M, length * 0.5)
+            delta = _vscale(direction, pull)
+            for key in ("outer_top", "inner_top", "outer_down", "inner_down"):
+                profile[key] = _vadd(profile[key], delta)
+
+        pull_end(profiles[0], _vsub(profiles[1]["outer_top"], profiles[0]["outer_top"]))
+        pull_end(profiles[-1], _vsub(profiles[-2]["outer_top"], profiles[-1]["outer_top"]))
+        distances = [0.0]
+        for index in range(1, len(profiles)):
+            step = _vsub(profiles[index]["outer_top"], profiles[index - 1]["outer_top"])
+            distances.append(distances[-1] + math.sqrt(_vdot(step, step)))
+        for index in range(len(profiles) - 1):
+            a = profiles[index]
+            b = profiles[index + 1]
+            across = _vnorm(_vsub(b["inner_top"], b["outer_top"]))
+            if across is None:
+                continue
+            outward = _vscale(across, -1.0)
+            u0 = distances[index]
+            u1 = distances[index + 1]
+            span = CURB_LIP_M + CURB_LIP_PROUD_M
+            _add_tri(verts, faces, uvs, a["outer_top"], a["inner_top"], b["inner_top"], (u0, 0.0), (u0, span), (u1, span), (0.0, 1.0, 0.0))
+            _add_tri(verts, faces, uvs, a["outer_top"], b["inner_top"], b["outer_top"], (u0, 0.0), (u1, span), (u1, 0.0), (0.0, 1.0, 0.0))
+            _add_tri(verts, faces, uvs, a["outer_top"], b["outer_top"], b["outer_down"], (u0, span), (u1, span), (u1, 0.0), outward)
+            _add_tri(verts, faces, uvs, a["outer_top"], b["outer_down"], a["outer_down"], (u0, span), (u1, 0.0), (u0, 0.0), outward)
+            _add_tri(verts, faces, uvs, a["outer_down"], b["outer_down"], b["inner_down"], (u0, 0.0), (u1, 0.0), (u1, span), (0.0, -1.0, 0.0))
+            _add_tri(verts, faces, uvs, a["outer_down"], b["inner_down"], a["inner_down"], (u0, 0.0), (u1, span), (u0, span), (0.0, -1.0, 0.0))
+            _add_tri(verts, faces, uvs, a["inner_top"], a["inner_down"], b["inner_down"], (u0, span), (u0, 0.0), (u1, 0.0), across)
+            _add_tri(verts, faces, uvs, a["inner_top"], b["inner_down"], b["inner_top"], (u0, span), (u1, 0.0), (u1, span), across)
+
+        def cap(profile, direction, u):
+            _add_tri(verts, faces, uvs, profile["outer_top"], profile["inner_down"], profile["inner_top"], (u, 1.0), (u, 0.0), (u, 1.0), direction)
+            _add_tri(verts, faces, uvs, profile["outer_top"], profile["outer_down"], profile["inner_down"], (u, 1.0), (u, 0.0), (u, 0.0), direction)
+
+        start_out = _vnorm(_vsub(profiles[0]["outer_top"], profiles[1]["outer_top"]))
+        end_out = _vnorm(_vsub(profiles[-1]["outer_top"], profiles[-2]["outer_top"]))
+        if start_out:
+            cap(profiles[0], start_out, 0.0)
+        if end_out:
+            cap(profiles[-1], end_out, distances[-1])
+
+    add_strip(0)
+    add_strip(1)
+    if not faces:
+        return None
+    return _link_mesh(name, verts, faces, (0.72, 0.74, 0.76), material=rail_material(project_root), loop_uvs=uvs)
+
+
+def rail_material(project_root):
+    """Galvanized steel for rails and curb lips. One UV unit is one metre."""
+    cached = bpy.data.materials.get("galvanized")
     if cached:
-        return cached
-    mat = bpy.data.materials.new("rail")
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes.get("Principled BSDF")
-    if bsdf:
-        bsdf.inputs["Base Color"].default_value = (0.72, 0.74, 0.76, 1.0)
-        if "Metallic" in bsdf.inputs:
+        return stamp_metal_rail(cached)
+    folder = Path(project_root) / "public" / "img" / "textures" / "galvanized_metal"
+    stem = "standard galvanized steel, ideal for structures"
+    files = {
+        "base": folder / f"{stem}_BaseColor.jpg",
+        "normal": folder / f"{stem}_Normal.jpg",
+        "rough": folder / f"{stem}_Roughness.jpg",
+        "metal": folder / f"{stem}_Metallic.jpg",
+    }
+    missing = [str(path) for path in files.values() if not path.is_file()]
+    if missing:
+        print("Galvanized textures missing, rail stays flat metal: " + ", ".join(missing))
+        mat = placeholder_material("galvanized", (0.72, 0.74, 0.76))
+        bsdf = mat.node_tree.nodes.get("Principled BSDF") if mat.use_nodes else None
+        if bsdf and "Metallic" in bsdf.inputs:
             bsdf.inputs["Metallic"].default_value = 0.85
-        bsdf.inputs["Roughness"].default_value = 0.35
-    return mat
+            bsdf.inputs["Roughness"].default_value = 0.35
+        return stamp_metal_rail(mat)
+
+    mat = bpy.data.materials.new("galvanized")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, files["base"], "sRGB", (-520, 360))
+    metal = _image_texture(nodes, files["metal"], "Non-Color", (-520, 80))
+    rough = _image_texture(nodes, files["rough"], "Non-Color", (-520, -200))
+    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-520, -480))
+    normal_map = nodes.new("ShaderNodeNormalMap")
+    normal_map.location = (-220, -480)
+    normal_map.inputs["Strength"].default_value = 1.0
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    if "Metallic" in bsdf.inputs:
+        links.new(metal.outputs["Color"], bsdf.inputs["Metallic"])
+    links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
+    return stamp_metal_rail(mat)
 
 
 def _direction(a, b):
@@ -748,6 +910,8 @@ def _initial_side(tangent):
 
 RAIL_HEIGHT_M = 0.5
 MIN_POST_M = 0.02
+POST_RADIUS_M = 0.03
+RAIL_END_M = 0.10
 
 
 def _rail_top_ys(points, tops):
@@ -766,8 +930,35 @@ def _rail_top_ys(points, tops):
     return result
 
 
-def _add_vertical_post(verts, faces, uvs, x, z, y0, y1, radius, sides):
-    """Eight-sided post from the foot up to the rail centre."""
+def _extend_rail_ends(points):
+    """Push the pipe 10 cm past the first and last post, along the rail."""
+    if len(points) < 2:
+        return points
+    start = _direction(points[0], points[1])
+    end = _direction(points[-2], points[-1])
+    points = [tuple(point) for point in points]
+    points[0] = (
+        points[0][0] - start[0] * RAIL_END_M,
+        points[0][1] - start[1] * RAIL_END_M,
+        points[0][2] - start[2] * RAIL_END_M,
+    )
+    points[-1] = (
+        points[-1][0] + end[0] * RAIL_END_M,
+        points[-1][1] + end[1] * RAIL_END_M,
+        points[-1][2] + end[2] * RAIL_END_M,
+    )
+    return points
+
+
+def _radial_normal(vertex, centre, axis):
+    """Outward normal in the plane perpendicular to the segment. Shared around a straight run."""
+    radial = _vsub(vertex, centre)
+    radial = _vsub(radial, _vscale(axis, _vdot(radial, axis)))
+    return _unit(radial)
+
+
+def _add_vertical_post(verts, faces, uvs, x, z, y0, y1, radius, sides, loop_normals=None):
+    """Eight-sided post from the foot up to the rail centre. Sides are smooth; caps stay flat."""
     if y1 - y0 < 1e-4:
         return
     bottom = (x, y0, z)
@@ -784,12 +975,27 @@ def _add_vertical_post(verts, faces, uvs, x, z, y0, y1, radius, sides):
     for k in range(sides):
         k2 = (k + 1) % sides
         outward = _vsub(_vscale(_vadd(_vadd(lower[k], lower[k2]), _vadd(upper[k2], upper[k])), 0.25), axis)
-        v0 = k / sides
-        v1 = (k + 1) / sides
-        _add_tri(verts, faces, uvs, lower[k], lower[k2], upper[k2], (y0, v0), (y0, v1), (y1, v1), outward)
-        _add_tri(verts, faces, uvs, lower[k], upper[k2], upper[k], (y0, v0), (y1, v1), (y1, v0), outward)
-        _add_tri(verts, faces, uvs, bottom, lower[k2], lower[k], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, -1.0, 0.0))
-        _add_tri(verts, faces, uvs, top, upper[k], upper[k2], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 1.0, 0.0))
+        n0 = _unit((lower[k][0] - x, 0.0, lower[k][2] - z), (1.0, 0.0, 0.0))
+        n1 = _unit((lower[k2][0] - x, 0.0, lower[k2][2] - z), (1.0, 0.0, 0.0))
+        around = 2.0 * math.pi * float(radius)
+        v0 = (k / sides) * around
+        v1 = ((k + 1) / sides) * around
+        _add_tri(
+            verts, faces, uvs, lower[k], lower[k2], upper[k2], (y0, v0), (y0, v1), (y1, v1), outward,
+            loop_normals, (n0, n1, n1),
+        )
+        _add_tri(
+            verts, faces, uvs, lower[k], upper[k2], upper[k], (y0, v0), (y1, v1), (y1, v0), outward,
+            loop_normals, (n0, n1, n0),
+        )
+        _add_tri(
+            verts, faces, uvs, bottom, lower[k2], lower[k], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, -1.0, 0.0),
+            loop_normals,
+        )
+        _add_tri(
+            verts, faces, uvs, top, upper[k], upper[k2], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 1.0, 0.0),
+            loop_normals,
+        )
 
 
 def make_rail_mesh(name, points, radius, color, material=None, tops=None):
@@ -799,6 +1005,7 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
     bases = points
     top_ys = _rail_top_ys(bases, tops)
     points = [(float(point[0]), top_ys[index], float(point[2])) for index, point in enumerate(bases)]
+    points = _extend_rail_ends(points)
     sides = 8
     seg = [_direction(points[i], points[i + 1]) for i in range(len(points) - 1)]
     tangents = []
@@ -841,8 +1048,10 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
     verts = []
     faces = []
     uvs = []
+    loop_normals = []
     for i in range(len(rings) - 1):
         axis = _vscale(_vadd(centres[i], centres[i + 1]), 0.5)
+        along = seg[i]
         u0 = distances[i]
         u1 = distances[i + 1]
         for k in range(sides):
@@ -852,17 +1061,25 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
             c = rings[i + 1][k2]
             d = rings[i + 1][k]
             outward = _vsub(_vscale(_vadd(_vadd(a, b), _vadd(c, d)), 0.25), axis)
-            v0 = k / sides
-            v1 = (k + 1) / sides
-            _add_tri(verts, faces, uvs, a, b, c, (u0, v0), (u0, v1), (u1, v1), outward)
-            _add_tri(verts, faces, uvs, a, c, d, (u0, v0), (u1, v1), (u1, v0), outward)
+            na = _radial_normal(a, centres[i], along)
+            nb = _radial_normal(b, centres[i], along)
+            nc = _radial_normal(c, centres[i + 1], along)
+            nd = _radial_normal(d, centres[i + 1], along)
+            around = 2.0 * math.pi * float(radius)
+            v0 = (k / sides) * around
+            v1 = ((k + 1) / sides) * around
+            _add_tri(verts, faces, uvs, a, b, c, (u0, v0), (u0, v1), (u1, v1), outward, loop_normals, (na, nb, nc))
+            _add_tri(verts, faces, uvs, a, c, d, (u0, v0), (u1, v1), (u1, v0), outward, loop_normals, (na, nc, nd))
 
     start_out = _vscale(tangents[0], -1.0)
     end_out = tangents[-1]
     end_u = distances[-1]
     for k in range(sides):
         k2 = (k + 1) % sides
-        _add_tri(verts, faces, uvs, centres[0], rings[0][k2], rings[0][k], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), start_out)
+        _add_tri(
+            verts, faces, uvs, centres[0], rings[0][k2], rings[0][k], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), start_out,
+            loop_normals,
+        )
         _add_tri(
             verts,
             faces,
@@ -874,6 +1091,7 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
             (end_u, 0.0),
             (end_u, 0.0),
             end_out,
+            loop_normals,
         )
     for index, point in enumerate(bases):
         _add_vertical_post(
@@ -884,12 +1102,13 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
             float(point[2]),
             float(point[1]),
             top_ys[index],
-            float(radius),
+            POST_RADIUS_M,
             sides,
+            loop_normals,
         )
     if not faces:
         return None
-    return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs)
+    return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs, loop_normals=loop_normals)
 
 
 def make_box_mesh(name, size, color, material=None, tile=None):
@@ -1805,6 +2024,27 @@ def build(scene):
                     "generator_curb",
                 )
                 link_only(obj, colls["Map"])
+                lip = make_curb_lip_mesh(f"{name} lip", points, width, height, gen.get("tops"), project_root)
+                if lip is not None:
+                    lip.name = f"{name} lip"
+                    apply_transform(
+                        lip,
+                        position,
+                        entry.get("rotation") or [0, 0, 0],
+                        entry.get("scale") or [1, 1, 1],
+                    )
+                    assign_collision_mode(lip, "none")
+                    lip["sk8_hide_from_pause_map"] = bool((entry.get("sk8") or {}).get("hide_from_pause_map", False))
+                    lip["sk8_object_surface_authored"] = True
+                    lip["reskate_map_creator"] = "curb_lip"
+                    tag_join_piece(
+                        lip,
+                        "generator_curb",
+                        placement_cell(position),
+                        "generator_curb",
+                        "lip",
+                    )
+                    link_only(lip, colls["Map"])
                 continue
 
             if gen.get("kind") == "rail":
@@ -1817,7 +2057,7 @@ def build(scene):
                     points,
                     float(gen.get("radius") or 0.05),
                     (0.72, 0.74, 0.76),
-                    rail_material(),
+                    rail_material(project_root),
                     gen.get("tops"),
                 )
                 if obj is None:

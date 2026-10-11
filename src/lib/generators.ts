@@ -5,6 +5,11 @@ export const CURB_HEIGHT_M = 0.5
 export const CURB_WIDTH_M = 0.5
 /** Concrete texture repeats once per metre along the curb. */
 export const CURB_TILE_M = 1
+/** Square metal trim on each top corner. It sits 2 mm proud of the concrete. */
+export const CURB_LIP_M = 0.025
+const CURB_LIP_PROUD_M = 0.002
+/** Keep the lip caps off the curb ends so those faces do not flicker. */
+const CURB_LIP_END_GAP_M = 0.004
 /** Top and base of a pin cannot cross. */
 export const MIN_CURB_THICKNESS_M = 0.02
 const MIN_CURB_LENGTH_M = 0.05
@@ -131,11 +136,14 @@ function addTri(
   ub: [number, number],
   uc: [number, number],
   outward: THREE.Vector3,
+  vertexNormals?: [THREE.Vector3, THREE.Vector3, THREE.Vector3],
 ) {
   let second = b
   let third = c
   let secondUv = ub
   let thirdUv = uc
+  let secondNormal = vertexNormals?.[1]
+  let thirdNormal = vertexNormals?.[2]
   const normal = second.clone().sub(a).cross(third.clone().sub(a))
   if (normal.dot(outward) < 0) {
     const swap = second
@@ -143,10 +151,17 @@ function addTri(
     third = swap
     secondUv = uc
     thirdUv = ub
+    secondNormal = vertexNormals?.[2]
+    thirdNormal = vertexNormals?.[1]
     normal.negate()
   }
   if (normal.lengthSq() < 1e-12) return
   normal.normalize()
+  const shade = (vector: THREE.Vector3 | undefined) => {
+    if (!vector || vector.lengthSq() < 1e-12) return normal
+    return vector.clone().normalize()
+  }
+  const shaded = [shade(vertexNormals?.[0]), shade(secondNormal), shade(thirdNormal)]
   const edge1 = second.clone().sub(a)
   const edge2 = third.clone().sub(a)
   const du1 = secondUv[0] - ua[0]
@@ -163,10 +178,10 @@ function addTri(
           (dv2 * edge1.z - dv1 * edge2.z) / det,
         ).normalize()
   const handed = det < 0 ? -1 : 1
-  for (const vertex of [a, second, third]) {
+  ;[a, second, third].forEach((vertex, index) => {
     positions.push(vertex.x, vertex.y, vertex.z)
-    normals.push(normal.x, normal.y, normal.z)
-  }
+    normals.push(shaded[index].x, shaded[index].y, shaded[index].z)
+  })
   uvs.push(ua[0], ua[1], secondUv[0], secondUv[1], thirdUv[0], thirdUv[1])
   for (let i = 0; i < 3; i++) tangents.push(tangent.x, tangent.y, tangent.z, handed)
 }
@@ -314,6 +329,115 @@ export function buildCurbGeometry(points: Vec3[], width: number, height: number,
   return geometry
 }
 
+type LipProfile = {
+  outerTop: THREE.Vector3
+  innerTop: THREE.Vector3
+  outerDown: THREE.Vector3
+  innerDown: THREE.Vector3
+}
+
+/** Square bar on a top corner. `inward` is a unit vector across the top, toward the centre. */
+function lipProfile(corner: THREE.Vector3, inward: THREE.Vector3): LipProfile {
+  const proud = inward.clone().multiplyScalar(-CURB_LIP_PROUD_M)
+  const inset = inward.clone().multiplyScalar(CURB_LIP_M)
+  const lift = new THREE.Vector3(0, CURB_LIP_PROUD_M, 0)
+  const drop = new THREE.Vector3(0, -CURB_LIP_M, 0)
+  return {
+    outerTop: corner.clone().add(proud).add(lift),
+    innerTop: corner.clone().add(inset).add(lift),
+    outerDown: corner.clone().add(proud).add(drop),
+    innerDown: corner.clone().add(inset).add(drop),
+  }
+}
+
+/** Metal trim along both top corners. The concrete body is unchanged. */
+export function buildCurbLipGeometry(points: Vec3[], width: number, height: number, tops?: number[]) {
+  if (!points || points.length < 2 || width <= 0) return null
+  const sections = curbSections(points, width / 2)
+  const topYs = curbTopYs(points, height, tops)
+  const positions: number[] = []
+  const normals: number[] = []
+  const uvs: number[] = []
+  const tangents: number[] = []
+  const tri = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    outward: THREE.Vector3,
+  ) => addTri(positions, normals, uvs, tangents, a, b, c, ua, ub, uc, outward)
+
+  const addStrip = (side: 'left' | 'right') => {
+    const profiles: LipProfile[] = sections.map((section) => {
+      const corner = section[side].clone()
+      corner.y = topYs[section.pointIndex]
+      const other = side === 'left' ? section.right : section.left
+      const inward = other.clone().sub(section[side])
+      inward.y = 0
+      if (inward.lengthSq() < 1e-10) inward.set(1, 0, 0)
+      else inward.normalize()
+      return lipProfile(corner, inward)
+    })
+    const pullEnd = (profile: LipProfile, toward: THREE.Vector3) => {
+      if (toward.lengthSq() < 1e-10) return
+      const pull = Math.min(CURB_LIP_END_GAP_M, toward.length() * 0.5)
+      const delta = toward.normalize().multiplyScalar(pull)
+      profile.outerTop.add(delta)
+      profile.innerTop.add(delta)
+      profile.outerDown.add(delta)
+      profile.innerDown.add(delta)
+    }
+    pullEnd(profiles[0], profiles[1].outerTop.clone().sub(profiles[0].outerTop))
+    pullEnd(
+      profiles[profiles.length - 1],
+      profiles[profiles.length - 2].outerTop.clone().sub(profiles[profiles.length - 1].outerTop),
+    )
+    const distances = [0]
+    for (let i = 1; i < profiles.length; i++) {
+      distances.push(distances[i - 1] + profiles[i - 1].outerTop.distanceTo(profiles[i].outerTop))
+    }
+    for (let i = 0; i < profiles.length - 1; i++) {
+      const a = profiles[i]
+      const b = profiles[i + 1]
+      const across = b.innerTop.clone().sub(b.outerTop)
+      if (across.lengthSq() < 1e-10) continue
+      across.normalize()
+      const u0 = distances[i]
+      const u1 = distances[i + 1]
+      const span = CURB_LIP_M + CURB_LIP_PROUD_M
+      tri(a.outerTop, a.innerTop, b.innerTop, [u0, 0], [u0, span], [u1, span], UP)
+      tri(a.outerTop, b.innerTop, b.outerTop, [u0, 0], [u1, span], [u1, 0], UP)
+      tri(a.outerTop, b.outerTop, b.outerDown, [u0, span], [u1, span], [u1, 0], across.clone().negate())
+      tri(a.outerTop, b.outerDown, a.outerDown, [u0, span], [u1, 0], [u0, 0], across.clone().negate())
+      tri(a.outerDown, b.outerDown, b.innerDown, [u0, 0], [u1, 0], [u1, span], UP.clone().negate())
+      tri(a.outerDown, b.innerDown, a.innerDown, [u0, 0], [u1, span], [u0, span], UP.clone().negate())
+      tri(a.innerTop, a.innerDown, b.innerDown, [u0, span], [u0, 0], [u1, 0], across)
+      tri(a.innerTop, b.innerDown, b.innerTop, [u0, span], [u1, 0], [u1, span], across)
+    }
+    const cap = (profile: LipProfile, outward: THREE.Vector3, u: number) => {
+      tri(profile.outerTop, profile.innerDown, profile.innerTop, [u, 1], [u, 0], [u, 1], outward)
+      tri(profile.outerTop, profile.outerDown, profile.innerDown, [u, 1], [u, 0], [u, 0], outward)
+    }
+    const startOut = profiles[0].outerTop.clone().sub(profiles[1].outerTop)
+    const endOut = profiles[profiles.length - 1].outerTop.clone().sub(profiles[profiles.length - 2].outerTop)
+    if (startOut.lengthSq() > 1e-10) cap(profiles[0], startOut.normalize(), 0)
+    if (endOut.lengthSq() > 1e-10) cap(profiles[profiles.length - 1], endOut.normalize(), distances[distances.length - 1])
+  }
+
+  addStrip('left')
+  addStrip('right')
+  if (positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(tangents, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
 /** Raised pad. The top is always this far above the shared base. */
 export const PLATFORM_HEIGHT_M = 0.5
 export const MIN_PLATFORM_HEIGHT_M = 0.05
@@ -441,6 +565,10 @@ export function buildPlatformGeometry(corners: [Vec3, Vec3], height: number) {
 
 /** Round rail along a centreline. Eight flat faces, one of them on top when the run is level. */
 export const RAIL_RADIUS_M = 0.05
+/** Vertical post under each pin. Thinner than the rail it holds up. */
+export const RAIL_POST_RADIUS_M = 0.03
+/** How far the pipe runs past the first and last post, along the rail. */
+export const RAIL_END_EXTENSION_M = 0.1
 export const RAIL_SIDES = 8
 /** Rail centre above the foot of the post, until a sphere is dragged. */
 export const RAIL_HEIGHT_M = 0.5
@@ -466,6 +594,21 @@ function direction(from: Vec3, to: Vec3) {
   return dir.normalize()
 }
 
+/** Slide the first and last centreline points past the posts. The line still runs through each pin. */
+function extendRailEnds(points: Vec3[]) {
+  if (points.length < 2) return
+  const start = direction(points[0], points[1])
+  const end = direction(points[points.length - 2], points[points.length - 1])
+  const first = points[0]
+  const last = points[points.length - 1]
+  first[0] -= start.x * RAIL_END_EXTENSION_M
+  first[1] -= start.y * RAIL_END_EXTENSION_M
+  first[2] -= start.z * RAIL_END_EXTENSION_M
+  last[0] += end.x * RAIL_END_EXTENSION_M
+  last[1] += end.y * RAIL_END_EXTENSION_M
+  last[2] += end.z * RAIL_END_EXTENSION_M
+}
+
 function initialSide(tangent: THREE.Vector3) {
   const ref = Math.abs(tangent.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : UP
   return new THREE.Vector3().crossVectors(ref, tangent).normalize()
@@ -476,6 +619,7 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
   if (!bases || bases.length < 2 || radius <= 0 || sides < 3) return null
   const topYs = railTopYs(bases, tops)
   const points: Vec3[] = bases.map((point, index) => [point[0], topYs[index], point[2]])
+  extendRailEnds(points)
   const segDirs = points.slice(1).map((point, index) => direction(points[index], point))
   const tangents: THREE.Vector3[] = []
   const scales: number[] = []
@@ -537,12 +681,21 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
     ub: [number, number],
     uc: [number, number],
     outward: THREE.Vector3,
-  ) => addTri(positions, normals, uvs, tangentsAttr, a, b, c, ua, ub, uc, outward)
+    vertexNormals?: [THREE.Vector3, THREE.Vector3, THREE.Vector3],
+  ) => addTri(positions, normals, uvs, tangentsAttr, a, b, c, ua, ub, uc, outward, vertexNormals)
 
   for (let i = 0; i < rings.length - 1; i++) {
-    const axis = new THREE.Vector3(...points[i]).add(new THREE.Vector3(...points[i + 1])).multiplyScalar(0.5)
+    const start = new THREE.Vector3(...points[i])
+    const finish = new THREE.Vector3(...points[i + 1])
+    const axis = start.clone().add(finish).multiplyScalar(0.5)
+    const along = segDirs[i]
     const u0 = distances[i]
     const u1 = distances[i + 1]
+    const radial = (vertex: THREE.Vector3, centre: THREE.Vector3) => {
+      const offset = vertex.clone().sub(centre)
+      offset.addScaledVector(along, -offset.dot(along))
+      return offset.lengthSq() < 1e-10 ? new THREE.Vector3(0, 1, 0) : offset.normalize()
+    }
     for (let k = 0; k < sides; k++) {
       const k2 = (k + 1) % sides
       const a = rings[i][k]
@@ -550,10 +703,15 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
       const c = rings[i + 1][k2]
       const d = rings[i + 1][k]
       const outward = a.clone().add(b).add(c).add(d).multiplyScalar(0.25).sub(axis)
-      const v0 = k / sides
-      const v1 = (k + 1) / sides
-      tri(a, b, c, [u0, v0], [u0, v1], [u1, v1], outward)
-      tri(a, c, d, [u0, v0], [u1, v1], [u1, v0], outward)
+      const na = radial(a, start)
+      const nb = radial(b, start)
+      const nc = radial(c, finish)
+      const nd = radial(d, finish)
+      const around = Math.PI * 2 * radius
+      const v0 = (k / sides) * around
+      const v1 = ((k + 1) / sides) * around
+      tri(a, b, c, [u0, v0], [u0, v1], [u1, v1], outward, [na, nb, nc])
+      tri(a, c, d, [u0, v0], [u1, v1], [u1, v0], outward, [na, nc, nd])
     }
   }
 
@@ -580,19 +738,26 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
     const upper: THREE.Vector3[] = []
     for (let k = 0; k < sides; k++) {
       const ang = ((k + 0.5) * Math.PI * 2) / sides
-      const ox = Math.cos(ang) * radius
-      const oz = Math.sin(ang) * radius
+      const ox = Math.cos(ang) * RAIL_POST_RADIUS_M
+      const oz = Math.sin(ang) * RAIL_POST_RADIUS_M
       lower.push(new THREE.Vector3(x + ox, y0, z + oz))
       upper.push(new THREE.Vector3(x + ox, y1, z + oz))
     }
     const axis = bottom.clone().add(top).multiplyScalar(0.5)
+    const radial = (vertex: THREE.Vector3) => {
+      const offset = new THREE.Vector3(vertex.x - x, 0, vertex.z - z)
+      return offset.lengthSq() < 1e-10 ? new THREE.Vector3(1, 0, 0) : offset.normalize()
+    }
     for (let k = 0; k < sides; k++) {
       const k2 = (k + 1) % sides
       const outward = lower[k].clone().add(lower[k2]).add(upper[k2]).add(upper[k]).multiplyScalar(0.25).sub(axis)
-      const v0 = k / sides
-      const v1 = (k + 1) / sides
-      tri(lower[k], lower[k2], upper[k2], [y0, v0], [y0, v1], [y1, v1], outward)
-      tri(lower[k], upper[k2], upper[k], [y0, v0], [y1, v1], [y1, v0], outward)
+      const n0 = radial(lower[k])
+      const n1 = radial(lower[k2])
+      const postAround = Math.PI * 2 * RAIL_POST_RADIUS_M
+      const v0 = (k / sides) * postAround
+      const v1 = ((k + 1) / sides) * postAround
+      tri(lower[k], lower[k2], upper[k2], [y0, v0], [y0, v1], [y1, v1], outward, [n0, n1, n1])
+      tri(lower[k], upper[k2], upper[k], [y0, v0], [y1, v1], [y1, v0], outward, [n0, n1, n0])
       tri(bottom, lower[k2], lower[k], [0, 0], [0, 0], [0, 0], new THREE.Vector3(0, -1, 0))
       tri(top, upper[k], upper[k2], [0, 0], [0, 0], [0, 0], UP)
     }
