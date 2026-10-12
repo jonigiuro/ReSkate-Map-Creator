@@ -1,5 +1,3 @@
-Edit: I see it's slowly getting some traction, sorry for the small library of assets. I'm working at growing it.
-Undo/Redo are also coming.
 # ReSkate Map Creator (MVP)
 
 ![ReSkate Map Creator, placing a skatepark](public/img/screenshot.JPG)
