@@ -7,6 +7,8 @@ const source = path.join(root, 'Objects')
 // Sit beside the unpacked exe. A portable self-extractor is what Avast treats as a dropper,
 // and it also makes every launch unpack before a window can appear.
 const dest = path.join(root, 'release', 'win-unpacked', 'Objects')
+const textureSource = path.join(root, 'public', 'img', 'textures')
+const textureDest = path.join(root, 'release', 'win-unpacked', 'public', 'img', 'textures')
 const skip = new Set(['Private', 'OfficialMeshes', 'OfficialMeshes - Copy'])
 
 await rm(dest, { recursive: true, force: true })
@@ -28,3 +30,8 @@ for (const entry of entries) {
   })
   console.log(`Copied Objects/${entry.name}`)
 }
+
+await rm(textureDest, { recursive: true, force: true })
+await mkdir(path.dirname(textureDest), { recursive: true })
+await cp(textureSource, textureDest, { recursive: true, force: true })
+console.log('Copied public/img/textures')

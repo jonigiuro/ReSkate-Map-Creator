@@ -243,6 +243,7 @@ function registerIpc() {
   ipcMain.handle('blender:check', async () => resolveBlender())
 
   ipcMain.handle('library:list', async () => scanProjectLibrary(installDir()))
+  ipcMain.handle('textures:list', async () => scanTextureSets(installDir()))
 
   ipcMain.handle('library:preview', async (_event, assetFile) => {
     const blender = await resolveBlender()

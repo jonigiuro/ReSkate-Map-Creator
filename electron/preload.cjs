@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('reskateDesktop', {
   checkBlender: () => ipcRenderer.invoke('blender:check'),
   pickBlender: () => ipcRenderer.invoke('blender:pick'),
   listLibrary: () => ipcRenderer.invoke('library:list'),
+  listTextureSets: () => ipcRenderer.invoke('textures:list'),
   previewAsset: (assetFile) => ipcRenderer.invoke('library:preview', assetFile),
   previewThumb: (assetFile) => ipcRenderer.invoke('library:thumb', assetFile),
   exportBlend: (scene) => ipcRenderer.invoke('blend:export', scene),

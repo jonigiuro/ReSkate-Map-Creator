@@ -54,11 +54,14 @@ function publish(raw: RawTextureSet[], version: number) {
 function loadTextureSets() {
   const id = ++requestId
   const version = generation
-  return fetch(`/api/texture-sets?t=${Date.now()}`)
-    .then((res) => {
-      if (!res.ok) throw new Error(`Texture sets failed (${res.status})`)
-      return res.json() as Promise<RawTextureSet[]>
-    })
+  const desktop = window.reskateDesktop?.listTextureSets
+  const request: Promise<RawTextureSet[]> = desktop
+    ? desktop()
+    : fetch(`/api/texture-sets?t=${Date.now()}`).then((res) => {
+        if (!res.ok) throw new Error(`Texture sets failed (${res.status})`)
+        return res.json() as Promise<RawTextureSet[]>
+      })
+  return request
     .then((raw) => {
       if (id !== requestId) return sets.length
       publish(raw, version)
