@@ -21,6 +21,7 @@ exports/scene-*.json
 
 # Local object library. Not part of the repo.
 Objects/Private/
+public/img/private-textures/
 
 # Editor directories and files
 .vscode/*

@@ -28,11 +28,14 @@ import {
   RAIL_RADIUS_M,
   buildCurbGeometry,
   buildCurbLipGeometry,
+  buildCurbWaxGeometry,
   buildPlanterGeometry,
+  buildPlanterWaxGeometry,
   railBaseFromHit,
   railTopYs,
   buildPlatformGeometry,
   buildRailGeometry,
+  buildRailWaxGeometry,
   curbSegmentTooShort,
   curbTopYs,
   planterFootprintTooSmall,
@@ -1008,7 +1011,13 @@ type HeldMesh = {
 
 /** Edit pins stay solid. They are handles, not the object. */
 function isSelectionBody(mesh: THREE.Mesh) {
-  if (!mesh.isMesh || !mesh.geometry || mesh.userData.selectionOutline || mesh.userData.curbHandle) {
+  if (
+    !mesh.isMesh ||
+    !mesh.geometry ||
+    mesh.userData.selectionOutline ||
+    mesh.userData.curbHandle ||
+    mesh.userData.waxDecal
+  ) {
     return false
   }
   const position = mesh.geometry.getAttribute('position')
@@ -1246,6 +1255,13 @@ const STRIPED_CONCRETE_MAPS = [
 const galvanizedMap = (file: string) =>
   `${import.meta.env.BASE_URL}img/textures/galvanized_metal/${file.replaceAll(' ', '%20')}`
 
+const WAX_MAPS = [
+  `${import.meta.env.BASE_URL}img/private-textures/wax/wax_albedo.jpg`,
+  `${import.meta.env.BASE_URL}img/private-textures/wax/wax_alpha.jpg`,
+  `${import.meta.env.BASE_URL}img/private-textures/wax/wax_normal.jpg`,
+  `${import.meta.env.BASE_URL}img/private-textures/wax/wax_roughness.jpg`,
+] as const
+
 const GALVANIZED_MAPS = [
   galvanizedMap('standard galvanized steel, ideal for structures_BaseColor.jpg'),
   galvanizedMap('standard galvanized steel, ideal for structures_Normal.jpg'),
@@ -1253,7 +1269,14 @@ const GALVANIZED_MAPS = [
   galvanizedMap('standard galvanized steel, ideal for structures_Metallic.jpg'),
 ] as const
 
-useTexture.preload([BRICK_MAP, ...GRASS_MAPS, ...CONCRETE_MAPS, ...STRIPED_CONCRETE_MAPS, ...GALVANIZED_MAPS])
+useTexture.preload([
+  BRICK_MAP,
+  ...GRASS_MAPS,
+  ...CONCRETE_MAPS,
+  ...STRIPED_CONCRETE_MAPS,
+  ...GALVANIZED_MAPS,
+  ...WAX_MAPS,
+])
 
 function SlotMaterial({
   setId,
@@ -1330,6 +1353,40 @@ function PlatformMaterial({ ghost }: { ghost?: boolean }) {
   return <primitive object={material} attach="material" />
 }
 
+function WaxMaterial({ ghost }: { ghost?: boolean }) {
+  const [colorMap, alphaMap, normalMap, roughnessMap] = useTexture([...WAX_MAPS])
+  const material = useMemo(() => {
+    for (const map of [colorMap, alphaMap, normalMap, roughnessMap]) {
+      map.wrapS = THREE.RepeatWrapping
+      map.wrapT = THREE.ClampToEdgeWrapping
+      map.needsUpdate = true
+    }
+    colorMap.colorSpace = THREE.SRGBColorSpace
+    alphaMap.colorSpace = THREE.NoColorSpace
+    normalMap.colorSpace = THREE.NoColorSpace
+    roughnessMap.colorSpace = THREE.NoColorSpace
+    return new THREE.MeshStandardMaterial({
+      map: colorMap,
+      alphaMap,
+      normalMap,
+      roughnessMap,
+      normalScale: new THREE.Vector2(1, 1),
+      roughness: 1,
+      metalness: 0,
+      transparent: true,
+      opacity: ghost ? 0.45 : 1,
+      depthWrite: false,
+      alphaTest: 0.02,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    })
+  }, [alphaMap, colorMap, ghost, normalMap, roughnessMap])
+
+  useEffect(() => () => material.dispose(), [material])
+  return <primitive object={material} attach="material" />
+}
+
 function CurbRibbon({
   points,
   width,
@@ -1353,8 +1410,13 @@ function CurbRibbon({
     () => buildCurbLipGeometry(points, width, height, tops),
     [points, width, height, tops],
   )
+  const wax = useMemo(
+    () => buildCurbWaxGeometry(points, width, height, tops),
+    [points, width, height, tops],
+  )
   useEffect(() => () => geometry?.dispose(), [geometry])
   useEffect(() => () => lip?.dispose(), [lip])
+  useEffect(() => () => wax?.dispose(), [wax])
   if (!geometry) return null
   return (
     <>
@@ -1364,6 +1426,11 @@ function CurbRibbon({
       {lip && (
         <mesh geometry={lip} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
+        </mesh>
+      )}
+      {wax && (
+        <mesh geometry={wax} castShadow={false} receiveShadow={false} renderOrder={1} userData={{ waxDecal: true }}>
+          <WaxMaterial ghost={ghost} />
         </mesh>
       )}
     </>
@@ -1495,6 +1562,10 @@ function PlanterMesh({
     () => buildPlanterGeometry(corners, tops, sideBases, sideTops),
     [corners, sideBases, sideTops, tops],
   )
+  const wax = useMemo(
+    () => buildPlanterWaxGeometry(corners, tops, sideBases, sideTops),
+    [corners, sideBases, sideTops, tops],
+  )
   useEffect(
     () => () => {
       parts?.brick.dispose()
@@ -1503,6 +1574,7 @@ function PlanterMesh({
     },
     [parts],
   )
+  useEffect(() => () => wax?.dispose(), [wax])
   if (!parts) return null
   return (
     <group>
@@ -1515,6 +1587,11 @@ function PlanterMesh({
       <mesh geometry={parts.grass} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.grass} ghost={ghost} fallback="grass" />
       </mesh>
+      {wax && (
+        <mesh geometry={wax} castShadow={false} receiveShadow={false} renderOrder={1} userData={{ waxDecal: true }}>
+          <WaxMaterial ghost={ghost} />
+        </mesh>
+      )}
     </group>
   )
 }
@@ -1575,12 +1652,21 @@ function RailMesh({
   ghost?: boolean
 }) {
   const geometry = useMemo(() => buildRailGeometry(points, radius, tops), [points, radius, tops])
+  const wax = useMemo(() => buildRailWaxGeometry(points, radius, tops), [points, radius, tops])
   useEffect(() => () => geometry?.dispose(), [geometry])
+  useEffect(() => () => wax?.dispose(), [wax])
   if (!geometry) return null
   return (
-    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-      <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
-    </mesh>
+    <group>
+      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
+      </mesh>
+      {wax && (
+        <mesh geometry={wax} castShadow={false} receiveShadow={false} renderOrder={1} userData={{ waxDecal: true }}>
+          <WaxMaterial ghost={ghost} />
+        </mesh>
+      )}
+    </group>
   )
 }
 

@@ -686,6 +686,12 @@ CURB_TILE_M = 1.0
 CURB_LIP_M = 0.025
 CURB_LIP_PROUD_M = 0.002
 CURB_LIP_END_GAP_M = 0.004
+CURB_WAX_WIDTH_M = 0.1
+CURB_WAX_LIFT_M = 0.004
+CURB_WAX_ALONG_SCALE = 4.0
+# Streaks from public/img/private-textures/wax/wax_alpha.jpg. Keep in step with generators.ts.
+CURB_WAX_BANDS = ((0.062, 0.215), (0.328, 0.479))
+PLANTER_WAX_BANDS = ((0.062, 0.215), (0.328, 0.479), (0.551, 0.682), (0.773, 0.938))
 METAL_RAIL_PACKED = 2976
 METAL_RAIL_ID = "material_2976"
 
@@ -1080,6 +1086,168 @@ def make_curb_lip_mesh(name, points, width, height, tops=None, project_root=".",
     )
 
 
+def _mark_decal(mat):
+    """Blended decal. The game reads domain from the addon material settings."""
+    for attr, value in (("surface_render_method", "BLENDED"), ("blend_method", "BLEND")):
+        if hasattr(mat, attr):
+            try:
+                setattr(mat, attr, value)
+            except (TypeError, AttributeError):
+                pass
+    if hasattr(mat, "use_backface_culling"):
+        mat.use_backface_culling = False
+    settings = getattr(mat, "sk8_material", None)
+    if settings is None:
+        return mat
+    for attr, value in (
+        ("domain", "decal"),
+        ("alpha", "blend"),
+        ("alpha_source", "opacity_texture"),
+        ("double_sided", True),
+        ("cast_shadows", False),
+    ):
+        if hasattr(settings, attr):
+            try:
+                setattr(settings, attr, value)
+            except (TypeError, ValueError):
+                pass
+    return mat
+
+
+def wax_material(project_root):
+    """Curb-edge wax. Alpha is a separate map so the concrete shows through."""
+    cached = bpy.data.materials.get("wax")
+    if cached:
+        return cached
+    folder = Path(project_root) / "public" / "img" / "private-textures" / "wax"
+    files = {
+        "base": folder / "wax_albedo.jpg",
+        "alpha": folder / "wax_alpha.jpg",
+        "normal": folder / "wax_normal.jpg",
+        "rough": folder / "wax_roughness.jpg",
+    }
+    missing = [str(path) for path in files.values() if not path.is_file()]
+    if missing:
+        print("Wax textures missing, curb edges stay bare: " + ", ".join(missing))
+        return _mark_decal(placeholder_material("wax", (0.82, 0.8, 0.74)))
+
+    mat = bpy.data.materials.new("wax")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, files["base"], "sRGB", (-700, 360))
+    alpha = _image_texture(nodes, files["alpha"], "Non-Color", (-700, 80))
+    rough = _image_texture(nodes, files["rough"], "Non-Color", (-700, -200))
+    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-700, -480))
+    separate = nodes.new("ShaderNodeSeparateColor")
+    separate.location = (-400, 80)
+    normal_map = nodes.new("ShaderNodeNormalMap")
+    normal_map.location = (-220, -480)
+    normal_map.inputs["Strength"].default_value = 1.0
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    links.new(alpha.outputs["Color"], separate.inputs["Color"])
+    if "Alpha" in bsdf.inputs:
+        links.new(separate.outputs["Red"], bsdf.inputs["Alpha"])
+    if "Roughness" in bsdf.inputs:
+        links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    return _mark_decal(mat)
+
+
+def make_curb_wax_mesh(name, points, width, height, tops=None, project_root="."):
+    """Top and side decal on each edge. Separate object, so collision can stay off."""
+    sections = _curb_sections(points, float(width) / 2.0)
+    if len(sections) < 2:
+        return None
+    if not isinstance(tops, (list, tuple)) or len(tops) != len(points):
+        tops = [float(point[1]) + float(height) for point in points]
+    reach = min(CURB_WAX_WIDTH_M, float(width) * 0.45)
+    verts = []
+    faces = []
+    uvs = []
+
+    def add_strip(side, band):
+        span = band[1] - band[0]
+        tile = (reach / span) * CURB_WAX_ALONG_SCALE if span > 1e-6 else 1.0
+        profiles = []
+        for section in sections:
+            corner = section[side]
+            other = section[1 - side]
+            inward = _vnorm((other[0] - corner[0], 0.0, other[2] - corner[2])) or (1.0, 0.0, 0.0)
+            top_y = float(tops[section[2]])
+            rise = top_y - float(corner[1])
+            drop = min(reach, max(0.02, rise - 0.01))
+            outer = (
+                corner[0] - inward[0] * CURB_WAX_LIFT_M,
+                top_y + CURB_WAX_LIFT_M,
+                corner[2] - inward[2] * CURB_WAX_LIFT_M,
+            )
+            inner = (
+                corner[0] + inward[0] * reach,
+                top_y + CURB_WAX_LIFT_M,
+                corner[2] + inward[2] * reach,
+            )
+            down = (outer[0], outer[1] - drop, outer[2])
+            profiles.append((outer, inner, down))
+        distances = [0.0]
+        for index in range(1, len(profiles)):
+            step = _vsub(profiles[index][0], profiles[index - 1][0])
+            distances.append(distances[-1] + math.sqrt(_vdot(step, step)))
+        for index in range(len(profiles) - 1):
+            a = profiles[index]
+            b = profiles[index + 1]
+            sa = sections[index]
+            sb = sections[index + 1]
+            centre = _vscale(_vadd(_vadd(sa[0], sa[1]), _vadd(sb[0], sb[1])), 0.25)
+            outward = _side_outward(a[0], b[0], centre)
+            u0 = distances[index] / tile
+            u1 = distances[index + 1] / tile
+            _add_tri(
+                verts, faces, uvs,
+                a[0], a[1], b[1],
+                (u0, band[0]), (u0, band[1]), (u1, band[1]),
+                (0.0, 1.0, 0.0),
+            )
+            _add_tri(
+                verts, faces, uvs,
+                a[0], b[1], b[0],
+                (u0, band[0]), (u1, band[1]), (u1, band[0]),
+                (0.0, 1.0, 0.0),
+            )
+            _add_tri(
+                verts, faces, uvs,
+                a[0], b[0], b[2],
+                (u0, band[0]), (u1, band[0]), (u1, band[1]),
+                outward,
+            )
+            _add_tri(
+                verts, faces, uvs,
+                a[0], b[2], a[2],
+                (u0, band[0]), (u1, band[1]), (u0, band[1]),
+                outward,
+            )
+
+    add_strip(0, CURB_WAX_BANDS[0])
+    add_strip(1, CURB_WAX_BANDS[1])
+    if not faces:
+        return None
+    obj = _link_mesh(
+        name,
+        verts,
+        faces,
+        (0.82, 0.8, 0.74),
+        material=wax_material(project_root),
+        loop_uvs=uvs,
+    )
+    if hasattr(obj, "visible_shadow"):
+        obj.visible_shadow = False
+    return obj
+
+
 def rail_material(project_root):
     """Galvanized steel for rails and curb lips. One UV unit is one metre."""
     cached = bpy.data.materials.get("galvanized")
@@ -1336,6 +1504,116 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
     if not faces:
         return None
     return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs, loop_normals=loop_normals)
+
+
+def _rail_top_start(ring, centre):
+    """First of the three faces that face the sky. The octagon has one flat on top."""
+    sides = len(ring)
+    best = 0
+    best_dot = -1e9
+    for k in range(sides):
+        mid = _vscale(_vadd(ring[k], ring[(k + 1) % sides]), 0.5)
+        up = _vdot(_vsub(mid, centre), (0.0, 1.0, 0.0))
+        if up > best_dot:
+            best_dot = up
+            best = k
+    chosen = {(best - 1) % sides, best, (best + 1) % sides}
+    for k in chosen:
+        if (k - 1) % sides not in chosen:
+            return k
+    return best
+
+
+def make_rail_wax_mesh(name, points, radius, project_root, tops=None):
+    """Wax on the top three faces of the pipe. Radial normals keep the cap smooth."""
+    if len(points) < 2 or float(radius) <= 0:
+        return None
+    bases = points
+    top_ys = _rail_top_ys(bases, tops)
+    points = [(float(point[0]), top_ys[index], float(point[2])) for index, point in enumerate(bases)]
+    points = _extend_rail_ends(points)
+    sides = 8
+    seg = [_direction(points[i], points[i + 1]) for i in range(len(points) - 1)]
+    tangents = []
+    scales = []
+    for i in range(len(points)):
+        if i == 0:
+            tangents.append(seg[0])
+            scales.append(1.0)
+            continue
+        if i == len(points) - 1:
+            tangents.append(seg[-1])
+            scales.append(1.0)
+            continue
+        tangent = _vnorm(_vadd(seg[i - 1], seg[i])) or seg[i]
+        denom = abs(_vdot(tangent, seg[i]))
+        tangents.append(tangent)
+        scales.append(4.0 if denom < 0.25 else min(1.0 / denom, 4.0))
+
+    side = _initial_side(tangents[0])
+    rings = []
+    distances = [0.0]
+    centres = [(float(point[0]), float(point[1]), float(point[2])) for point in points]
+    for i, centre in enumerate(centres):
+        tangent = tangents[i]
+        projected = _vsub(side, _vscale(tangent, _vdot(side, tangent)))
+        side = _vnorm(projected) or _initial_side(tangent)
+        binormal = _vnorm(_vcross(tangent, side)) or (0.0, 1.0, 0.0)
+        side = _vnorm(_vcross(binormal, tangent)) or side
+        ring_r = float(radius) * scales[i]
+        ring = []
+        for k in range(sides):
+            ang = (k + 0.5) * (2.0 * math.pi) / sides
+            offset = _vadd(_vscale(side, math.cos(ang) * ring_r), _vscale(binormal, math.sin(ang) * ring_r))
+            ring.append(_vadd(centre, offset))
+        rings.append(ring)
+        if i < len(centres) - 1:
+            step = _vsub(centres[i + 1], centre)
+            distances.append(distances[-1] + math.sqrt(_vdot(step, step)))
+
+    band = CURB_WAX_BANDS[0]
+    band_span = band[1] - band[0]
+    arc = float(radius) * (3.0 * 2.0 * math.pi) / sides
+    tile = (arc / band_span) * CURB_WAX_ALONG_SCALE if band_span > 1e-6 else 1.0
+    start_face = _rail_top_start(rings[0], centres[0])
+    verts = []
+    faces = []
+    uvs = []
+    loop_normals = []
+    for i in range(len(rings) - 1):
+        along = seg[i]
+        u0 = distances[i] / tile
+        u1 = distances[i + 1] / tile
+        for step in range(3):
+            k = (start_face + step) % sides
+            k2 = (k + 1) % sides
+            na = _radial_normal(rings[i][k], centres[i], along)
+            nb = _radial_normal(rings[i][k2], centres[i], along)
+            nc = _radial_normal(rings[i + 1][k2], centres[i + 1], along)
+            nd = _radial_normal(rings[i + 1][k], centres[i + 1], along)
+            a = _vadd(rings[i][k], _vscale(na, CURB_WAX_LIFT_M))
+            b = _vadd(rings[i][k2], _vscale(nb, CURB_WAX_LIFT_M))
+            c = _vadd(rings[i + 1][k2], _vscale(nc, CURB_WAX_LIFT_M))
+            d = _vadd(rings[i + 1][k], _vscale(nd, CURB_WAX_LIFT_M))
+            outward = _vnorm(_vadd(_vadd(na, nb), _vadd(nc, nd))) or (0.0, 1.0, 0.0)
+            v0 = band[0] + (step / 3.0) * band_span
+            v1 = band[0] + ((step + 1) / 3.0) * band_span
+            _add_tri(verts, faces, uvs, a, b, c, (u0, v0), (u0, v1), (u1, v1), outward, loop_normals, (na, nb, nc))
+            _add_tri(verts, faces, uvs, a, c, d, (u0, v0), (u1, v1), (u1, v0), outward, loop_normals, (na, nc, nd))
+    if not faces:
+        return None
+    obj = _link_mesh(
+        name,
+        verts,
+        faces,
+        (0.82, 0.8, 0.74),
+        material=wax_material(project_root),
+        loop_uvs=uvs,
+        loop_normals=loop_normals,
+    )
+    if hasattr(obj, "visible_shadow"):
+        obj.visible_shadow = False
+    return obj
 
 
 def make_box_mesh(name, size, color, material=None, tile=None):
@@ -1626,6 +1904,67 @@ def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_t
         mesh.materials.append(mat)
     for poly, slot in zip(mesh.polygons, slots):
         poly.material_index = slot
+    return obj
+
+
+def make_planter_wax_mesh(name, corners, tops, project_root, side_bases=None, side_tops=None):
+    """Wax decal on the four outer lips. Separate object, so collision can stay off."""
+    fields = _planter_fields(corners, tops, side_bases, side_tops)
+    if fields is None:
+        return None
+    minx, maxx = fields["minx"], fields["maxx"]
+    minz, maxz = fields["minz"], fields["maxz"]
+    overhang, wall = fields["overhang"], fields["wall"]
+    base_at, rim_at = fields["base"], fields["rim"]
+    verts = []
+    faces = []
+    uvs = []
+
+    def add_edge(x0, z0, x1, z1, inward, band, lift_extra):
+        span = math.hypot(x1 - x0, z1 - z0)
+        cross = (maxz - minz) if abs(inward[2]) > 0.5 else (maxx - minx)
+        reach = min(CURB_WAX_WIDTH_M, overhang + wall - 0.02, cross * 0.45)
+        band_span = band[1] - band[0]
+        if span < 1e-4 or reach < 0.02 or band_span < 1e-4:
+            return
+        tile = (reach / band_span) * CURB_WAX_ALONG_SCALE
+        lift = CURB_WAX_LIFT_M + lift_extra
+        outward = (-inward[0], 0.0, -inward[2])
+
+        def end(x, z):
+            rim = rim_at(x, z)
+            drop = min(reach, max(0.02, rim - base_at(x, z) - 0.01))
+            outer = (x + outward[0] * CURB_WAX_LIFT_M, rim + lift, z + outward[2] * CURB_WAX_LIFT_M)
+            inner_x = x + inward[0] * reach
+            inner_z = z + inward[2] * reach
+            inner = (inner_x, rim_at(inner_x, inner_z) + lift, inner_z)
+            down = (outer[0], outer[1] - drop, outer[2])
+            return outer, inner, down
+
+        a = end(x0, z0)
+        b = end(x1, z1)
+        u1 = span / tile
+        _add_tri(verts, faces, uvs, a[0], a[1], b[1], (0.0, band[0]), (0.0, band[1]), (u1, band[1]), (0.0, 1.0, 0.0))
+        _add_tri(verts, faces, uvs, a[0], b[1], b[0], (0.0, band[0]), (u1, band[1]), (u1, band[0]), (0.0, 1.0, 0.0))
+        _add_tri(verts, faces, uvs, a[0], b[0], b[2], (0.0, band[0]), (u1, band[0]), (u1, band[1]), outward)
+        _add_tri(verts, faces, uvs, a[0], b[2], a[2], (0.0, band[0]), (u1, band[1]), (0.0, band[1]), outward)
+
+    add_edge(minx, minz, maxx, minz, (0.0, 0.0, 1.0), PLANTER_WAX_BANDS[0], 0.0)
+    add_edge(minx, maxz, maxx, maxz, (0.0, 0.0, -1.0), PLANTER_WAX_BANDS[1], 0.0004)
+    add_edge(minx, minz, minx, maxz, (1.0, 0.0, 0.0), PLANTER_WAX_BANDS[2], 0.0008)
+    add_edge(maxx, minz, maxx, maxz, (-1.0, 0.0, 0.0), PLANTER_WAX_BANDS[3], 0.0012)
+    if not faces:
+        return None
+    obj = _link_mesh(
+        name,
+        verts,
+        faces,
+        (0.82, 0.8, 0.74),
+        material=wax_material(project_root),
+        loop_uvs=uvs,
+    )
+    if hasattr(obj, "visible_shadow"):
+        obj.visible_shadow = False
     return obj
 
 
@@ -2988,6 +3327,34 @@ def build(scene):
                         "lip",
                     )
                     link_only(lip, colls["Map"])
+                wax = make_curb_wax_mesh(
+                    f"{name} wax",
+                    points,
+                    width,
+                    height,
+                    gen.get("tops"),
+                    project_root,
+                )
+                if wax is not None:
+                    wax.name = f"{name} wax"
+                    apply_transform(
+                        wax,
+                        position,
+                        entry.get("rotation") or [0, 0, 0],
+                        entry.get("scale") or [1, 1, 1],
+                    )
+                    assign_collision_mode(wax, "none")
+                    wax["sk8_hide_from_pause_map"] = bool((entry.get("sk8") or {}).get("hide_from_pause_map", False))
+                    wax["sk8_object_surface_authored"] = True
+                    wax["reskate_map_creator"] = "curb_wax"
+                    tag_join_piece(
+                        wax,
+                        "generator_curb",
+                        placement_cell(position),
+                        "generator_curb",
+                        "wax",
+                    )
+                    link_only(wax, colls["Map"])
                 continue
 
             if gen.get("kind") == "rail":
@@ -3030,6 +3397,33 @@ def build(scene):
                     "generator_rail",
                 )
                 link_only(obj, colls["Map"])
+                wax = make_rail_wax_mesh(
+                    f"{name} wax",
+                    points,
+                    float(gen.get("radius") or 0.05),
+                    project_root,
+                    gen.get("tops"),
+                )
+                if wax is not None:
+                    wax.name = f"{name} wax"
+                    apply_transform(
+                        wax,
+                        position,
+                        entry.get("rotation") or [0, 0, 0],
+                        entry.get("scale") or [1, 1, 1],
+                    )
+                    assign_collision_mode(wax, "none")
+                    wax["sk8_hide_from_pause_map"] = bool((entry.get("sk8") or {}).get("hide_from_pause_map", False))
+                    wax["sk8_object_surface_authored"] = True
+                    wax["reskate_map_creator"] = "rail_wax"
+                    tag_join_piece(
+                        wax,
+                        "generator_rail",
+                        placement_cell(position),
+                        "generator_rail",
+                        "wax",
+                    )
+                    link_only(wax, colls["Map"])
                 continue
 
             if gen.get("kind") == "platform":
@@ -3132,6 +3526,34 @@ def build(scene):
                     "generator_planter",
                 )
                 link_only(obj, colls["Map"])
+                wax = make_planter_wax_mesh(
+                    f"{name} wax",
+                    corners,
+                    gen.get("tops"),
+                    project_root,
+                    gen.get("sideBases"),
+                    gen.get("sideTops"),
+                )
+                if wax is not None:
+                    wax.name = f"{name} wax"
+                    apply_transform(
+                        wax,
+                        position,
+                        entry.get("rotation") or [0, 0, 0],
+                        entry.get("scale") or [1, 1, 1],
+                    )
+                    assign_collision_mode(wax, "none")
+                    wax["sk8_hide_from_pause_map"] = bool((entry.get("sk8") or {}).get("hide_from_pause_map", False))
+                    wax["sk8_object_surface_authored"] = True
+                    wax["reskate_map_creator"] = "planter_wax"
+                    tag_join_piece(
+                        wax,
+                        "generator_planter",
+                        placement_cell(position),
+                        "generator_planter",
+                        "wax",
+                    )
+                    link_only(wax, colls["Map"])
                 continue
 
             if gen.get("kind") == "kit":

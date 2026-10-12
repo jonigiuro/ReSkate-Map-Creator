@@ -438,6 +438,105 @@ export function buildCurbLipGeometry(points: Vec3[], width: number, height: numb
   return geometry
 }
 
+/** How far the wax smear reaches in from each top corner. */
+export const CURB_WAX_WIDTH_M = 0.1
+/** Sits just above the metal lip so the decal does not z-fight it. */
+const CURB_WAX_LIFT_M = 0.004
+/** Stretch the streak along the curb. 4 means one repeat covers four times the natural length. */
+const CURB_WAX_ALONG_SCALE = 4
+/**
+ * One streak from wax_alpha.jpg (512²). Measured bands, as fractions of V.
+ * Left and right use different streaks so the two edges do not match.
+ */
+const CURB_WAX_BANDS = {
+  left: [0.062, 0.215],
+  right: [0.328, 0.479],
+} as const
+
+/**
+ * Decal along both top edges, wrapped onto the vertical face.
+ * U repeats along the curb; V covers a single wax streak at its own aspect.
+ */
+export function buildCurbWaxGeometry(points: Vec3[], width: number, height: number, tops?: number[]) {
+  if (!points || points.length < 2 || width <= 0) return null
+  const sections = curbSections(points, width / 2)
+  if (sections.length < 2) return null
+  const topYs = curbTopYs(points, height, tops)
+  const reach = Math.min(CURB_WAX_WIDTH_M, width * 0.45)
+  const positions: number[] = []
+  const normals: number[] = []
+  const uvs: number[] = []
+  const tangents: number[] = []
+  const tri = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    outward: THREE.Vector3,
+  ) => addTri(positions, normals, uvs, tangents, a, b, c, ua, ub, uc, outward)
+
+  const addStrip = (side: 'left' | 'right') => {
+    const band = CURB_WAX_BANDS[side]
+    const span = band[1] - band[0]
+    const tile = (reach / span) * CURB_WAX_ALONG_SCALE
+    const profiles = sections.map((section) => {
+      const corner = section[side].clone()
+      const other = side === 'left' ? section.right : section.left
+      const inward = other.clone().sub(corner)
+      inward.y = 0
+      if (inward.lengthSq() < 1e-10) inward.set(1, 0, 0)
+      else inward.normalize()
+      const topY = topYs[section.pointIndex]
+      const rise = topY - corner.y
+      const drop = Math.min(reach, Math.max(0.02, rise - 0.01))
+      const outer = corner.clone()
+      outer.y = topY + CURB_WAX_LIFT_M
+      outer.addScaledVector(inward, -CURB_WAX_LIFT_M)
+      const inner = corner.clone()
+      inner.y = topY + CURB_WAX_LIFT_M
+      inner.addScaledVector(inward, reach)
+      const down = outer.clone()
+      down.y -= drop
+      return { outer, inner, down }
+    })
+    const distances = [0]
+    for (let i = 1; i < profiles.length; i++) {
+      distances.push(distances[i - 1] + profiles[i - 1].outer.distanceTo(profiles[i].outer))
+    }
+    for (let i = 0; i < profiles.length - 1; i++) {
+      const a = profiles[i]
+      const b = profiles[i + 1]
+      const sectionA = sections[i]
+      const sectionB = sections[i + 1]
+      const centre = sectionA.left.clone().add(sectionA.right).add(sectionB.left).add(sectionB.right).multiplyScalar(0.25)
+      const outward = sideOutward(a.outer, b.outer, centre)
+      const u0 = distances[i] / tile
+      const u1 = distances[i + 1] / tile
+      const outerUv: [number, number] = [u0, band[0]]
+      const innerUv: [number, number] = [u0, band[1]]
+      const nextOuter: [number, number] = [u1, band[0]]
+      const nextInner: [number, number] = [u1, band[1]]
+      tri(a.outer, a.inner, b.inner, outerUv, innerUv, nextInner, UP)
+      tri(a.outer, b.inner, b.outer, outerUv, nextInner, nextOuter, UP)
+      tri(a.outer, b.outer, b.down, outerUv, nextOuter, nextInner, outward)
+      tri(a.outer, b.down, a.down, outerUv, nextInner, innerUv, outward)
+    }
+  }
+
+  addStrip('left')
+  addStrip('right')
+  if (positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(tangents, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
 /** Raised pad. The top is always this far above the shared base. */
 export const PLATFORM_HEIGHT_M = 0.5
 export const MIN_PLATFORM_HEIGHT_M = 0.05
@@ -891,6 +990,97 @@ export function buildPlanterGeometry(
   return { brick: brickGeometry, granite: graniteGeometry, grass: grassGeometry }
 }
 
+/** Four streaks from wax_alpha.jpg, one per planter side. */
+const PLANTER_WAX_BANDS = [
+  [0.062, 0.215],
+  [0.328, 0.479],
+  [0.551, 0.682],
+  [0.773, 0.938],
+] as const
+
+/**
+ * Same wax decal as a curb, around the outer granite lip.
+ * Top face plus the outside face. No thickness, so it can stay out of collision.
+ */
+export function buildPlanterWaxGeometry(
+  corners: [Vec3, Vec3],
+  tops?: number[],
+  sideBases?: [number, number],
+  sideTops?: [number, number],
+) {
+  const fields = planterFields(corners, tops, sideBases, sideTops)
+  if (!fields) return null
+  const { minX, maxX, minZ, maxZ, overhang, wall, baseAt, rimAt } = fields
+  const positions: number[] = []
+  const normals: number[] = []
+  const uvs: number[] = []
+  const tangents: number[] = []
+  const tri = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    outward: THREE.Vector3,
+  ) => addTri(positions, normals, uvs, tangents, a, b, c, ua, ub, uc, outward)
+
+  const addEdge = (
+    x0: number,
+    z0: number,
+    x1: number,
+    z1: number,
+    inward: THREE.Vector3,
+    band: readonly [number, number],
+    liftExtra: number,
+  ) => {
+    const span = Math.hypot(x1 - x0, z1 - z0)
+    const cross = Math.abs(inward.z) > 0.5 ? maxZ - minZ : maxX - minX
+    const reach = Math.min(CURB_WAX_WIDTH_M, overhang + wall - 0.02, cross * 0.45)
+    const bandSpan = band[1] - band[0]
+    if (span < 1e-4 || reach < 0.02 || bandSpan < 1e-4) return
+    const tile = (reach / bandSpan) * CURB_WAX_ALONG_SCALE
+    const lift = CURB_WAX_LIFT_M + liftExtra
+    const outward = inward.clone().negate()
+    const end = (x: number, z: number) => {
+      const rim = rimAt(x, z)
+      const drop = Math.min(reach, Math.max(0.02, rim - baseAt(x, z) - 0.01))
+      const outer = new THREE.Vector3(x, rim + lift, z).addScaledVector(outward, CURB_WAX_LIFT_M)
+      const innerX = x + inward.x * reach
+      const innerZ = z + inward.z * reach
+      const inner = new THREE.Vector3(innerX, rimAt(innerX, innerZ) + lift, innerZ)
+      const down = outer.clone()
+      down.y -= drop
+      return { outer, inner, down }
+    }
+    const a = end(x0, z0)
+    const b = end(x1, z1)
+    const u1 = span / tile
+    const outer0: [number, number] = [0, band[0]]
+    const inner0: [number, number] = [0, band[1]]
+    const outer1: [number, number] = [u1, band[0]]
+    const inner1: [number, number] = [u1, band[1]]
+    tri(a.outer, a.inner, b.inner, outer0, inner0, inner1, UP)
+    tri(a.outer, b.inner, b.outer, outer0, inner1, outer1, UP)
+    tri(a.outer, b.outer, b.down, outer0, outer1, inner1, outward)
+    tri(a.outer, b.down, a.down, outer0, inner1, inner0, outward)
+  }
+
+  addEdge(minX, minZ, maxX, minZ, new THREE.Vector3(0, 0, 1), PLANTER_WAX_BANDS[0], 0)
+  addEdge(minX, maxZ, maxX, maxZ, new THREE.Vector3(0, 0, -1), PLANTER_WAX_BANDS[1], 0.0004)
+  addEdge(minX, minZ, minX, maxZ, new THREE.Vector3(1, 0, 0), PLANTER_WAX_BANDS[2], 0.0008)
+  addEdge(maxX, minZ, maxX, maxZ, new THREE.Vector3(-1, 0, 0), PLANTER_WAX_BANDS[3], 0.0012)
+
+  if (positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(tangents, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
 /** Round rail along a centreline. Eight flat faces, one of them on top when the run is level. */
 export const RAIL_RADIUS_M = 0.05
 /** Vertical post under each pin. Thinner than the rail it holds up. */
@@ -1088,6 +1278,147 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
       tri(lower[k], upper[k2], upper[k], [y0, v0], [y1, v1], [y1, v0], outward, [n0, n1, n0])
       tri(bottom, lower[k2], lower[k], [0, 0], [0, 0], [0, 0], new THREE.Vector3(0, -1, 0))
       tri(top, upper[k], upper[k2], [0, 0], [0, 0], [0, 0], UP)
+    }
+  }
+
+  if (positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(tangentsAttr, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/** First of the three faces that face the sky. The rail's octagon has one flat on top. */
+function railTopStart(ring: THREE.Vector3[], centre: THREE.Vector3) {
+  const sides = ring.length
+  let best = 0
+  let bestDot = -Infinity
+  for (let k = 0; k < sides; k++) {
+    const mid = ring[k].clone().add(ring[(k + 1) % sides]).multiplyScalar(0.5)
+    const dot = mid.sub(centre).dot(UP)
+    if (dot > bestDot) {
+      bestDot = dot
+      best = k
+    }
+  }
+  const chosen = new Set([(best - 1 + sides) % sides, best, (best + 1) % sides])
+  for (const k of chosen) {
+    if (!chosen.has((k - 1 + sides) % sides)) return k
+  }
+  return best
+}
+
+/**
+ * Wax on the top three faces of the pipe. Normals stay radial, so the cap shades smooth.
+ * Posts and the underside are left bare.
+ */
+export function buildRailWaxGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: number[], sides = RAIL_SIDES) {
+  if (!bases || bases.length < 2 || radius <= 0 || sides < 3) return null
+  const topYs = railTopYs(bases, tops)
+  const points: Vec3[] = bases.map((point, index) => [point[0], topYs[index], point[2]])
+  extendRailEnds(points)
+  const segDirs = points.slice(1).map((point, index) => direction(points[index], point))
+  const tangents: THREE.Vector3[] = []
+  const scales: number[] = []
+  for (let i = 0; i < points.length; i++) {
+    if (i === 0) {
+      tangents.push(segDirs[0])
+      scales.push(1)
+      continue
+    }
+    if (i === points.length - 1) {
+      tangents.push(segDirs[segDirs.length - 1])
+      scales.push(1)
+      continue
+    }
+    const sum = segDirs[i - 1].clone().add(segDirs[i])
+    const tangent = sum.lengthSq() < 1e-10 ? segDirs[i].clone() : sum.normalize()
+    tangents.push(tangent)
+    const denom = Math.abs(tangent.dot(segDirs[i]))
+    scales.push(denom < 0.25 ? 4 : Math.min(1 / denom, 4))
+  }
+
+  let side = initialSide(tangents[0])
+  const rings: THREE.Vector3[][] = []
+  const distances = [0]
+  for (let i = 0; i < points.length; i++) {
+    const tangent = tangents[i]
+    side = side.clone().addScaledVector(tangent, -side.dot(tangent))
+    if (side.lengthSq() < 1e-8) side = initialSide(tangent)
+    else side.normalize()
+    const binormal = new THREE.Vector3().crossVectors(tangent, side).normalize()
+    side = new THREE.Vector3().crossVectors(binormal, tangent).normalize()
+    const centre = new THREE.Vector3(...points[i])
+    const ringRadius = radius * scales[i]
+    const ring: THREE.Vector3[] = []
+    for (let k = 0; k < sides; k++) {
+      const ang = ((k + 0.5) * Math.PI * 2) / sides
+      ring.push(
+        centre
+          .clone()
+          .addScaledVector(side, Math.cos(ang) * ringRadius)
+          .addScaledVector(binormal, Math.sin(ang) * ringRadius),
+      )
+    }
+    rings.push(ring)
+    if (i < points.length - 1) {
+      distances.push(distances[i] + centre.distanceTo(new THREE.Vector3(...points[i + 1])))
+    }
+  }
+
+  const band = CURB_WAX_BANDS.left
+  const bandSpan = band[1] - band[0]
+  const arc = radius * ((3 * Math.PI * 2) / sides)
+  const tile = (arc / bandSpan) * CURB_WAX_ALONG_SCALE
+  const startFace = railTopStart(rings[0], new THREE.Vector3(...points[0]))
+  const positions: number[] = []
+  const normals: number[] = []
+  const uvs: number[] = []
+  const tangentsAttr: number[] = []
+  const tri = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    outward: THREE.Vector3,
+    vertexNormals: [THREE.Vector3, THREE.Vector3, THREE.Vector3],
+  ) => addTri(positions, normals, uvs, tangentsAttr, a, b, c, ua, ub, uc, outward, vertexNormals)
+
+  for (let i = 0; i < rings.length - 1; i++) {
+    const start = new THREE.Vector3(...points[i])
+    const finish = new THREE.Vector3(...points[i + 1])
+    const along = segDirs[i]
+    const u0 = distances[i] / tile
+    const u1 = distances[i + 1] / tile
+    const radial = (vertex: THREE.Vector3, centre: THREE.Vector3) => {
+      const offset = vertex.clone().sub(centre)
+      offset.addScaledVector(along, -offset.dot(along))
+      if (offset.lengthSq() < 1e-10) return new THREE.Vector3(0, 1, 0)
+      return offset.normalize()
+    }
+    const raised = (vertex: THREE.Vector3, normal: THREE.Vector3) =>
+      vertex.clone().addScaledVector(normal, CURB_WAX_LIFT_M)
+    for (let step = 0; step < 3; step++) {
+      const k = (startFace + step) % sides
+      const k2 = (k + 1) % sides
+      const na = radial(rings[i][k], start)
+      const nb = radial(rings[i][k2], start)
+      const nc = radial(rings[i + 1][k2], finish)
+      const nd = radial(rings[i + 1][k], finish)
+      const a = raised(rings[i][k], na)
+      const b = raised(rings[i][k2], nb)
+      const c = raised(rings[i + 1][k2], nc)
+      const d = raised(rings[i + 1][k], nd)
+      const outward = na.clone().add(nb).add(nc).add(nd).normalize()
+      const v0 = band[0] + (step / 3) * bandSpan
+      const v1 = band[0] + ((step + 1) / 3) * bandSpan
+      tri(a, b, c, [u0, v0], [u0, v1], [u1, v1], outward, [na, nb, nc])
+      tri(a, c, d, [u0, v0], [u1, v1], [u1, v0], outward, [na, nc, nd])
     }
   }
 

@@ -36,6 +36,41 @@ def ensure_sk8_material():
             name="Invisible (Collision Only)",
             default=False,
         )
+        # Same identifiers and numbers as the addon's material settings, so a
+        # decal written here still reads as a decal when the addon opens the file.
+        alpha: bpy.props.EnumProperty(
+            name="Alpha",
+            default="auto",
+            items=[
+                ("auto", "Auto", "Detect from the image"),
+                ("opaque", "Opaque", "Ignore alpha"),
+                ("mask", "Cutout", "1-bit alpha"),
+                ("blend", "Blend", "Full alpha"),
+            ],
+        )
+        domain: bpy.props.EnumProperty(
+            name="Shader Override",
+            default="surface",
+            items=[
+                ("surface", "Auto", "Keep the current shader", 0, 0),
+                ("decal", "Decal", "Blended decal", 0, 1),
+                ("foliage", "Foliage", "Alpha-tested cards", 0, 2),
+                ("ocean", "Ocean", "Ocean water", 0, 4),
+                ("glass_opaque", "Glass", "Reflective glass", 0, 6),
+            ],
+        )
+        alpha_source: bpy.props.EnumProperty(
+            name="Alpha Source",
+            default="auto",
+            items=[
+                ("auto", "Auto", ""),
+                ("base_color_texture", "Base Color Alpha", ""),
+                ("opacity_texture", "Opacity Texture", ""),
+                ("constant", "Constant", ""),
+            ],
+        )
+        cast_shadows: bpy.props.BoolProperty(name="Cast Shadows", default=True)
+        double_sided: bpy.props.BoolProperty(name="Double Sided", default=False)
 
     bpy.utils.register_class(Sk8MaterialSettings)
     bpy.types.Material.sk8_material = bpy.props.PointerProperty(type=Sk8MaterialSettings)
