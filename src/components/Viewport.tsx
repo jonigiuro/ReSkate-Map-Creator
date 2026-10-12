@@ -5,7 +5,7 @@ import {
   TransformControls,
   useTexture,
 } from '@react-three/drei'
-import { Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { MOUSE } from 'three'
 import * as THREE from 'three'
 import type {
@@ -97,7 +97,11 @@ type Props = {
   onTransformStart: () => void
   onTransformEnd: () => void
   onGroundClick: (point: THREE.Vector3) => void
-  onPlacePiece: (id: string, point: THREE.Vector3) => void
+  onPlacePiece: (
+    id: string,
+    point: THREE.Vector3,
+    rotation: [number, number, number],
+  ) => void
   onRotatePiece: () => void
   generator: DrawGenerator | null
   pins: [number, number, number][]
@@ -115,13 +119,26 @@ function snapHorizontal(point: THREE.Vector3, size: number | null) {
   return point
 }
 
-function snapPointFromEvent(
+type SurfaceHit = {
+  point: THREE.Vector3
+  /** World-space direction the piece stands on, pointing out of the face. */
+  normal: THREE.Vector3
+}
+
+const _faceNormal = new THREE.Vector3()
+const _surfaceUp = new THREE.Vector3(0, 1, 0)
+const _align = new THREE.Quaternion()
+const _twist = new THREE.Quaternion()
+const _placed = new THREE.Quaternion()
+const _placedEuler = new THREE.Euler(0, 0, 0, 'XYZ')
+
+function surfaceHitFromEvent(
   event: { clientX: number; clientY: number },
   camera: THREE.Camera,
   scene: THREE.Scene,
   dom: HTMLElement,
   moveSnap: number | null,
-): THREE.Vector3 | null {
+): SurfaceHit | null {
   const rect = dom.getBoundingClientRect()
   if (rect.width === 0 || rect.height === 0) return null
   pointerNdc.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
@@ -138,10 +155,43 @@ function snapPointFromEvent(
       obj = obj.parent
     }
     if (ghost || !snap) continue
-    // Grid is world X/Z only. Height stays on the surface under the cursor.
-    return snapHorizontal(hit.point.clone(), moveSnap)
+    // Grid is world X/Z only. Height and tilt stay on the face under the cursor.
+    const point = snapHorizontal(hit.point.clone(), moveSnap)
+    const normal = new THREE.Vector3(0, 1, 0)
+    if (hit.face) {
+      _faceNormal.copy(hit.face.normal).transformDirection(hit.object.matrixWorld)
+      if (_faceNormal.dot(raycaster.ray.direction) > 0) _faceNormal.negate()
+      if (_faceNormal.lengthSq() > 1e-8) normal.copy(_faceNormal).normalize()
+    }
+    return { point, normal }
   }
   return null
+}
+
+function snapPointFromEvent(
+  event: { clientX: number; clientY: number },
+  camera: THREE.Camera,
+  scene: THREE.Scene,
+  dom: HTMLElement,
+  moveSnap: number | null,
+): THREE.Vector3 | null {
+  return surfaceHitFromEvent(event, camera, scene, dom, moveSnap)?.point ?? null
+}
+
+/** Feet on the face. Yaw spins around that face's normal, including a flat right-click. */
+function orientationOnSurface(normal: THREE.Vector3, yaw: number): [number, number, number] {
+  if (normal.y > 0.999) return [0, yaw, 0]
+  _faceNormal.copy(normal).normalize()
+  _align.setFromUnitVectors(_surfaceUp, _faceNormal)
+  _twist.setFromAxisAngle(_faceNormal, yaw)
+  _placed.copy(_twist).multiply(_align)
+  _placedEuler.setFromQuaternion(_placed, 'XYZ')
+  return [_placedEuler.x, _placedEuler.y, _placedEuler.z]
+}
+
+function surfaceHeight(point: THREE.Vector3, normal: THREE.Vector3) {
+  if (normal.y > 0.999 && point.y < 0.02) return 0
+  return point.y
 }
 
 function Sun() {
@@ -178,10 +228,6 @@ function Sun() {
 }
 
 const _sunFocus = new THREE.Vector3()
-
-function restHeight(point: THREE.Vector3) {
-  return point.y < 0.02 ? 0 : point.y
-}
 
 function Ground({ onGroundClick }: { onGroundClick: (p: THREE.Vector3) => void }) {
   const material = useMemo(() => createBlueprintMaterial(), [])
@@ -738,6 +784,18 @@ function MeshItem({
   )
 }
 
+const MeshItemView = memo(MeshItem, (prev, next) =>
+  prev.obj === next.obj &&
+  prev.selected === next.selected &&
+  prev.tool === next.tool &&
+  prev.transformMode === next.transformMode &&
+  prev.assetRevision === next.assetRevision &&
+  prev.dedicatedAssets === next.dedicatedAssets &&
+  prev.snap.move === next.snap.move &&
+  prev.snap.rotate === next.snap.rotate &&
+  prev.snap.scale === next.snap.scale,
+)
+
 function SpawnFigure({ selected }: { selected: boolean }) {
   const color = selected ? '#ffcc66' : '#e4b15c'
   return (
@@ -848,28 +906,42 @@ function SpawnItem({
   )
 }
 
+const SpawnItemView = memo(SpawnItem, (prev, next) =>
+  prev.obj === next.obj &&
+  prev.selected === next.selected &&
+  prev.tool === next.tool &&
+  prev.transformMode === next.transformMode &&
+  prev.snap.move === next.snap.move &&
+  prev.snap.rotate === next.snap.rotate &&
+  prev.snap.scale === next.snap.scale,
+)
+
 function PiecePlacementLayer({
   placePieceId,
+  placeYaw,
   moveSnap,
   onPlace,
   onPreview,
   onRotate,
 }: {
   placePieceId: string | null
+  placeYaw: number
   moveSnap: number | null
-  onPlace: (id: string, point: THREE.Vector3) => void
-  onPreview: (point: THREE.Vector3 | null) => void
+  onPlace: (id: string, point: THREE.Vector3, rotation: [number, number, number]) => void
+  onPreview: (hit: SurfaceHit | null) => void
   onRotate: () => void
 }) {
   const camera = useThree((s) => s.camera)
   const scene = useThree((s) => s.scene)
   const gl = useThree((s) => s.gl)
   const pieceRef = useRef(placePieceId)
+  const yawRef = useRef(placeYaw)
   const moveSnapRef = useRef(moveSnap)
   const onPlaceRef = useRef(onPlace)
   const onPreviewRef = useRef(onPreview)
   const onRotateRef = useRef(onRotate)
   pieceRef.current = placePieceId
+  yawRef.current = placeYaw
   moveSnapRef.current = moveSnap
   onPlaceRef.current = onPlace
   onPreviewRef.current = onPreview
@@ -884,7 +956,7 @@ function PiecePlacementLayer({
 
     const move = (event: PointerEvent) => {
       if (pieceRef.current) {
-        onPreviewRef.current(snapPointFromEvent(event, camera, scene, el, moveSnapRef.current))
+        onPreviewRef.current(surfaceHitFromEvent(event, camera, scene, el, moveSnapRef.current))
       }
       if (!rightStart || orbiting) return
       const dx = event.clientX - rightStart.x
@@ -916,11 +988,16 @@ function PiecePlacementLayer({
         return
       }
       if (event.button !== 0) return
-      const point = snapPointFromEvent(event, camera, scene, el, moveSnapRef.current)
-      if (!point) return
+      const hit = surfaceHitFromEvent(event, camera, scene, el, moveSnapRef.current)
+      if (!hit) return
       event.preventDefault()
       event.stopPropagation()
-      onPlaceRef.current(pieceRef.current, point)
+      hit.point.y = surfaceHeight(hit.point, hit.normal)
+      onPlaceRef.current(
+        pieceRef.current,
+        hit.point,
+        orientationOnSurface(hit.normal, yawRef.current),
+      )
     }
     const up = (event: PointerEvent) => {
       if (event.button !== 2) return
@@ -1801,14 +1878,25 @@ function SceneContents(props: Props) {
     onGeneratorClick,
     dedicatedAssets,
   } = props
-  const [previewPoint, setPreviewPoint] = useState<THREE.Vector3 | null>(null)
+  const onSelectRef = useRef(onSelect)
+  const onPatchRef = useRef(onPatchObject)
+  const onStartRef = useRef(onTransformStart)
+  const onEndRef = useRef(onTransformEnd)
+  onSelectRef.current = onSelect
+  onPatchRef.current = onPatchObject
+  onStartRef.current = onTransformStart
+  onEndRef.current = onTransformEnd
+  const [previewHit, setPreviewHit] = useState<SurfaceHit | null>(null)
   const [generatorPreview, setGeneratorPreview] = useState<THREE.Vector3 | null>(null)
 
   useEffect(() => {
-    if (!placePieceId) setPreviewPoint(null)
+    if (!placePieceId) setPreviewHit(null)
   }, [placePieceId])
 
-  const previewY = previewPoint ? restHeight(previewPoint) : 0
+  const previewY = previewHit ? surfaceHeight(previewHit.point, previewHit.normal) : 0
+  const previewRotation = previewHit
+    ? orientationOnSurface(previewHit.normal, placeYaw)
+    : ([0, placeYaw, 0] as [number, number, number])
 
   return (
     <>
@@ -1836,7 +1924,7 @@ function SceneContents(props: Props) {
       {scene.objects.map((obj) => {
         if (obj.kind === 'mesh') {
           return (
-            <MeshItem
+            <MeshItemView
               key={obj.id}
               obj={obj}
               selected={obj.id === selectedId}
@@ -1850,40 +1938,40 @@ function SceneContents(props: Props) {
                     ? (assetRevisions[obj.generator.assetFile] ?? 0)
                     : 0
               }
-              onSelect={() => onSelect(obj.id)}
+              onSelect={() => onSelectRef.current(obj.id)}
               onCommit={(pos, rot, scale) => {
-                onPatchObject(obj.id, { position: pos, rotation: rot, scale })
+                onPatchRef.current(obj.id, { position: pos, rotation: rot, scale })
               }}
-              onPatch={(patch) => onPatchObject(obj.id, patch)}
-              onGestureStart={onTransformStart}
-              onGestureEnd={onTransformEnd}
+              onPatch={(patch) => onPatchRef.current(obj.id, patch)}
+              onGestureStart={() => onStartRef.current()}
+              onGestureEnd={() => onEndRef.current()}
               dedicatedAssets={dedicatedAssets}
             />
           )
         }
         if (obj.kind !== 'spawn') return null
         return (
-          <SpawnItem
+          <SpawnItemView
             key={obj.id}
             obj={obj}
             selected={obj.id === selectedId}
             tool={tool}
             transformMode={transformMode}
             snap={snap}
-            onSelect={() => onSelect(obj.id)}
+            onSelect={() => onSelectRef.current(obj.id)}
             onCommit={(pos, rot) => {
-              onPatchObject(obj.id, { position: pos, rotation: rot })
+              onPatchRef.current(obj.id, { position: pos, rotation: rot })
             }}
-            onGestureStart={onTransformStart}
-            onGestureEnd={onTransformEnd}
+            onGestureStart={() => onStartRef.current()}
+            onGestureEnd={() => onEndRef.current()}
           />
         )
       })}
 
-      {placePieceId && previewPoint && (
+      {placePieceId && previewHit && (
         <group
-          position={[previewPoint.x, previewY, previewPoint.z]}
-          rotation={[0, placeYaw, 0]}
+          position={[previewHit.point.x, previewY, previewHit.point.z]}
+          rotation={previewRotation}
           scale={[placeScaleX, 1, 1]}
           userData={{ placementGhost: true }}
         >
@@ -1939,9 +2027,10 @@ function SceneContents(props: Props) {
 
       <PiecePlacementLayer
         placePieceId={placePieceId}
+        placeYaw={placeYaw}
         moveSnap={snap.move}
         onPlace={onPlacePiece}
-        onPreview={setPreviewPoint}
+        onPreview={setPreviewHit}
         onRotate={onRotatePiece}
       />
       <GeneratorLayer

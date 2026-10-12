@@ -404,11 +404,14 @@ export default function App() {
     })
   }, [])
 
-  function placePiece(libraryId: string, point: THREE.Vector3) {
+  function placePiece(
+    libraryId: string,
+    point: THREE.Vector3,
+    rotation: [number, number, number],
+  ) {
     const authored = catalog.pieces.find((piece) => piece.id === libraryId)
     const builtin = getPiece(libraryId)
     const label = authored?.label ?? builtin?.label ?? libraryId
-    const y = point.y < 0.02 ? 0 : point.y
     const id = uid('mesh')
     const before = history.checkpoint()
     const prev = history.sceneRef.current
@@ -418,8 +421,8 @@ export default function App() {
       libraryId,
       assetFile: authored?.assetFile,
       name: `${label.replace(/\s+/g, '_')}_${prev.objects.filter((o) => o.kind === 'mesh').length + 1}`,
-      position: [round4(point.x), round4(y), round4(point.z)],
-      rotation: [0, placeYaw, 0],
+      position: [round4(point.x), round4(point.y), round4(point.z)],
+      rotation: [round4(rotation[0]), round4(rotation[1]), round4(rotation[2])],
       scale: [placeScaleX, 1, 1],
       sk8: {
         ...(builtin?.defaultSk8 ?? {
@@ -1135,7 +1138,7 @@ export default function App() {
               ? 'Click Curbs or Rails to draw a run, Platforms for a flat pad, or Planters for a brick box with a granite rim. Escape leaves the tool.'
               : categoryPath.length === 0
                 ? 'Open a category, then click a piece. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
-                : 'Click a piece to pick it up. It follows the cursor. Right-click turns it 90°. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid; height stays on the surface under the cursor.'}
+                : 'Click a piece to pick it up. It follows the cursor and stands on the surface under it. Right-click turns it 90° on that surface. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid.'}
           </p>
           {categoryPath.length > 0 && (
             <>
@@ -1447,7 +1450,7 @@ export default function App() {
                 Click to select. Right-drag orbits, middle-drag pans. C frames the selection. M
                 mirrors the selection, or a held piece, left to right. Ctrl+C copies, Ctrl+V
                 pastes. Ctrl+Z undoes, Ctrl+Y redoes. Delete removes. Right-click turns a held
-                piece 90°.
+                piece 90° on the surface under the cursor.
               </span>
             )}
           </div>

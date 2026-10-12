@@ -1,7 +1,7 @@
 {
   "name": "reskate-map-creator",
   "private": true,
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "ReSkate Map Creator — place kit pieces and export Studio-oriented .blend files",
   "author": "ReSkate Map Creator",
   "type": "module",
@@ -13,6 +13,7 @@
     "build": "tsc -b && vite build",
     "build:desktop": "npm run build && electron-builder --linux AppImage dir",
     "build:desktop:win": "npm run build && electron-builder --win dir --config.electronDist=node_modules/electron/dist && node scripts/copy_objects.mjs",
+    "pack:win": "node scripts/pack_windows.mjs",
     "lint": "oxlint",
     "preview": "vite preview --host 0.0.0.0 --port 47321",
     "export:blend": "node scripts/export_cli.mjs",

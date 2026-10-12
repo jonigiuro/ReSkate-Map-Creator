@@ -12,6 +12,11 @@ export type SceneSnap = {
 
 const HISTORY_LIMIT = 100
 
+/**
+ * Scene edits replace the map and the objects they touch. Snapshots keep those
+ * references, so undo restores the previous graph without copying the whole project
+ * or rebuilding meshes that did not change.
+ */
 function cloneSnap(
   scene: MapScene,
   selectedId: string | null,
@@ -19,19 +24,19 @@ function cloneSnap(
   strokeId: string | null,
 ): SceneSnap {
   return {
-    scene: structuredClone(scene),
+    scene,
     selectedId,
-    pins: structuredClone(pins),
+    pins,
     strokeId,
   }
 }
 
 function sameSnap(a: SceneSnap, b: SceneSnap) {
   return (
+    a.scene === b.scene &&
     a.selectedId === b.selectedId &&
     a.strokeId === b.strokeId &&
-    JSON.stringify(a.scene) === JSON.stringify(b.scene) &&
-    JSON.stringify(a.pins ?? []) === JSON.stringify(b.pins ?? [])
+    a.pins === b.pins
   )
 }
 
