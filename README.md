@@ -2,6 +2,8 @@ Edit: I see it's slowly getting some traction, sorry for the small library of as
 Undo/Redo are also coming.
 # ReSkate Map Creator (MVP)
 
+![ReSkate Map Creator, placing a skatepark](public/img/screenshot.JPG)
+
 An easy to use, vibe-coded, editor for people that don't want to learn blender just for mapping.
 It allows you to place some assets and export a blend file. After that you still have to rely on ReSkate to actually load and run the map.
 

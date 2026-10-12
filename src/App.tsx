@@ -30,6 +30,7 @@ import type { DrawGenerator } from './lib/kitLayout'
 import { getPiece } from './lib/library'
 import { usePreviewMaterials } from './lib/previewMaterials'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
+import { SURFACE_SOUNDS } from './lib/surfaceSounds'
 import { generatorMaterialSlots, reloadTextureSets, useTextureSets } from './lib/textureSets'
 import { useSceneHistory } from './lib/sceneHistory'
 import type {
@@ -1587,6 +1588,7 @@ export default function App() {
                   (selected.generator?.kind === 'kit' ? selected.generator.assetFile : ''),
               )}
               onMaterials={(materials) => patchObject(selected.id, { materials })}
+              onSounds={(sounds) => patchObject(selected.id, { sounds })}
             />
           )}
           {selected?.kind === 'spawn' && (
@@ -1742,6 +1744,7 @@ function duplicateObject(
       scale: [...source.scale],
       sk8: { ...source.sk8 },
       materials: source.materials ? { ...source.materials } : undefined,
+      sounds: source.sounds ? { ...source.sounds } : undefined,
       generator: source.generator
         ? source.generator.kind === 'curb'
           ? {
@@ -1930,10 +1933,12 @@ function MaterialFields({
   object,
   dedicated,
   onMaterials,
+  onSounds,
 }: {
   object: MeshObject
   dedicated: boolean
   onMaterials: (materials: Record<string, string> | undefined) => void
+  onSounds: (sounds: Record<string, string> | undefined) => void
 }) {
   const sets = useTextureSets()
   const [scanning, setScanning] = useState(false)
@@ -1960,6 +1965,13 @@ function MaterialFields({
     onMaterials(Object.keys(next).length > 0 ? next : undefined)
   }
 
+  function chooseSound(slot: string, soundId: string) {
+    const next = { ...(object.sounds ?? {}) }
+    if (soundId) next[slot] = soundId
+    else delete next[slot]
+    onSounds(Object.keys(next).length > 0 ? next : undefined)
+  }
+
   return (
     <div className="fields">
       <p className="meta">Materials</p>
@@ -1967,20 +1979,36 @@ function MaterialFields({
         <p className="hint">Materials show up when the preview has loaded.</p>
       ) : (
         slots.map((slot) => (
-          <label key={slot.id}>
-            {slot.label}
-            <select
-              value={object.materials?.[slot.id] ?? ''}
-              onChange={(event) => choose(slot.id, event.target.value)}
-            >
-              <option value="">Original</option>
-              {sets.map((set) => (
-                <option key={set.id} value={set.id}>
-                  {set.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div key={slot.id} className="material-slot">
+            <label>
+              {slot.label}
+              <select
+                value={object.materials?.[slot.id] ?? ''}
+                onChange={(event) => choose(slot.id, event.target.value)}
+              >
+                <option value="">Original</option>
+                {sets.map((set) => (
+                  <option key={set.id} value={set.id}>
+                    {set.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Sound
+              <select
+                value={object.sounds?.[slot.id] ?? ''}
+                onChange={(event) => chooseSound(slot.id, event.target.value)}
+              >
+                <option value="">Original</option>
+                {SURFACE_SOUNDS.map((sound) => (
+                  <option key={sound.id} value={sound.id}>
+                    {sound.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         ))
       )}
       <button
@@ -2001,7 +2029,9 @@ function MaterialFields({
         {scanning ? 'Scanning…' : 'Rescan textures'}
       </button>
       {scanNote ? <p className="hint">{scanNote}</p> : null}
-      <p className="hint">Original keeps the texture from the file. Another choice changes this copy only.</p>
+      <p className="hint">
+        Original keeps the texture and contact sound already on this material. Another choice changes this copy only.
+      </p>
     </div>
   )
 }

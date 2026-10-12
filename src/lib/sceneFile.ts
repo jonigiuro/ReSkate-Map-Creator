@@ -13,6 +13,7 @@ import type {
   SpawnObject,
 } from '../types/scene'
 import { GRIND_SURFACE_LABELS } from '../types/scene'
+import { isSurfaceSound } from './surfaceSounds'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
 
@@ -133,6 +134,16 @@ function parseMaterials(raw: unknown): Record<string, string> | undefined {
   return Object.keys(materials).length > 0 ? materials : undefined
 }
 
+function parseSounds(raw: unknown): Record<string, string> | undefined {
+  if (!isRecord(raw)) return undefined
+  const sounds: Record<string, string> = {}
+  for (const [slot, soundId] of Object.entries(raw)) {
+    if (!slot || typeof soundId !== 'string' || !isSurfaceSound(soundId)) continue
+    sounds[slot] = soundId
+  }
+  return Object.keys(sounds).length > 0 ? sounds : undefined
+}
+
 function parseMesh(raw: Record<string, unknown>, index: number): MeshObject {
   const where = `Object ${index + 1}`
   if (typeof raw.id !== 'string' || typeof raw.name !== 'string' || typeof raw.libraryId !== 'string') {
@@ -159,6 +170,8 @@ function parseMesh(raw: Record<string, unknown>, index: number): MeshObject {
   if (typeof raw.assetFile === 'string' && raw.assetFile) mesh.assetFile = raw.assetFile
   const materials = parseMaterials(raw.materials)
   if (materials) mesh.materials = materials
+  const sounds = parseSounds(raw.sounds)
+  if (sounds) mesh.sounds = sounds
   const generator = parseGenerator(raw.generator)
   if (generator) mesh.generator = generator
   return mesh

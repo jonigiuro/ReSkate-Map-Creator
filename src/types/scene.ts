@@ -76,6 +76,8 @@ export interface MeshObject {
   scale: [number, number, number]
   /** Slot name to a texture set id. Absent slots keep the material from the file. */
   materials?: Record<string, string>
+  /** Slot name to a game surface id, such as material_2976. Absent slots keep the sound already on the material. */
+  sounds?: Record<string, string>
   sk8: Sk8MeshProps
 }
 

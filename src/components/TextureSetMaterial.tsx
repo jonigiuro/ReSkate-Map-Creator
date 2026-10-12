@@ -131,19 +131,35 @@ export function assignSlotMaterials(root: THREE.Object3D, overrides: THREE.MeshS
     if (!mesh.isMesh) return
     const current = mesh.material
     const slots = Array.isArray(current) ? current : [current]
-    const next = slots.map((material) => byName.get(material?.name?.trim() ?? '') ?? material)
+    const next = slots.map((material) => {
+      const override = byName.get(material?.name?.trim() ?? '')
+      if (!override) return material
+      const channel = uvChannel(material)
+      for (const map of [override.map, override.normalMap, override.roughnessMap, override.metalnessMap, override.bumpMap]) {
+        if (map) map.channel = channel
+      }
+      return override
+    })
     mesh.material = Array.isArray(current) ? next : next[0]
   })
 }
 
 function loadMap(loader: THREE.TextureLoader, url: string, color: boolean) {
   return loader.loadAsync(url).then((map) => {
+    // Preview meshes are glTFs. Their images are stored with the UV origin at the top.
+    map.flipY = false
     map.wrapS = THREE.RepeatWrapping
     map.wrapT = THREE.RepeatWrapping
     map.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace
     map.needsUpdate = true
     return map
   })
+}
+
+function uvChannel(material: THREE.Material | undefined) {
+  const standard = material as THREE.MeshStandardMaterial | undefined
+  const map = standard?.map ?? standard?.normalMap ?? standard?.roughnessMap ?? standard?.emissiveMap
+  return map?.channel ?? 0
 }
 
 function disposeOverride(material: THREE.MeshStandardMaterial) {

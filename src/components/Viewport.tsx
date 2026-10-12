@@ -997,18 +997,13 @@ function frameObject(
   controls.update()
 }
 
-/** Same translucent fill and edge lines as a library piece while it is being placed. */
+/** Crease lines drawn over a selected mesh. The textured material stays in place. */
 const GHOST_EDGE_THRESHOLD = 30
 
 type HeldMesh = {
   mesh: THREE.Mesh
-  material: THREE.Material | THREE.Material[]
-  castShadow: boolean
-  receiveShadow: boolean
   edges: THREE.LineSegments
   geometry: THREE.BufferGeometry
-  before: THREE.Object3D['onBeforeRender']
-  after: THREE.Object3D['onAfterRender']
 }
 
 /** Edit pins stay solid. They are handles, not the object. */
@@ -1022,67 +1017,23 @@ function isSelectionBody(mesh: THREE.Mesh) {
   return materials.every((item) => !item || item.depthTest !== false)
 }
 
-function holdMesh(mesh: THREE.Mesh, fill: THREE.Material, lines: THREE.Material): HeldMesh {
-  const before = mesh.onBeforeRender
-  const after = mesh.onAfterRender
+function holdMesh(mesh: THREE.Mesh, lines: THREE.Material): HeldMesh {
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry, GHOST_EDGE_THRESHOLD), lines)
-  edges.userData.placementOutline = true
+  edges.userData.selectionOutline = true
   edges.raycast = () => {}
   edges.castShadow = false
   edges.receiveShadow = false
   edges.renderOrder = 2
-  const held: HeldMesh = {
-    mesh,
-    material: mesh.material,
-    castShadow: mesh.castShadow,
-    receiveShadow: mesh.receiveShadow,
-    edges,
-    geometry: mesh.geometry,
-    before,
-    after,
-  }
   mesh.add(edges)
-  mesh.material = fill
-  mesh.castShadow = false
-  mesh.receiveShadow = false
-  // A negative scale flips winding. Keep one side drawing, matching a mirrored placement ghost.
-  mesh.onBeforeRender = (renderer, scene, camera, geometry, material, group) => {
-    before.call(mesh, renderer, scene, camera, geometry, material, group)
-    if (mesh.matrixWorld.determinant() >= 0) return
-    const context = renderer.getContext() as WebGLRenderingContext
-    context.frontFace(context.CW)
-  }
-  mesh.onAfterRender = (renderer, scene, camera, geometry, material, group) => {
-    const context = renderer.getContext() as WebGLRenderingContext
-    context.frontFace(context.CCW)
-    after.call(mesh, renderer, scene, camera, geometry, material, group)
-  }
-  return held
+  return { mesh, edges, geometry: mesh.geometry }
 }
 
 function releaseHeld(held: HeldMesh) {
-  held.mesh.material = held.material
-  held.mesh.castShadow = held.castShadow
-  held.mesh.receiveShadow = held.receiveShadow
-  held.mesh.onBeforeRender = held.before
-  held.mesh.onAfterRender = held.after
   held.mesh.remove(held.edges)
   held.edges.geometry.dispose()
 }
 
-function syncHeld(held: HeldMesh, fill: THREE.Material) {
-  if (held.mesh.material !== fill) {
-    held.material = held.mesh.material
-    held.mesh.material = fill
-  }
-  if (held.mesh.castShadow) {
-    held.castShadow = true
-    held.mesh.castShadow = false
-  }
-  if (held.mesh.receiveShadow) {
-    held.receiveShadow = true
-    held.mesh.receiveShadow = false
-  }
+function syncHeld(held: HeldMesh) {
   if (held.mesh.geometry !== held.geometry) {
     held.geometry = held.mesh.geometry
     held.edges.geometry.dispose()
@@ -1092,22 +1043,12 @@ function syncHeld(held: HeldMesh, fill: THREE.Material) {
 
 function SelectionGhost({ selectedId }: { selectedId: string | null }) {
   const scene = useThree((s) => s.scene)
-  const fill = useMemo(
-    () =>
-      new THREE.MeshBasicMaterial({
-        color: '#8aa0ad',
-        transparent: true,
-        opacity: 0.45,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    [],
-  )
   const lines = useMemo(
     () =>
       new THREE.LineBasicMaterial({
         color: '#ffe2a8',
         toneMapped: false,
+        depthTest: false,
       }),
     [],
   )
@@ -1115,10 +1056,9 @@ function SelectionGhost({ selectedId }: { selectedId: string | null }) {
 
   useEffect(
     () => () => {
-      fill.dispose()
       lines.dispose()
     },
-    [fill, lines],
+    [lines],
   )
 
   const collect = (root: THREE.Object3D) => {
@@ -1131,7 +1071,7 @@ function SelectionGhost({ selectedId }: { selectedId: string | null }) {
   }
 
   const apply = (meshes: THREE.Mesh[]) => {
-    heldRef.current = meshes.map((mesh) => holdMesh(mesh, fill, lines))
+    heldRef.current = meshes.map((mesh) => holdMesh(mesh, lines))
   }
 
   const clear = () => {
@@ -1148,7 +1088,7 @@ function SelectionGhost({ selectedId }: { selectedId: string | null }) {
     })
     if (root) apply(collect(root))
     return clear
-  }, [fill, lines, scene, selectedId])
+  }, [lines, scene, selectedId])
 
   useFrame(() => {
     if (!selectedId) return
@@ -1165,7 +1105,7 @@ function SelectionGhost({ selectedId }: { selectedId: string | null }) {
       apply(meshes)
       return
     }
-    for (const item of held) syncHeld(item, fill)
+    for (const item of held) syncHeld(item)
   })
 
   return null

@@ -462,6 +462,17 @@ button.lib small {
   width: 100%;
 }
 
+.material-slot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem 0.65rem;
+  align-items: end;
+}
+
+.material-slot label {
+  min-width: 0;
+}
+
 .transform-box {
   display: grid;
   grid-template-columns: auto repeat(3, minmax(0, 1fr));

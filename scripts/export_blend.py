@@ -39,6 +39,15 @@ GRIND_SURFACES = {
 }
 
 
+def _load_surface_sounds():
+    path = Path(__file__).resolve().parent / "surface_sounds.json"
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    return {str(row["id"]): int(row["packed"]) for row in rows}
+
+
+SURFACE_SOUND_PACKED = _load_surface_sounds()
+
+
 # The game collides badly with a map sitting on the world origin. The editor
 # keeps showing ground level as 0. Export lifts every world position by this much.
 EXPORT_UP_M = 200.0
@@ -683,17 +692,50 @@ METAL_RAIL_ID = "material_2976"
 
 def stamp_metal_rail(mat):
     """Surface sound. 2976 is Metal Rail, the id the game already uses for metal rails."""
+    return stamp_surface_sound(mat, METAL_RAIL_ID)
+
+
+def stamp_surface_sound(mat, identifier):
+    """Contact sound the game reads from the material, the addon's Surface dropdown."""
     if mat is None:
         return mat
-    mat["sk8_collision_material_packed"] = METAL_RAIL_PACKED
-    mat["collision_material_packed"] = METAL_RAIL_PACKED
+    packed = SURFACE_SOUND_PACKED.get(identifier)
+    if packed is None:
+        print(f"Unknown surface sound {identifier}")
+        return mat
+    mat["sk8_collision_material_packed"] = packed
+    mat["collision_material_packed"] = packed
+    mat["reskate_sound"] = identifier
     settings = getattr(mat, "sk8_material", None)
     if settings is not None and hasattr(settings, "collision_material"):
         try:
-            settings.collision_material = METAL_RAIL_ID
+            settings.collision_material = identifier
         except (TypeError, ValueError):
             pass
     return mat
+
+
+def with_surface_sound(mat, identifier):
+    """A copy that carries this sound, leaving the shared material alone."""
+    if mat is None or not identifier:
+        return mat
+    packed = SURFACE_SOUND_PACKED.get(identifier)
+    if packed is None:
+        print(f"Unknown surface sound {identifier}")
+        return mat
+    current = mat.get("sk8_collision_material_packed")
+    if current is not None and int(current) == packed:
+        return mat
+    digest = hashlib.sha1(f"{mat.name}|{identifier}".encode("utf-8")).hexdigest()[:12]
+    name = f"sound_{digest}"
+    cached = bpy.data.materials.get(name)
+    if cached is not None and int(cached.get("sk8_collision_material_packed") or -1) == packed:
+        return cached
+    copy = mat.copy()
+    copy.name = name
+    stamp_surface_sound(copy, identifier)
+    copy["reskate_mat_key"] = f"sound|{identifier}|{material_share_token(copy)}"
+    return copy
 
 
 def _edge_distances(sections, side):
@@ -2014,6 +2056,17 @@ def entry_overrides(entry):
     }
 
 
+def entry_sounds(entry):
+    raw = entry.get("sounds") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw.items()
+        if isinstance(value, str) and value in SURFACE_SOUND_PACKED
+    }
+
+
 def spec_file(project_root, spec, key):
     raw = spec.get(key)
     if not isinstance(raw, str) or not raw:
@@ -2027,14 +2080,105 @@ def spec_file(project_root, spec, key):
     return path
 
 
+def _vector_from_socket(socket):
+    """Remember how an image was placed, so a new texture uses that same UV."""
+    if socket is None or not getattr(socket, "is_linked", False):
+        return ("uv",)
+    node = socket.links[0].from_node
+    output = socket.links[0].from_socket.name
+    if node.type == "REROUTE":
+        return _vector_from_socket(node.inputs[0] if node.inputs else None)
+    if node.type == "TEX_COORD":
+        return ("texcoord", output)
+    if node.type == "UVMAP":
+        return ("uvmap", node.uv_map or "")
+    if node.type == "MAPPING":
+        vector = node.inputs.get("Vector")
+        upstream = _vector_from_socket(vector)
+
+        def xyz(name):
+            sock = node.inputs.get(name)
+            if sock is None:
+                return (0.0, 0.0, 0.0)
+            return tuple(float(channel) for channel in sock.default_value)
+
+        return ("mapping", upstream, xyz("Location"), xyz("Rotation"), xyz("Scale"))
+    return ("uv",)
+
+
+def capture_image_vector(mat):
+    """The coordinates the current color map uses. Active UV when nothing is wired."""
+    tree = mat.node_tree if mat else None
+    if tree is None:
+        return ("uv",)
+    output = next((node for node in tree.nodes if node.type == "OUTPUT_MATERIAL"), None)
+    shader = None
+    if output is not None:
+        surface = output.inputs.get("Surface")
+        if surface is not None and surface.is_linked:
+            shader = surface.links[0].from_node
+    image_node = None
+    if shader is not None and shader.type in {"BSDF_PRINCIPLED", "BSDF_DIFFUSE"}:
+        color = shader.inputs.get("Base Color") or shader.inputs.get("Color")
+        if color is not None and color.is_linked and color.links[0].from_node.type == "TEX_IMAGE":
+            image_node = color.links[0].from_node
+    if image_node is None:
+        image_node = next((node for node in tree.nodes if node.type == "TEX_IMAGE"), None)
+    if image_node is None:
+        return ("uv",)
+    return _vector_from_socket(image_node.inputs.get("Vector"))
+
+
+def vector_socket(nodes, links, source, made, height):
+    key = repr(source)
+    cached = made.get(key)
+    if cached is not None:
+        return cached
+    kind = source[0]
+    if kind == "texcoord":
+        node = nodes.new("ShaderNodeTexCoord")
+        node.location = (-1100, height)
+        socket = node.outputs.get(source[1]) or node.outputs.get("UV")
+    elif kind == "uvmap":
+        node = nodes.new("ShaderNodeUVMap")
+        node.location = (-1100, height)
+        node.uv_map = source[1]
+        socket = node.outputs.get("UV")
+    elif kind == "mapping":
+        node = nodes.new("ShaderNodeMapping")
+        node.location = (-860, height)
+        for name, value in (("Location", source[2]), ("Rotation", source[3]), ("Scale", source[4])):
+            sock = node.inputs.get(name)
+            if sock is not None:
+                sock.default_value = value
+        upstream = vector_socket(nodes, links, source[1], made, height)
+        if upstream is not None:
+            links.new(upstream, node.inputs["Vector"])
+        socket = node.outputs.get("Vector")
+    else:
+        node = nodes.new("ShaderNodeTexCoord")
+        node.location = (-1100, height)
+        socket = node.outputs.get("UV")
+    made[key] = socket
+    return socket
+
+
+def connect_image_vector(nodes, links, image_node, source, made):
+    socket = vector_socket(nodes, links, source, made, image_node.location[1])
+    vector = image_node.inputs.get("Vector")
+    if socket is not None and vector is not None:
+        links.new(socket, vector)
+
+
 def retarget_material(mat, spec, project_root):
-    """Replace the shader images. Collision and sound props on the material stay."""
+    """Replace the shader images. The mesh UV choice on the old color map stays."""
     if material_invisible(mat):
         return False
     albedo = spec_file(project_root, spec, "albedo")
     if albedo is None:
         print(f"Texture set {spec.get('id', '')} is missing its color map")
         return False
+    vector = capture_image_vector(mat)
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
@@ -2044,18 +2188,23 @@ def retarget_material(mat, spec, project_root):
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
     bsdf.location = (0, 0)
     links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+    made = {}
+    images = []
     base = _image_texture(nodes, albedo, "sRGB", (-640, 280))
     links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    images.append(base)
     rough = spec_file(project_root, spec, "roughness")
     if rough is not None:
         tex = _image_texture(nodes, rough, "Non-Color", (-640, 40))
         links.new(tex.outputs["Color"], bsdf.inputs["Roughness"])
+        images.append(tex)
     elif "Roughness" in bsdf.inputs:
         bsdf.inputs["Roughness"].default_value = 0.9
     metal = spec_file(project_root, spec, "metallic")
     if metal is not None and "Metallic" in bsdf.inputs:
         tex = _image_texture(nodes, metal, "Non-Color", (-640, -180))
         links.new(tex.outputs["Color"], bsdf.inputs["Metallic"])
+        images.append(tex)
     elif "Metallic" in bsdf.inputs:
         bsdf.inputs["Metallic"].default_value = 0.0
     normal_path = spec_file(project_root, spec, "normal")
@@ -2063,6 +2212,7 @@ def retarget_material(mat, spec, project_root):
     normal_out = None
     if normal_path is not None:
         normal_tex = _image_texture(nodes, normal_path, "Non-Color", (-640, -400))
+        images.append(normal_tex)
         normal_map = nodes.new("ShaderNodeNormalMap")
         normal_map.location = (-280, -400)
         normal_map.inputs["Strength"].default_value = 1.0
@@ -2070,6 +2220,7 @@ def retarget_material(mat, spec, project_root):
         normal_out = normal_map.outputs["Normal"]
     if height_path is not None:
         height_tex = _image_texture(nodes, height_path, "Non-Color", (-640, -620))
+        images.append(height_tex)
         bump = nodes.new("ShaderNodeBump")
         bump.location = (-80, -240)
         bump.inputs["Strength"].default_value = 0.2
@@ -2079,6 +2230,8 @@ def retarget_material(mat, spec, project_root):
         links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
     elif normal_out is not None:
         links.new(normal_out, bsdf.inputs["Normal"])
+    for image_node in images:
+        connect_image_vector(nodes, links, image_node, vector, made)
     try:
         mat.use_backface_culling = False
     except Exception:
@@ -2140,6 +2293,34 @@ def apply_material_overrides(objects, overrides, texture_sets, project_root):
         print(f"Texture override missed {', '.join(missed)}. Material slots: {slots}")
 
 
+def apply_surface_sounds(objects, sounds):
+    """Stamp a contact sound on each named slot before materials are shared."""
+    if not sounds:
+        return
+    claimed = {}
+    for obj in objects:
+        if getattr(obj, "type", None) != "MESH" or obj.data is None:
+            continue
+        for index, mat in enumerate(list(obj.data.materials)):
+            if mat is None:
+                continue
+            key = override_key(mat.name, sounds)
+            if not key:
+                continue
+            identifier = sounds[key]
+            previous = claimed.get(mat.as_pointer())
+            if previous is None:
+                stamp_surface_sound(mat, identifier)
+                claimed[mat.as_pointer()] = identifier
+                print(f"Surface sound {identifier} on {mat.name}")
+                continue
+            if previous == identifier:
+                continue
+            replacement = with_surface_sound(mat, identifier)
+            obj.data.materials[index] = replacement
+            print(f"Surface sound {identifier} on {replacement.name}")
+
+
 def texset_name(set_id):
     digest = hashlib.sha1(set_id.encode("utf-8")).hexdigest()[:12]
     return f"texset_{digest}"
@@ -2166,6 +2347,13 @@ def overridden_material(project_root, texture_sets, set_id, fallback):
     return mat
 
 
+def slot_material(project_root, texture_sets, overrides, sounds, slot, fallback):
+    return with_surface_sound(
+        overridden_material(project_root, texture_sets, overrides.get(slot), fallback),
+        sounds.get(slot),
+    )
+
+
 def append_authored_asset(
     name,
     blend_path,
@@ -2176,6 +2364,7 @@ def append_authored_asset(
     project_root,
     overrides=None,
     texture_sets=None,
+    sounds=None,
 ):
     """
     Copy an authored .blend, .fbx, or .obj into the map.
@@ -2214,6 +2403,7 @@ def append_authored_asset(
     fresh = [obj for obj in bpy.data.objects if obj not in before_objects]
     apply_plant_leaves(fresh, blend_path, project_root)
     apply_material_overrides(fresh, overrides or {}, texture_sets or {}, project_root)
+    apply_surface_sounds(fresh, sounds or {})
     tag_imported_materials(before_materials, blend_path.as_posix())
 
     imported = [obj for obj in bpy.data.objects if obj not in before_objects]
@@ -2507,6 +2697,7 @@ def export_kit(
     project_root,
     overrides=None,
     texture_sets=None,
+    sounds=None,
 ):
     """
     Copy the _start, _middle, and _end meshes along the drawn path.
@@ -2539,6 +2730,7 @@ def export_kit(
             scene_coll.objects.link(obj)
     bpy.context.view_layer.update()
     apply_material_overrides(imported, overrides or {}, texture_sets or {}, project_root)
+    apply_surface_sounds(imported, sounds or {})
     tag_imported_materials(before_materials, blend_path.as_posix())
 
     roles = {role: [] for role in ("start", "middle", "end")}
@@ -2699,6 +2891,7 @@ def build(scene):
 
         if kind == "mesh":
             overrides = entry_overrides(entry)
+            sounds = entry_sounds(entry)
             asset = entry.get("assetFile")
             if asset:
                 blend_path = Path(asset)
@@ -2714,6 +2907,7 @@ def build(scene):
                     project_root,
                     overrides,
                     texture_sets,
+                    sounds,
                 )
                 continue
 
@@ -2732,10 +2926,12 @@ def build(scene):
                     height,
                     (0.78, 0.76, 0.72),
                     gen.get("tops"),
-                    overridden_material(
+                    slot_material(
                         project_root,
                         texture_sets,
-                        overrides.get("concrete"),
+                        overrides,
+                        sounds,
+                        "concrete",
                         lambda: concrete_material(project_root),
                     ),
                 )
@@ -2763,10 +2959,12 @@ def build(scene):
                     height,
                     gen.get("tops"),
                     project_root,
-                    overridden_material(
+                    slot_material(
                         project_root,
                         texture_sets,
-                        overrides.get("galvanized"),
+                        overrides,
+                        sounds,
+                        "galvanized",
                         lambda: rail_material(project_root),
                     ),
                 )
@@ -2802,10 +3000,12 @@ def build(scene):
                     points,
                     float(gen.get("radius") or 0.05),
                     (0.72, 0.74, 0.76),
-                    overridden_material(
+                    slot_material(
                         project_root,
                         texture_sets,
-                        overrides.get("galvanized"),
+                        overrides,
+                        sounds,
+                        "galvanized",
                         lambda: rail_material(project_root),
                     ),
                     gen.get("tops"),
@@ -2842,10 +3042,12 @@ def build(scene):
                     corners,
                     float(gen.get("height") or 0.5),
                     (0.62, 0.6, 0.58),
-                    overridden_material(
+                    slot_material(
                         project_root,
                         texture_sets,
-                        overrides.get("striped_concrete"),
+                        overrides,
+                        sounds,
+                        "striped_concrete",
                         lambda: striped_concrete_material(project_root),
                     ),
                 )
@@ -2884,22 +3086,28 @@ def build(scene):
                     gen.get("sideBases"),
                     gen.get("sideTops"),
                     (
-                        overridden_material(
+                        slot_material(
                             project_root,
                             texture_sets,
-                            overrides.get("brick"),
+                            overrides,
+                            sounds,
+                            "brick",
                             lambda: brick_material(project_root),
                         ),
-                        overridden_material(
+                        slot_material(
                             project_root,
                             texture_sets,
-                            overrides.get("granite"),
+                            overrides,
+                            sounds,
+                            "granite",
                             lambda: granite_material(project_root),
                         ),
-                        overridden_material(
+                        slot_material(
                             project_root,
                             texture_sets,
-                            overrides.get("grass"),
+                            overrides,
+                            sounds,
+                            "grass",
                             lambda: grass_material(project_root),
                         ),
                     ),
@@ -2939,6 +3147,7 @@ def build(scene):
                     project_root,
                     overrides,
                     texture_sets,
+                    sounds,
                 )
                 continue
 
