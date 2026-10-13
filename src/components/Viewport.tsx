@@ -13,6 +13,7 @@ import type {
   MeshObject,
   SceneObject,
   SpawnObject,
+  TravelPointObject,
 } from '../types/scene'
 import { createBlueprintMaterial } from '../lib/blueprintMaterial'
 import {
@@ -46,6 +47,7 @@ import {
   platformFromWorld,
   type Vec3,
 } from '../lib/generators'
+import { BUS_STOP_PIECE, isInteractivePiece, travelGuide } from '../lib/travelPoints'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
 import { TextureSetMaterial } from './TextureSetMaterial'
@@ -1002,6 +1004,115 @@ const SpawnItemView = memo(SpawnItem, (prev, next) =>
   prev.snap.scale === next.snap.scale,
 )
 
+function TravelPointFigure({
+  shelter,
+  selected,
+  ghost,
+}: {
+  shelter: boolean
+  selected?: boolean
+  ghost?: boolean
+}) {
+  const guide = travelGuide(shelter)
+  const geometry = useMemo(() => {
+    const next = new THREE.BufferGeometry()
+    next.setAttribute('position', new THREE.BufferAttribute(guide.positions.slice(), 3))
+    return next
+  }, [guide])
+  useEffect(() => () => geometry.dispose(), [geometry])
+  const color = shelter ? (selected ? '#ffe08a' : '#e6b325') : selected ? '#d7f6ff' : '#7ec8e3'
+  return (
+    <group>
+      <lineSegments geometry={geometry} raycast={() => {}}>
+        <lineBasicMaterial
+          color={color}
+          toneMapped={false}
+          transparent={!!ghost}
+          opacity={ghost ? 0.55 : 1}
+        />
+      </lineSegments>
+      {!ghost && (
+        <mesh position={guide.pick.center} scale={guide.pick.size}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      )}
+    </group>
+  )
+}
+
+function TravelPointItem({
+  obj,
+  selected,
+  tool,
+  transformMode,
+  snap,
+  onSelect,
+  onCommit,
+  onGestureStart,
+  onGestureEnd,
+}: {
+  obj: TravelPointObject
+  selected: boolean
+  tool: EditorTool
+  transformMode: TransformMode
+  snap: SnapSettings
+  onSelect: () => void
+  onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
+  onGestureStart: () => void
+  onGestureEnd: () => void
+}) {
+  const ref = useRef<THREE.Group>(null)
+  const dragging = useRef(false)
+
+  useLayoutEffect(() => {
+    const g = ref.current
+    if (!g || dragging.current) return
+    g.position.set(...obj.position)
+    g.rotation.set(...obj.rotation)
+    g.scale.set(1, 1, 1)
+  }, [obj.position, obj.rotation])
+
+  const mode = transformMode === 'scale' ? 'translate' : transformMode
+
+  return (
+    <>
+      <group
+        ref={ref}
+        userData={{ focusId: obj.id }}
+        onPointerDown={(e) => {
+          e.stopPropagation()
+          if (e.button !== 0 || gizmoOwnsPointer.current) return
+          onSelect()
+        }}
+      >
+        <TravelPointFigure shelter={obj.shelter} selected={selected} />
+      </group>
+      {selected && tool === 'select' && (
+        <TransformGizmo
+          target={ref}
+          dragging={dragging}
+          mode={mode}
+          snap={snap}
+          onCommit={(pos, rot) => onCommit(pos, rot)}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+    </>
+  )
+}
+
+const TravelPointItemView = memo(TravelPointItem, (prev, next) =>
+  prev.obj === next.obj &&
+  prev.selected === next.selected &&
+  prev.tool === next.tool &&
+  prev.transformMode === next.transformMode &&
+  prev.snap.move === next.snap.move &&
+  prev.snap.rotate === next.snap.rotate &&
+  prev.snap.scale === next.snap.scale,
+)
+
 function PiecePlacementLayer({
   placePieceId,
   placeYaw,
@@ -1079,10 +1190,11 @@ function PiecePlacementLayer({
       event.preventDefault()
       event.stopPropagation()
       hit.point.y = surfaceHeight(hit.point, hit.normal)
+      const upright = isInteractivePiece(pieceRef.current)
       onPlaceRef.current(
         pieceRef.current,
         hit.point,
-        orientationOnSurface(hit.normal, yawRef.current),
+        upright ? [0, yawRef.current, 0] : orientationOnSurface(hit.normal, yawRef.current),
       )
     }
     const up = (event: PointerEvent) => {
@@ -2019,10 +2131,13 @@ function SceneContents(props: Props) {
     if (!placePieceId) setPreviewHit(null)
   }, [placePieceId])
 
+  const placingInteractive = isInteractivePiece(placePieceId)
   const previewY = previewHit ? surfaceHeight(previewHit.point, previewHit.normal) : 0
-  const previewRotation = previewHit
-    ? orientationOnSurface(previewHit.normal, placeYaw)
-    : ([0, placeYaw, 0] as [number, number, number])
+  const previewRotation = placingInteractive
+    ? ([0, placeYaw, 0] as [number, number, number])
+    : previewHit
+      ? orientationOnSurface(previewHit.normal, placeYaw)
+      : ([0, placeYaw, 0] as [number, number, number])
 
   return (
     <>
@@ -2075,6 +2190,24 @@ function SceneContents(props: Props) {
             />
           )
         }
+        if (obj.kind === 'travel_point') {
+          return (
+            <TravelPointItemView
+              key={obj.id}
+              obj={obj}
+              selected={obj.id === selectedId}
+              tool={tool}
+              transformMode={transformMode}
+              snap={snap}
+              onSelect={() => onSelectRef.current(obj.id)}
+              onCommit={(pos, rot) => {
+                onPatchRef.current(obj.id, { position: pos, rotation: rot })
+              }}
+              onGestureStart={() => onStartRef.current()}
+              onGestureEnd={() => onEndRef.current()}
+            />
+          )
+        }
         if (obj.kind !== 'spawn') return null
         return (
           <SpawnItemView
@@ -2094,7 +2227,17 @@ function SceneContents(props: Props) {
         )
       })}
 
-      {placePieceId && previewHit && (
+      {placePieceId && previewHit && placingInteractive && (
+        <group
+          position={[previewHit.point.x, previewY, previewHit.point.z]}
+          rotation={previewRotation}
+          userData={{ placementGhost: true }}
+        >
+          <TravelPointFigure shelter={placePieceId === BUS_STOP_PIECE} ghost />
+        </group>
+      )}
+
+      {placePieceId && previewHit && !placingInteractive && (
         <group
           position={[previewHit.point.x, previewY, previewHit.point.z]}
           rotation={previewRotation}

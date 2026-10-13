@@ -120,7 +120,23 @@ export interface SpawnObject {
   rotation: [number, number, number]
 }
 
-export type SceneObject = MeshObject | GrindObject | SpawnObject
+/**
+ * Bus stop or bare fast-travel point. Export is an Empty named TravelPoint.
+ * Local −Z is the facing that becomes the empty's +Y in Blender.
+ */
+export interface TravelPointObject {
+  id: string
+  kind: 'travel_point'
+  /** Pause-map label. The game keeps about 35 characters. */
+  name: string
+  /** True spawns the bus shelter. False is a bare fast-travel point. */
+  shelter: boolean
+  position: [number, number, number]
+  /** Euler XYZ radians (Three.js Y-up). Local −Z becomes the empty's +Y in Blender. */
+  rotation: [number, number, number]
+}
+
+export type SceneObject = MeshObject | GrindObject | SpawnObject | TravelPointObject
 
 export interface MapScene {
   version: 1

@@ -34,10 +34,19 @@ import { parseSceneFile, sceneFileName } from './lib/sceneFile'
 import { SURFACE_SOUNDS } from './lib/surfaceSounds'
 import { generatorMaterialSlots, reloadTextureSets, useTextureSets } from './lib/textureSets'
 import { useSceneHistory } from './lib/sceneHistory'
+import {
+  BUS_STOP_PIECE,
+  FAST_TRAVEL_PIECE,
+  STOP_NAME_MAX,
+  clampStopName,
+  defaultStopName,
+  isInteractivePiece,
+} from './lib/travelPoints'
 import type {
   MapScene,
   MeshObject,
   SceneObject,
+  TravelPointObject,
 } from './types/scene'
 import './App.css'
 
@@ -113,7 +122,8 @@ export default function App() {
         if (cancel) return
         setCatalog(next)
         setCategoryPath((path) => {
-          if (path.length === 0 || path[0] === 'generators') return path
+          // Generators and Interactive are built in, not folders in the asset catalog.
+          if (path.length === 0 || path[0] === 'generators' || path[0] === 'interactive') return path
           const intact = path.every((id, index) => {
             const category = next.categories.find((item) => item.id === id)
             if (!category) return false
@@ -270,6 +280,10 @@ export default function App() {
   function mirrorHorizontal() {
     if (exportingRef.current || exportDialogRef.current) return
     if (activePiece) {
+      if (isInteractivePiece(activePiece)) {
+        setStatus('Turn it with right-click. The arrow is the facing.')
+        return
+      }
       const next = placeScaleX < 0 ? 1 : -1
       setPlaceScaleX(next)
       setStatus(next < 0 ? 'Mirrored left to right' : 'Mirror off')
@@ -277,6 +291,10 @@ export default function App() {
       return
     }
     const obj = selectedRef.current
+    if (obj?.kind === 'travel_point') {
+      setStatus('Turn it with the rotate gizmo. The arrow is the facing.')
+      return
+    }
     if (!obj || obj.kind !== 'mesh') {
       setStatus('Mirror a mesh, or hold a piece from the library.')
       return
@@ -410,6 +428,25 @@ export default function App() {
     point: THREE.Vector3,
     rotation: [number, number, number],
   ) {
+    if (isInteractivePiece(libraryId)) {
+      const shelter = libraryId === BUS_STOP_PIECE
+      const before = history.checkpoint()
+      const prev = history.sceneRef.current
+      const count = prev.objects.filter((obj) => obj.kind === 'travel_point').length
+      const obj: TravelPointObject = {
+        id: uid('travel'),
+        kind: 'travel_point',
+        name: defaultStopName(shelter, count),
+        shelter,
+        position: [round4(point.x), round4(point.y), round4(point.z)],
+        rotation: [0, round4(rotation[1]), 0],
+      }
+      applyScene({ ...prev, objects: [...prev.objects, obj] })
+      history.remember(before)
+      setStatus(`Placed ${obj.name}`)
+      setError(null)
+      return
+    }
     const authored = catalog.pieces.find((piece) => piece.id === libraryId)
     const builtin = getPiece(libraryId)
     const label = authored?.label ?? builtin?.label ?? libraryId
@@ -1075,8 +1112,11 @@ export default function App() {
 
   function crumbLabel(id: string) {
     if (id === 'generators') return 'Generators'
+    if (id === 'interactive') return 'Interactive'
     return catalog.categories.find((category) => category.id === id)?.label ?? id
   }
+
+  const browsingCatalog = categoryPath[0] !== 'generators' && categoryPath[0] !== 'interactive'
 
   return (
     <div className="app" aria-busy={exporting}>
@@ -1188,9 +1228,11 @@ export default function App() {
           <p className="hint">
             {categoryPath[0] === 'generators'
               ? 'Click Curbs or Rails to draw a run, Platforms for a flat pad, Banks for a pad with eight free corners, or Planters for a brick box with a granite rim. Escape leaves the tool.'
-              : categoryPath.length === 0
-                ? 'Open a category, then click a piece. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
-                : 'Click a piece to pick it up. It follows the cursor and stands on the surface under it. Right-click turns it 90° on that surface. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid.'}
+              : categoryPath[0] === 'interactive'
+                ? 'Click a bus stop or a fast-travel point, then click the map. It stands on the ground. Right-click turns it 90°. Escape leaves the tool.'
+                : categoryPath.length === 0
+                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
+                  : 'Click a piece to pick it up. It follows the cursor and stands on the surface under it. Right-click turns it 90° on that surface. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid.'}
           </p>
           {categoryPath.length > 0 && (
             <>
@@ -1229,6 +1271,17 @@ export default function App() {
                     <small>
                       {`${(catalog.kits ?? []).length + 5} generators`}
                     </small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath.length === 0 && (
+              <li>
+                <button type="button" className="lib" onClick={() => setCategoryPath(['interactive'])}>
+                  <span className="swatch folder" />
+                  <span>
+                    <strong>Interactive</strong>
+                    <small>2 points</small>
                   </span>
                 </button>
               </li>
@@ -1333,6 +1386,30 @@ export default function App() {
                   </li>
                 )
               })}
+            {categoryPath[0] === 'interactive' && (
+              <li>
+                <PieceButton
+                  id={BUS_STOP_PIECE}
+                  label="Bus Stop"
+                  detail={activePiece === BUS_STOP_PIECE ? 'Click the map to place' : 'Click to place'}
+                  color="#e6b325"
+                  active={activePiece === BUS_STOP_PIECE}
+                  onToggle={() => togglePiece(BUS_STOP_PIECE)}
+                />
+              </li>
+            )}
+            {categoryPath[0] === 'interactive' && (
+              <li>
+                <PieceButton
+                  id={FAST_TRAVEL_PIECE}
+                  label="Fast Travel Point"
+                  detail={activePiece === FAST_TRAVEL_PIECE ? 'Click the map to place' : 'Click to place'}
+                  color="#7ec8e3"
+                  active={activePiece === FAST_TRAVEL_PIECE}
+                  onToggle={() => togglePiece(FAST_TRAVEL_PIECE)}
+                />
+              </li>
+            )}
             {categoryPath[0] !== 'generators' && categoryPath.length === 0 &&
               catalog.categories
                 .filter((category) => category.parentId === null)
@@ -1372,7 +1449,7 @@ export default function App() {
                     />
                   </li>
                 ))}
-            {categoryPath[0] !== 'generators' && folderCategories.map((category) => {
+            {browsingCatalog && folderCategories.map((category) => {
               const count = subtreePieceCount(category.id)
               return (
                 <li key={category.id}>
@@ -1392,7 +1469,7 @@ export default function App() {
                 </li>
               )
             })}
-            {categoryPath[0] !== 'generators' && folderPieces.map((piece) => (
+            {browsingCatalog && folderPieces.map((piece) => (
               <li key={piece.id}>
                 <PieceButton
                   id={piece.id}
@@ -1478,6 +1555,12 @@ export default function App() {
                 setStatus('Drag a sphere sideways to move that corner. Up and down sets that corner only.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'kit') {
                 setStatus('Drag the gizmo to move the whole run.')
+              } else if (picked?.kind === 'travel_point') {
+                setStatus(
+                  picked.shelter
+                    ? "The arrow is the shelter's open front. Players arrive at the cross."
+                    : 'The arrow is the way players face on arrival. Players arrive at the cross.',
+                )
               } else if (id) {
                 setStatus(null)
               }
@@ -1518,6 +1601,14 @@ export default function App() {
               <span>
                 Click the map to drop a pin. The next clicks extend {activeGenerator.label} and turn the corner. Escape leaves the tool.
               </span>
+            ) : activePiece === BUS_STOP_PIECE ? (
+              <span>
+                Click the map to place a bus stop on the ground. Right-click turns it 90°. The arrow is the shelter&apos;s open front. Players arrive at the cross. Escape leaves the tool.
+              </span>
+            ) : activePiece === FAST_TRAVEL_PIECE ? (
+              <span>
+                Click the map to place a fast-travel point on the ground. Right-click turns it 90°. The arrow is the way players face on arrival. Players arrive at the cross. Escape leaves the tool.
+              </span>
             ) : tool === 'select' && (
               <span>
                 Click to select. Right-drag orbits, middle-drag pans. C frames the selection. M
@@ -1534,7 +1625,7 @@ export default function App() {
           {(!selected || selected.kind === 'grind') && (
             <p className="hint">Select an object to edit its position, rotation, and scale.</p>
           )}
-          {(selected?.kind === 'mesh' || selected?.kind === 'spawn') && (
+          {(selected?.kind === 'mesh' || selected?.kind === 'spawn' || selected?.kind === 'travel_point') && (
             <TransformBox
               key={selected.id}
               position={selected.position}
@@ -1680,6 +1771,45 @@ export default function App() {
               <p className="hint">
                 Exported as empty named <code>spawn</code> in <code>Markers</code>. The figure is
                 1.7 m tall. The arrow shows where the skater heads.
+              </p>
+            </div>
+          )}
+          {selected?.kind === 'travel_point' && (
+            <div className="fields">
+              <p className={selected.shelter ? 'badge bus' : 'badge travel'}>
+                {selected.shelter ? 'BUS STOP' : 'FAST TRAVEL'}
+              </p>
+              <label>
+                Stop name
+                <input
+                  maxLength={STOP_NAME_MAX}
+                  value={selected.name}
+                  onChange={(event) =>
+                    patchObject(selected.id, { name: clampStopName(event.target.value) })
+                  }
+                />
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={selected.shelter}
+                  onChange={(event) => {
+                    const shelter = event.target.checked
+                    patchObject(selected.id, { shelter })
+                    setStatus(
+                      shelter
+                        ? "The arrow is the shelter's open front. Players arrive at the cross."
+                        : 'The arrow is the way players face on arrival. Players arrive at the cross.',
+                    )
+                  }}
+                />
+                Bus shelter
+              </label>
+              <p className="hint">
+                Put it on the ground. {selected.shelter
+                  ? "The arrow is the shelter's open front."
+                  : 'The arrow is the way players face on arrival.'}{' '}
+                Players arrive at the cross. Names are limited to about 35 characters. Export writes an empty named TravelPoint.
               </p>
             </div>
           )}
@@ -1882,6 +2012,15 @@ function duplicateObject(
       id,
       name: uniqueName(source.name, objects),
       points: source.points.map((point) => [point[0] + shift, point[1], point[2]]),
+    }
+  }
+  if (source.kind === 'travel_point') {
+    return {
+      ...source,
+      id,
+      name: uniqueName(source.name, objects).slice(0, STOP_NAME_MAX),
+      position: [source.position[0] + shift, source.position[1], source.position[2]],
+      rotation: [...source.rotation],
     }
   }
   return { ...source, id }

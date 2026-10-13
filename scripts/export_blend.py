@@ -2222,6 +2222,31 @@ def make_spawn(name, position, rotation):
     return obj
 
 
+def make_travel_point(name, position, rotation, shelter):
+    """Empty the game reads as a bus stop or a bare fast-travel point.
+
+    The object name has to start with TravelPoint. The pause-map label is
+    bus_stop_name, and bus_stop_shelter spawns cmn_prp_busstop_02 facing +Y.
+    Editor local -Z is that +Y after three_to_blender_euler. The wire guide
+    stays in the editor; opening the blend in Studio can rebuild it.
+    """
+    shelter = bool(shelter)
+    bpy.ops.object.empty_add(type="PLAIN_AXES", location=(0, 0, 0))
+    obj = bpy.context.active_object
+    obj.name = "TravelPoint"
+    obj.empty_display_size = 0.5
+    obj.show_in_front = True
+    obj.location = three_to_blender_pos(position)
+    obj.rotation_euler = three_to_blender_euler(rotation)
+    label = str(name or "").strip()
+    if not label:
+        label = "Bus Stop" if shelter else "Travel Point"
+    obj["bus_stop_name"] = label[:35]
+    obj["bus_stop_shelter"] = shelter
+    obj["reskate_map_creator"] = "travel_point"
+    return obj
+
+
 KEEP_TYPES = {
     "MESH",
     "CURVE",
@@ -3253,6 +3278,16 @@ def build(scene):
     for entry in objects:
         kind = entry.get("kind")
         name = entry.get("name") or kind or "Object"
+
+        if kind == "travel_point":
+            obj = make_travel_point(
+                name,
+                entry.get("position") or [0, 0, 0],
+                entry.get("rotation") or [0, 0, 0],
+                entry.get("shelter"),
+            )
+            link_only(obj, colls["Markers"])
+            continue
 
         if kind == "mesh":
             overrides = entry_overrides(entry)

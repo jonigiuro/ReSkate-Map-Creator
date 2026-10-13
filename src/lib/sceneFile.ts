@@ -12,9 +12,11 @@ import type {
   MeshObject,
   SceneObject,
   SpawnObject,
+  TravelPointObject,
 } from '../types/scene'
 import { GRIND_SURFACE_LABELS } from '../types/scene'
 import { isSurfaceSound } from './surfaceSounds'
+import { STOP_NAME_MAX } from './travelPoints'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
 
@@ -224,11 +226,31 @@ function parseSpawn(raw: Record<string, unknown>, index: number): SpawnObject {
   }
 }
 
+function parseTravelPoint(raw: Record<string, unknown>, index: number): TravelPointObject {
+  const where = `Object ${index + 1}`
+  if (typeof raw.id !== 'string') throw new Error(`${where} is missing an id.`)
+  const shelter = typeof raw.shelter === 'boolean' ? raw.shelter : true
+  const fallback = shelter ? 'Bus Stop' : 'Travel Point'
+  const name =
+    typeof raw.name === 'string' && raw.name.trim()
+      ? raw.name.trim().slice(0, STOP_NAME_MAX)
+      : fallback
+  return {
+    id: raw.id,
+    kind: 'travel_point',
+    name,
+    shelter,
+    position: vec3(raw.position, `${where} position`),
+    rotation: vec3(raw.rotation, `${where} rotation`),
+  }
+}
+
 function parseObject(value: unknown, index: number): SceneObject {
   if (!isRecord(value)) throw new Error(`Object ${index + 1} is not an object.`)
   if (value.kind === 'mesh') return parseMesh(value, index)
   if (value.kind === 'grind') return parseGrind(value, index)
   if (value.kind === 'spawn') return parseSpawn(value, index)
+  if (value.kind === 'travel_point') return parseTravelPoint(value, index)
   throw new Error(`Object ${index + 1} has an unknown kind.`)
 }
 

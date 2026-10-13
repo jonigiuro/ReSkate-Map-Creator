@@ -614,6 +614,16 @@ button.ghost.danger {
   color: #9ed492;
 }
 
+.badge.bus {
+  border-color: #e6b325;
+  color: #f0d078;
+}
+
+.badge.travel {
+  border-color: #7ec8e3;
+  color: #b7e7f5;
+}
+
 .meta {
   margin: 0.25rem 0 0;
   font-size: 0.78rem;
