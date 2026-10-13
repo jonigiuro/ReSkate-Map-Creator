@@ -114,7 +114,7 @@ npm run export:blend -- path/to/scene.json path/to/out.blend
 
 ## Your own objects
 
-Save each object from Blender as a `.blend` (not FBX or glTF). That file keeps the ReSkate addon data: materials, textures, collision, and grind splines. Put it in a folder named after the object. Parent folders become categories.
+Save each object from Blender as a `.blend` (not FBX or glTF). That file keeps the ReSkate addon data: materials, textures, collision, and grind splines. Put it in a folder named after the object, or put several `.blend` files in one folder when they share a texture folder. Each file is its own piece, and that folder is the category. An `.fbx` or `.obj` with the same name as a `.blend` is the same object, so only the `.blend` is listed. Parent folders become categories.
 
 ```text
 Objects/grindable/bench/short metal bench/short metal bench.blend

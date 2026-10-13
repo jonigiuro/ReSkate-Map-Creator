@@ -101,7 +101,8 @@ export function useTextureSets(): TextureSet[] {
 export function generatorMaterialSlots(kind: string | undefined): { id: string; label: string }[] {
   if (kind === 'curb') {
     return [
-      { id: 'concrete', label: 'Concrete' },
+      { id: 'brick', label: 'Bricks' },
+      { id: 'concrete', label: 'Concrete top' },
       { id: 'galvanized', label: 'Metal lip' },
     ]
   }

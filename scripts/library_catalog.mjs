@@ -67,14 +67,16 @@ function parentIdOf(rel) {
 }
 
 /**
- * A folder that holds a .blend, .fbx, or .obj is one placeable object, named
- * after the folder. Anything beside that file, including textures, stays with
- * the object and is not scanned. Parent folders with no model of their own are
+ * A folder that holds one model is one placeable object, named after the
+ * folder. Several different models in that folder are each a piece, and the
+ * folder becomes the category, so they can share one texture folder.
+ * An .fbx or .obj with the same name as a .blend is the same object, and the
+ * .blend wins. Anything beside the models, including textures, stays with
+ * them and is not scanned. Parent folders with no model of their own are
  * categories.
  * Objects/grindable/bench/short metal bench/short metal bench.fbx
  * → categories grindable, bench, piece "short metal bench".
  * Objects/ is the library root on disk and is not shown as a folder.
- * A .blend wins when the folder also contains an .fbx or .obj.
  */
 function chooseModel(folderName, files) {
   const folder = folderName.toLowerCase()
@@ -88,6 +90,22 @@ function chooseModel(folderName, files) {
     return MODEL_RANK[a.ext] - MODEL_RANK[b.ext]
   })
   return ranked[0].entry
+}
+
+/** One file per object name. A .blend beats an .fbx or .obj of the same name. */
+function distinctModels(files) {
+  const groups = new Map()
+  for (const entry of files) {
+    const ext = modelExt(entry.name)
+    const stem = entry.name.slice(0, entry.name.length - ext.length).toLowerCase()
+    const group = groups.get(stem)
+    if (group) group.push(entry)
+    else groups.set(stem, [entry])
+  }
+  const chosen = []
+  for (const [stem, group] of groups) chosen.push(chooseModel(stem, group))
+  chosen.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+  return chosen
 }
 
 async function addPiece(dir, rel, models, acc) {
@@ -109,8 +127,31 @@ async function walkDir(dir, rel, acc) {
   const entries = await readdir(dir, { withFileTypes: true })
   const models = entries.filter((entry) => entry.isFile() && isModelFile(entry.name))
   if (models.length > 0) {
-    await addPiece(dir, rel, models, acc)
-    return 'piece'
+    const chosen = distinctModels(models)
+    if (chosen.length === 1) {
+      await addPiece(dir, rel, models, acc)
+      return 'piece'
+    }
+    const dedicated = await hasDedicatedTextures(dir)
+    for (const file of chosen) {
+      const ext = modelExt(file.name)
+      const assetFile = toPosix(`${rel}/${file.name}`)
+      const fileStat = await stat(path.join(dir, file.name))
+      acc.pieces.push({
+        id: assetFile,
+        label: file.name.slice(0, file.name.length - ext.length),
+        categoryId: rel,
+        assetFile,
+        revision: Math.round(fileStat.mtimeMs),
+        dedicatedTextures: dedicated,
+      })
+    }
+    acc.categories.push({
+      id: rel,
+      label: path.posix.basename(rel),
+      parentId: parentIdOf(rel),
+    })
+    return 'category'
   }
 
   const subdirs = entries.filter(

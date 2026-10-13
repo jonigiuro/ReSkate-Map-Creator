@@ -3,6 +3,8 @@ import type { BankGenerator } from '../types/scene'
 
 /** Upright curb. Width is the full width across the curb. */
 export const CURB_HEIGHT_M = 0.5
+/** Concrete band under the metal edge. The rest of the curb is the brick body. */
+export const CURB_CAP_M = 0.1
 export const CURB_WIDTH_M = 0.5
 /** Concrete texture repeats once per metre along the curb. */
 export const CURB_TILE_M = 1
@@ -206,14 +208,37 @@ function sideOutward(p0: THREE.Vector3, p1: THREE.Vector3, centre: THREE.Vector3
   return normal
 }
 
-/** One solid curb from a centreline. Points are the base, tops are the top edge, both local. */
+type CurbBuffers = {
+  positions: number[]
+  normals: number[]
+  uvs: number[]
+  tangents: number[]
+}
+
+function curbBuffers(): CurbBuffers {
+  return { positions: [], normals: [], uvs: [], tangents: [] }
+}
+
+function curbGeometry(mesh: CurbBuffers) {
+  if (mesh.positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(mesh.positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(mesh.normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(mesh.uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(mesh.tangents, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/**
+ * One curb from a centreline. The top 10 cm is the concrete cap; everything
+ * under that is the brick body. Points are the base, tops the top edge, both local.
+ */
 export function buildCurbGeometry(points: Vec3[], width: number, height: number, tops?: number[]) {
   if (!points || points.length < 2 || width <= 0) return null
   const sections = curbSections(points, width / 2)
-  const positions: number[] = []
-  const normals: number[] = []
-  const uvs: number[] = []
-  const tangents: number[] = []
+  const body = curbBuffers()
+  const cap = curbBuffers()
   const topYs = curbTopYs(points, height, tops)
   const leftDist = edgeDistances(sections, 'left')
   const rightDist = edgeDistances(sections, 'right')
@@ -225,9 +250,19 @@ export function buildCurbGeometry(points: Vec3[], width: number, height: number,
     vertex.y = topYs[section.pointIndex]
     return vertex
   }
-  const rise = (section: Section, side: 'left' | 'right') =>
-    (top(section, side).y - bottom(section, side).y) / CURB_TILE_M
+  const seam = (section: Section, side: 'left' | 'right') => {
+    const vertex = section[side].clone()
+    const topY = topYs[section.pointIndex]
+    const band = Math.min(CURB_CAP_M, Math.max(0, topY - vertex.y))
+    vertex.y = topY - band
+    return vertex
+  }
+  const bodyRise = (section: Section, side: 'left' | 'right') =>
+    (seam(section, side).y - bottom(section, side).y) / CURB_TILE_M
+  const capRise = (section: Section, side: 'left' | 'right') =>
+    (top(section, side).y - seam(section, side).y) / CURB_TILE_M
   const tri = (
+    mesh: CurbBuffers,
     a: THREE.Vector3,
     b: THREE.Vector3,
     c: THREE.Vector3,
@@ -235,7 +270,7 @@ export function buildCurbGeometry(points: Vec3[], width: number, height: number,
     ub: [number, number],
     uc: [number, number],
     outward: THREE.Vector3,
-  ) => addTri(positions, normals, uvs, tangents, a, b, c, ua, ub, uc, outward)
+  ) => addTri(mesh.positions, mesh.normals, mesh.uvs, mesh.tangents, a, b, c, ua, ub, uc, outward)
 
   for (let i = 0; i < sections.length - 1; i++) {
     const a = sections[i]
@@ -252,82 +287,63 @@ export function buildCurbGeometry(points: Vec3[], width: number, height: number,
     const topL1: [number, number] = [uL1, 0]
     const topR1: [number, number] = [uR1, across]
     const sideL0: [number, number] = [uL0, 0]
-    const sideLT0: [number, number] = [uL0, rise(a, 'left')]
+    const sideLS0: [number, number] = [uL0, bodyRise(a, 'left')]
     const sideL1: [number, number] = [uL1, 0]
-    const sideLT1: [number, number] = [uL1, rise(b, 'left')]
+    const sideLS1: [number, number] = [uL1, bodyRise(b, 'left')]
     const sideR0: [number, number] = [uR0, 0]
-    const sideRT0: [number, number] = [uR0, rise(a, 'right')]
+    const sideRS0: [number, number] = [uR0, bodyRise(a, 'right')]
     const sideR1: [number, number] = [uR1, 0]
-    const sideRT1: [number, number] = [uR1, rise(b, 'right')]
+    const sideRS1: [number, number] = [uR1, bodyRise(b, 'right')]
+    const capL0: [number, number] = [uL0, 0]
+    const capLT0: [number, number] = [uL0, capRise(a, 'left')]
+    const capL1: [number, number] = [uL1, 0]
+    const capLT1: [number, number] = [uL1, capRise(b, 'left')]
+    const capR0: [number, number] = [uR0, 0]
+    const capRT0: [number, number] = [uR0, capRise(a, 'right')]
+    const capR1: [number, number] = [uR1, 0]
+    const capRT1: [number, number] = [uR1, capRise(b, 'right')]
 
-    tri(bottom(a, 'left'), bottom(b, 'left'), bottom(b, 'right'), topL0, topL1, topR1, UP.clone().negate())
-    tri(bottom(a, 'left'), bottom(b, 'right'), bottom(a, 'right'), topL0, topR1, topR0, UP.clone().negate())
-    tri(top(a, 'left'), top(a, 'right'), top(b, 'right'), topL0, topR0, topR1, UP)
-    tri(top(a, 'left'), top(b, 'right'), top(b, 'left'), topL0, topR1, topL1, UP)
-    tri(bottom(a, 'left'), top(a, 'left'), top(b, 'left'), sideL0, sideLT0, sideLT1, left)
-    tri(bottom(a, 'left'), top(b, 'left'), bottom(b, 'left'), sideL0, sideLT1, sideL1, left)
-    tri(bottom(a, 'right'), bottom(b, 'right'), top(b, 'right'), sideR0, sideR1, sideRT1, right)
-    tri(bottom(a, 'right'), top(b, 'right'), top(a, 'right'), sideR0, sideRT1, sideRT0, right)
+    tri(body, bottom(a, 'left'), bottom(b, 'left'), bottom(b, 'right'), topL0, topL1, topR1, UP.clone().negate())
+    tri(body, bottom(a, 'left'), bottom(b, 'right'), bottom(a, 'right'), topL0, topR1, topR0, UP.clone().negate())
+    tri(cap, top(a, 'left'), top(a, 'right'), top(b, 'right'), topL0, topR0, topR1, UP)
+    tri(cap, top(a, 'left'), top(b, 'right'), top(b, 'left'), topL0, topR1, topL1, UP)
+    tri(body, bottom(a, 'left'), seam(a, 'left'), seam(b, 'left'), sideL0, sideLS0, sideLS1, left)
+    tri(body, bottom(a, 'left'), seam(b, 'left'), bottom(b, 'left'), sideL0, sideLS1, sideL1, left)
+    tri(cap, seam(a, 'left'), top(a, 'left'), top(b, 'left'), capL0, capLT0, capLT1, left)
+    tri(cap, seam(a, 'left'), top(b, 'left'), seam(b, 'left'), capL0, capLT1, capL1, left)
+    tri(body, bottom(a, 'right'), bottom(b, 'right'), seam(b, 'right'), sideR0, sideR1, sideRS1, right)
+    tri(body, bottom(a, 'right'), seam(b, 'right'), seam(a, 'right'), sideR0, sideRS1, sideRS0, right)
+    tri(cap, seam(a, 'right'), seam(b, 'right'), top(b, 'right'), capR0, capR1, capRT1, right)
+    tri(cap, seam(a, 'right'), top(b, 'right'), top(a, 'right'), capR0, capRT1, capRT0, right)
   }
 
   const first = sections[0]
   const last = sections[sections.length - 1]
   const startOut = horizontalDir(points[1], points[0])
   const endOut = horizontalDir(points[points.length - 2], points[points.length - 1])
-  const cap = (section: Section) => {
-    const leftBottom: [number, number] = [0, 0]
-    const rightBottom: [number, number] = [across, 0]
-    const rightTop: [number, number] = [across, rise(section, 'right')]
-    const leftTop: [number, number] = [0, rise(section, 'left')]
-    return { leftBottom, rightBottom, rightTop, leftTop }
-  }
-  const startCap = cap(first)
-  const endCap = cap(last)
-  tri(
-    bottom(first, 'left'),
-    bottom(first, 'right'),
-    top(first, 'right'),
-    startCap.leftBottom,
-    startCap.rightBottom,
-    startCap.rightTop,
-    startOut,
-  )
-  tri(
-    bottom(first, 'left'),
-    top(first, 'right'),
-    top(first, 'left'),
-    startCap.leftBottom,
-    startCap.rightTop,
-    startCap.leftTop,
-    startOut,
-  )
-  tri(
-    bottom(last, 'left'),
-    top(last, 'right'),
-    bottom(last, 'right'),
-    endCap.leftBottom,
-    endCap.rightTop,
-    endCap.rightBottom,
-    endOut,
-  )
-  tri(
-    bottom(last, 'left'),
-    top(last, 'left'),
-    top(last, 'right'),
-    endCap.leftBottom,
-    endCap.leftTop,
-    endCap.rightTop,
-    endOut,
-  )
+  const endUvs = (section: Section) => ({
+    leftBottom: [0, 0] as [number, number],
+    rightBottom: [across, 0] as [number, number],
+    rightSeam: [across, bodyRise(section, 'right')] as [number, number],
+    leftSeam: [0, bodyRise(section, 'left')] as [number, number],
+    rightTop: [across, capRise(section, 'right')] as [number, number],
+    leftTop: [0, capRise(section, 'left')] as [number, number],
+  })
+  const startCap = endUvs(first)
+  const endCap = endUvs(last)
+  tri(body, bottom(first, 'left'), bottom(first, 'right'), seam(first, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightSeam, startOut)
+  tri(body, bottom(first, 'left'), seam(first, 'right'), seam(first, 'left'), startCap.leftBottom, startCap.rightSeam, startCap.leftSeam, startOut)
+  tri(cap, seam(first, 'left'), seam(first, 'right'), top(first, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightTop, startOut)
+  tri(cap, seam(first, 'left'), top(first, 'right'), top(first, 'left'), startCap.leftBottom, startCap.rightTop, startCap.leftTop, startOut)
+  tri(body, bottom(last, 'left'), seam(last, 'right'), bottom(last, 'right'), endCap.leftBottom, endCap.rightSeam, endCap.rightBottom, endOut)
+  tri(body, bottom(last, 'left'), seam(last, 'left'), seam(last, 'right'), endCap.leftBottom, endCap.leftSeam, endCap.rightSeam, endOut)
+  tri(cap, seam(last, 'left'), top(last, 'right'), seam(last, 'right'), endCap.leftBottom, endCap.rightTop, endCap.rightBottom, endOut)
+  tri(cap, seam(last, 'left'), top(last, 'left'), top(last, 'right'), endCap.leftBottom, endCap.leftTop, endCap.rightTop, endOut)
 
-  if (positions.length === 0) return null
-  const geometry = new THREE.BufferGeometry()
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
-  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
-  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(tangents, 4))
-  geometry.computeBoundingSphere()
-  return geometry
+  const bodyMesh = curbGeometry(body)
+  const capMesh = curbGeometry(cap)
+  if (!bodyMesh && !capMesh) return null
+  return { body: bodyMesh, cap: capMesh }
 }
 
 type LipProfile = {

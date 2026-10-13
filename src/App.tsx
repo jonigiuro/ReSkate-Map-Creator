@@ -1231,7 +1231,7 @@ export default function App() {
               : categoryPath[0] === 'interactive'
                 ? 'Click a bus stop or a fast-travel point, then click the map. It stands on the ground. Right-click turns it 90°. Escape leaves the tool.'
                 : categoryPath.length === 0
-                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
+                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Drop a .blend in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own. Several blends in one folder share its textures.'
                   : 'Click a piece to pick it up. It follows the cursor and stands on the surface under it. Right-click turns it 90° on that surface. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid.'}
           </p>
           {categoryPath.length > 0 && (
@@ -1679,7 +1679,7 @@ export default function App() {
               </p>
               {selected.generator?.kind === 'curb' && (
                 <p className="hint">
-                  Drag a sphere sideways to move the whole pin. Drag it up or down to set that end's top or base.
+                  The top 10 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move the whole pin. Drag it up or down to set that end's top or base.
                 </p>
               )}
               {selected.generator?.kind === 'rail' && (

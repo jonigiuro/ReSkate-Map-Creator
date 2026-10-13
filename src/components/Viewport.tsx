@@ -1677,7 +1677,7 @@ function CurbRibbon({
   materials?: Record<string, string>
   ghost?: boolean
 }) {
-  const geometry = useMemo(
+  const parts = useMemo(
     () => buildCurbGeometry(points, width, height, tops),
     [points, width, height, tops],
   )
@@ -1689,15 +1689,28 @@ function CurbRibbon({
     () => buildCurbWaxGeometry(points, width, height, tops),
     [points, width, height, tops],
   )
-  useEffect(() => () => geometry?.dispose(), [geometry])
+  useEffect(
+    () => () => {
+      parts?.body?.dispose()
+      parts?.cap?.dispose()
+    },
+    [parts],
+  )
   useEffect(() => () => lip?.dispose(), [lip])
   useEffect(() => () => wax?.dispose(), [wax])
-  if (!geometry) return null
+  if (!parts) return null
   return (
     <>
-      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-        <SlotMaterial setId={materials?.concrete} ghost={ghost} fallback="concrete" />
-      </mesh>
+      {parts.body && (
+        <mesh geometry={parts.body} castShadow={!ghost} receiveShadow={!ghost}>
+          <SlotMaterial setId={materials?.brick} ghost={ghost} fallback="brick" />
+        </mesh>
+      )}
+      {parts.cap && (
+        <mesh geometry={parts.cap} castShadow={!ghost} receiveShadow={!ghost}>
+          <SlotMaterial setId={materials?.concrete} ghost={ghost} fallback="concrete" />
+        </mesh>
+      )}
       {lip && (
         <mesh geometry={lip} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />

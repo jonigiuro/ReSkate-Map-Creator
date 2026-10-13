@@ -683,6 +683,7 @@ def _side_outward(p0, p1, centre):
 
 
 CURB_TILE_M = 1.0
+CURB_CAP_M = 0.1
 CURB_LIP_M = 0.025
 CURB_LIP_PROUD_M = 0.002
 CURB_LIP_END_GAP_M = 0.004
@@ -929,17 +930,30 @@ def grass_material(project_root):
     return mat
 
 
-def make_curb_mesh(name, points, width, height, color, tops=None, material=None):
-    """One mitered curb. points are the base centreline, tops the top edge, both local."""
+def make_curb_mesh(name, points, width, height, color, tops=None, materials=None):
+    """One mitered curb. The top 10 cm is concrete; the body under it is brick.
+
+    points are the base centreline, tops the top edge, both local.
+    materials is (brick, concrete).
+    """
     sections = _curb_sections(points, float(width) / 2.0)
     if not isinstance(tops, (list, tuple)) or len(tops) != len(points):
         tops = [float(point[1]) + float(height) for point in points]
     verts = []
     faces = []
     uvs = []
+    slots = []
     left_dist = _edge_distances(sections, 0)
     right_dist = _edge_distances(sections, 1)
     across = float(width) / CURB_TILE_M
+    body_slot = 0
+    cap_slot = 1
+
+    def add(slot, a, b, c, ua, ub, uc, outward):
+        before = len(faces)
+        _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward)
+        if len(faces) != before:
+            slots.append(slot)
 
     def bottom(section, side):
         return section[side]
@@ -948,8 +962,17 @@ def make_curb_mesh(name, points, width, height, color, tops=None, material=None)
         vertex = section[side]
         return (vertex[0], float(tops[section[2]]), vertex[2])
 
-    def rise(section, side):
-        return (top(section, side)[1] - bottom(section, side)[1]) / CURB_TILE_M
+    def seam(section, side):
+        vertex = section[side]
+        top_y = float(tops[section[2]])
+        band = min(CURB_CAP_M, max(0.0, top_y - vertex[1]))
+        return (vertex[0], top_y - band, vertex[2])
+
+    def body_rise(section, side):
+        return (seam(section, side)[1] - bottom(section, side)[1]) / CURB_TILE_M
+
+    def cap_rise(section, side):
+        return (top(section, side)[1] - seam(section, side)[1]) / CURB_TILE_M
 
     for i in range(len(sections) - 1):
         a = sections[i]
@@ -963,34 +986,63 @@ def make_curb_mesh(name, points, width, height, color, tops=None, material=None)
         u_r1 = right_dist[i + 1] / CURB_TILE_M
         top_l0, top_r0 = (u_l0, 0.0), (u_r0, across)
         top_l1, top_r1 = (u_l1, 0.0), (u_r1, across)
-        side_l0, side_lt0 = (u_l0, 0.0), (u_l0, rise(a, 0))
-        side_l1, side_lt1 = (u_l1, 0.0), (u_l1, rise(b, 0))
-        side_r0, side_rt0 = (u_r0, 0.0), (u_r0, rise(a, 1))
-        side_r1, side_rt1 = (u_r1, 0.0), (u_r1, rise(b, 1))
-        _add_tri(verts, faces, uvs, bottom(a, 0), bottom(b, 0), bottom(b, 1), top_l0, top_l1, top_r1, (0.0, -1.0, 0.0))
-        _add_tri(verts, faces, uvs, bottom(a, 0), bottom(b, 1), bottom(a, 1), top_l0, top_r1, top_r0, (0.0, -1.0, 0.0))
-        _add_tri(verts, faces, uvs, top(a, 0), top(a, 1), top(b, 1), top_l0, top_r0, top_r1, (0.0, 1.0, 0.0))
-        _add_tri(verts, faces, uvs, top(a, 0), top(b, 1), top(b, 0), top_l0, top_r1, top_l1, (0.0, 1.0, 0.0))
-        _add_tri(verts, faces, uvs, bottom(a, 0), top(a, 0), top(b, 0), side_l0, side_lt0, side_lt1, left)
-        _add_tri(verts, faces, uvs, bottom(a, 0), top(b, 0), bottom(b, 0), side_l0, side_lt1, side_l1, left)
-        _add_tri(verts, faces, uvs, bottom(a, 1), bottom(b, 1), top(b, 1), side_r0, side_r1, side_rt1, right)
-        _add_tri(verts, faces, uvs, bottom(a, 1), top(b, 1), top(a, 1), side_r0, side_rt1, side_rt0, right)
+        side_l0, side_ls0 = (u_l0, 0.0), (u_l0, body_rise(a, 0))
+        side_l1, side_ls1 = (u_l1, 0.0), (u_l1, body_rise(b, 0))
+        side_r0, side_rs0 = (u_r0, 0.0), (u_r0, body_rise(a, 1))
+        side_r1, side_rs1 = (u_r1, 0.0), (u_r1, body_rise(b, 1))
+        cap_l0, cap_lt0 = (u_l0, 0.0), (u_l0, cap_rise(a, 0))
+        cap_l1, cap_lt1 = (u_l1, 0.0), (u_l1, cap_rise(b, 0))
+        cap_r0, cap_rt0 = (u_r0, 0.0), (u_r0, cap_rise(a, 1))
+        cap_r1, cap_rt1 = (u_r1, 0.0), (u_r1, cap_rise(b, 1))
+        add(body_slot, bottom(a, 0), bottom(b, 0), bottom(b, 1), top_l0, top_l1, top_r1, (0.0, -1.0, 0.0))
+        add(body_slot, bottom(a, 0), bottom(b, 1), bottom(a, 1), top_l0, top_r1, top_r0, (0.0, -1.0, 0.0))
+        add(cap_slot, top(a, 0), top(a, 1), top(b, 1), top_l0, top_r0, top_r1, (0.0, 1.0, 0.0))
+        add(cap_slot, top(a, 0), top(b, 1), top(b, 0), top_l0, top_r1, top_l1, (0.0, 1.0, 0.0))
+        add(body_slot, bottom(a, 0), seam(a, 0), seam(b, 0), side_l0, side_ls0, side_ls1, left)
+        add(body_slot, bottom(a, 0), seam(b, 0), bottom(b, 0), side_l0, side_ls1, side_l1, left)
+        add(cap_slot, seam(a, 0), top(a, 0), top(b, 0), cap_l0, cap_lt0, cap_lt1, left)
+        add(cap_slot, seam(a, 0), top(b, 0), seam(b, 0), cap_l0, cap_lt1, cap_l1, left)
+        add(body_slot, bottom(a, 1), bottom(b, 1), seam(b, 1), side_r0, side_r1, side_rs1, right)
+        add(body_slot, bottom(a, 1), seam(b, 1), seam(a, 1), side_r0, side_rs1, side_rs0, right)
+        add(cap_slot, seam(a, 1), seam(b, 1), top(b, 1), cap_r0, cap_r1, cap_rt1, right)
+        add(cap_slot, seam(a, 1), top(b, 1), top(a, 1), cap_r0, cap_rt1, cap_rt0, right)
 
     start_out = _horiz_dir(points[1], points[0])
     end_out = _horiz_dir(points[-2], points[-1])
     first = sections[0]
     last = sections[-1]
 
-    def cap(section):
-        return (0.0, 0.0), (across, 0.0), (across, rise(section, 1)), (0.0, rise(section, 0))
+    def end_uvs(section):
+        return (
+            (0.0, 0.0),
+            (across, 0.0),
+            (across, body_rise(section, 1)),
+            (0.0, body_rise(section, 0)),
+            (across, cap_rise(section, 1)),
+            (0.0, cap_rise(section, 0)),
+        )
 
-    start_cap = cap(first)
-    end_cap = cap(last)
-    _add_tri(verts, faces, uvs, bottom(first, 0), bottom(first, 1), top(first, 1), start_cap[0], start_cap[1], start_cap[2], start_out)
-    _add_tri(verts, faces, uvs, bottom(first, 0), top(first, 1), top(first, 0), start_cap[0], start_cap[2], start_cap[3], start_out)
-    _add_tri(verts, faces, uvs, bottom(last, 0), top(last, 1), bottom(last, 1), end_cap[0], end_cap[2], end_cap[1], end_out)
-    _add_tri(verts, faces, uvs, bottom(last, 0), top(last, 0), top(last, 1), end_cap[0], end_cap[3], end_cap[2], end_out)
-    return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs)
+    start_cap = end_uvs(first)
+    end_cap = end_uvs(last)
+    add(body_slot, bottom(first, 0), bottom(first, 1), seam(first, 1), start_cap[0], start_cap[1], start_cap[2], start_out)
+    add(body_slot, bottom(first, 0), seam(first, 1), seam(first, 0), start_cap[0], start_cap[2], start_cap[3], start_out)
+    add(cap_slot, seam(first, 0), seam(first, 1), top(first, 1), start_cap[0], start_cap[1], start_cap[4], start_out)
+    add(cap_slot, seam(first, 0), top(first, 1), top(first, 0), start_cap[0], start_cap[4], start_cap[5], start_out)
+    add(body_slot, bottom(last, 0), seam(last, 1), bottom(last, 1), end_cap[0], end_cap[2], end_cap[1], end_out)
+    add(body_slot, bottom(last, 0), seam(last, 0), seam(last, 1), end_cap[0], end_cap[3], end_cap[2], end_out)
+    add(cap_slot, seam(last, 0), top(last, 1), seam(last, 1), end_cap[0], end_cap[4], end_cap[1], end_out)
+    add(cap_slot, seam(last, 0), top(last, 0), top(last, 1), end_cap[0], end_cap[5], end_cap[4], end_out)
+    body_mat = materials[0] if materials else None
+    cap_mat = materials[1] if materials else None
+    obj = _link_mesh(name, verts, faces, color, material=body_mat, loop_uvs=uvs)
+    if body_mat is not None and cap_mat is not None:
+        mesh = obj.data
+        mesh.materials.clear()
+        mesh.materials.append(body_mat)
+        mesh.materials.append(cap_mat)
+        for poly, slot in zip(mesh.polygons, slots):
+            poly.material_index = slot
+    return obj
 
 
 def _lip_profile(corner, inward):
@@ -3324,15 +3376,25 @@ def build(scene):
                     points,
                     width,
                     height,
-                    (0.78, 0.76, 0.72),
+                    (0.72, 0.38, 0.28),
                     gen.get("tops"),
-                    slot_material(
-                        project_root,
-                        texture_sets,
-                        overrides,
-                        sounds,
-                        "concrete",
-                        lambda: concrete_material(project_root),
+                    (
+                        slot_material(
+                            project_root,
+                            texture_sets,
+                            overrides,
+                            sounds,
+                            "brick",
+                            lambda: brick_material(project_root),
+                        ),
+                        slot_material(
+                            project_root,
+                            texture_sets,
+                            overrides,
+                            sounds,
+                            "concrete",
+                            lambda: concrete_material(project_root),
+                        ),
                     ),
                 )
                 obj.name = name
