@@ -72,6 +72,12 @@ Open **Traffic**. **Vehicle Lane** is cars, **Bus Lane** is buses, and **Pedestr
 
 Select a route to change its width (3.5 m for cars and buses, 2 m for people), how often the game samples it, and its weight. Cars and buses also have a speed class from 1 to 9. A pedestrian route can be marked **Stairs**. **Reverse direction** flips the point order. Uncheck **Closed loop** when the route should join another of the same type where their points meet. A loop needs three points. Drag a sphere to move that point.
 
+### Lights
+
+Open **Lights**. **Point Light** shines every way. **Spot Light** is a cone. **Area Light** is a panel, either soft or throwing a cone. Click the map. The light sits 4 m off that face and aims back at it. Right-click turns it 90° before you place it.
+
+Select a light to set its color, energy, exposure, range, and shadow. A spot has a cone angle and edge softness. An area light has a shape and a size. Choose which times of day it is on. Clear every time and the game leaves it out. The sun and sky stay on the game's own time of day. These are direct lights.
+
 ### Spawn
 
 Every map has one spawn. The figure is 1.7 m tall, and the arrow is where the skater heads. Export writes an empty named `spawn`.

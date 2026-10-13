@@ -165,7 +165,51 @@ export interface TravelPointObject {
   rotation: [number, number, number]
 }
 
-export type SceneObject = MeshObject | GrindObject | SpawnObject | TravelPointObject | TrafficLaneObject
+/** Times of day the addon writes on a light. All on means the light is always lit. */
+export type LightTime = 'morning' | 'noon' | 'afternoon' | 'evening' | 'night' | 'weatherday' | 'weathernight'
+
+export type LightTimes = Record<LightTime, boolean>
+
+export type LightKind = 'point' | 'spot' | 'area'
+
+export type AreaLightShape = 'square' | 'rectangle' | 'disk' | 'ellipse'
+
+export type AreaLightMode = 'area' | 'spotlight'
+
+/**
+ * Direct light. Export is a Blender point, spot, or area lamp.
+ * Local −Y is the beam, which becomes the lamp's −Z in Blender.
+ */
+export interface LightObject {
+  id: string
+  kind: 'light'
+  light: LightKind
+  name: string
+  position: [number, number, number]
+  /** Euler XYZ radians (Three.js Y-up). */
+  rotation: [number, number, number]
+  /** Linear RGB, the same numbers Blender stores on the lamp. */
+  color: [number, number, number]
+  energy: number
+  exposure: number
+  castShadow: boolean
+  /** Metres. The addon calls this Range. */
+  range: number
+  /** Soft shadow radius for a point or spot. */
+  radius: number
+  /** Full cone angle in radians. */
+  spotSize: number
+  spotBlend: number
+  areaMode: AreaLightMode
+  shape: AreaLightShape
+  size: number
+  sizeY: number
+  /** Area spotlight cone, radians. */
+  spread: number
+  times: LightTimes
+}
+
+export type SceneObject = MeshObject | GrindObject | SpawnObject | TravelPointObject | TrafficLaneObject | LightObject
 
 export interface MapScene {
   version: 1

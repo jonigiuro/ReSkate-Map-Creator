@@ -13,6 +13,7 @@ import type {
   MeshObject,
   SceneObject,
   SpawnObject,
+  LightObject,
   TrafficLaneObject,
   TravelPointObject,
 } from '../types/scene'
@@ -55,6 +56,7 @@ import {
   trafficColor,
   trafficWidth,
 } from '../lib/traffic'
+import { lightKindFromPiece, lightPlacement, lightPreviewIntensity } from '../lib/lights'
 import { BUS_STOP_PIECE, isInteractivePiece, travelGuide } from '../lib/travelPoints'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
@@ -1121,6 +1123,229 @@ const TravelPointItemView = memo(TravelPointItem, (prev, next) =>
   prev.snap.scale === next.snap.scale,
 )
 
+function LightBeam({
+  obj,
+  ghost,
+}: {
+  obj: Pick<LightObject, 'light' | 'color' | 'spotSize' | 'size' | 'sizeY' | 'shape'>
+  ghost?: boolean
+}) {
+  const color = obj.color
+  if (obj.light === 'spot') {
+    const length = 6
+    const radius = Math.tan(obj.spotSize / 2) * length
+    return (
+      <mesh position={[0, -length / 2, 0]} raycast={() => {}}>
+        <coneGeometry args={[Math.max(radius, 0.05), length, 24, 1, true]} />
+        <meshBasicMaterial
+          color={color}
+          transparent
+          opacity={ghost ? 0.16 : 0.28}
+          side={THREE.DoubleSide}
+          depthWrite={false}
+          toneMapped={false}
+        />
+      </mesh>
+    )
+  }
+  if (obj.light !== 'area') return null
+  const round = obj.shape === 'disk' || obj.shape === 'ellipse'
+  const height = obj.shape === 'square' || obj.shape === 'disk' ? obj.size : obj.sizeY
+  return (
+    <mesh rotation={[Math.PI / 2, 0, 0]} scale={round ? [obj.size, height, 1] : [1, 1, 1]} raycast={() => {}}>
+      {round ? <circleGeometry args={[0.5, 32]} /> : <planeGeometry args={[obj.size, height]} />}
+      <meshBasicMaterial
+        color={color}
+        transparent
+        opacity={ghost ? 0.28 : 0.55}
+        side={THREE.DoubleSide}
+        depthWrite={false}
+        toneMapped={false}
+      />
+    </mesh>
+  )
+}
+
+function AimedSpot({
+  color,
+  intensity,
+  range,
+  angle,
+  penumbra,
+  castShadow,
+}: {
+  color: [number, number, number]
+  intensity: number
+  range: number
+  angle: number
+  penumbra: number
+  castShadow: boolean
+}) {
+  const light = useRef<THREE.SpotLight>(null)
+  const target = useRef<THREE.Object3D>(null)
+  useLayoutEffect(() => {
+    if (!light.current || !target.current) return
+    light.current.target = target.current
+    target.current.updateMatrixWorld()
+  })
+  return (
+    <>
+      <spotLight
+        ref={light}
+        color={color}
+        intensity={intensity}
+        distance={range}
+        decay={2}
+        angle={angle}
+        penumbra={penumbra}
+        castShadow={castShadow}
+        shadow-mapSize={[512, 512]}
+        shadow-bias={-0.0004}
+      />
+      <object3D ref={target} position={[0, -1, 0]} />
+    </>
+  )
+}
+
+function LightItem({
+  obj,
+  selected,
+  tool,
+  transformMode,
+  snap,
+  onSelect,
+  onCommit,
+  onGestureStart,
+  onGestureEnd,
+}: {
+  obj: LightObject
+  selected: boolean
+  tool: EditorTool
+  transformMode: TransformMode
+  snap: SnapSettings
+  onSelect: () => void
+  onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
+  onGestureStart: () => void
+  onGestureEnd: () => void
+}) {
+  const ref = useRef<THREE.Group>(null)
+  const dragging = useRef(false)
+  const mode = transformMode === 'scale' ? 'translate' : transformMode
+  const intensity = lightPreviewIntensity(obj.energy, obj.exposure)
+
+  useLayoutEffect(() => {
+    const group = ref.current
+    if (!group || dragging.current) return
+    group.position.set(...obj.position)
+    group.rotation.set(...obj.rotation)
+    group.scale.set(1, 1, 1)
+  }, [obj.position, obj.rotation])
+
+  return (
+    <>
+      <group
+        ref={ref}
+        userData={{ focusId: obj.id }}
+        onPointerDown={(event) => {
+          event.stopPropagation()
+          if (event.button !== 0 || gizmoOwnsPointer.current) return
+          onSelect()
+        }}
+      >
+        <mesh>
+          <sphereGeometry args={[0.28, 20, 16]} />
+          <meshBasicMaterial color={obj.color} toneMapped={false} />
+        </mesh>
+        <mesh>
+          <sphereGeometry args={[0.9, 12, 8]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+        <LightBeam obj={obj} />
+        {selected && (
+          <mesh raycast={() => {}}>
+            <sphereGeometry args={[obj.range, 24, 12]} />
+            <meshBasicMaterial color={obj.color} wireframe transparent opacity={0.08} toneMapped={false} />
+          </mesh>
+        )}
+        {obj.light === 'spot' ? (
+          <AimedSpot
+            color={obj.color}
+            intensity={intensity}
+            range={obj.range}
+            angle={obj.spotSize / 2}
+            penumbra={obj.spotBlend}
+            castShadow={selected && obj.castShadow}
+          />
+        ) : (
+          <pointLight
+            color={obj.color}
+            intensity={intensity}
+            distance={obj.range}
+            decay={2}
+            castShadow={selected && obj.castShadow}
+            shadow-mapSize={[512, 512]}
+            shadow-bias={-0.0004}
+          />
+        )}
+      </group>
+      {selected && tool === 'select' && (
+        <TransformGizmo
+          target={ref}
+          dragging={dragging}
+          mode={mode}
+          snap={snap}
+          onCommit={(pos, rot) => onCommit(pos, rot)}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+    </>
+  )
+}
+
+const LightItemView = memo(LightItem, (prev, next) =>
+  prev.obj === next.obj &&
+  prev.selected === next.selected &&
+  prev.tool === next.tool &&
+  prev.transformMode === next.transformMode &&
+  prev.snap.move === next.snap.move &&
+  prev.snap.rotate === next.snap.rotate &&
+  prev.snap.scale === next.snap.scale,
+)
+
+function LightGhost({
+  kind,
+  hit,
+  yaw,
+}: {
+  kind: NonNullable<ReturnType<typeof lightKindFromPiece>>
+  hit: SurfaceHit
+  yaw: number
+}) {
+  const point = hit.point.clone()
+  point.y = surfaceHeight(point, hit.normal)
+  const placed = lightPlacement(point, hit.normal, yaw)
+  const sample: Pick<LightObject, 'light' | 'color' | 'spotSize' | 'size' | 'sizeY' | 'shape'> = {
+    light: kind,
+    color: [1, 0.85, 0.45],
+    spotSize: Math.PI / 4,
+    size: 1,
+    sizeY: 1,
+    shape: 'square',
+  }
+  if (kind === 'area') sample.color = [0.78, 0.72, 1]
+  if (kind === 'point') sample.color = [1, 0.9, 0.55]
+  return (
+    <group position={placed.position} rotation={placed.rotation} userData={{ placementGhost: true }}>
+      <mesh raycast={() => {}}>
+        <sphereGeometry args={[0.28, 20, 16]} />
+        <meshBasicMaterial color={sample.color} transparent opacity={0.45} toneMapped={false} />
+      </mesh>
+      <LightBeam obj={sample} ghost />
+    </group>
+  )
+}
+
 function PiecePlacementLayer({
   placePieceId,
   placeYaw,
@@ -1198,6 +1423,11 @@ function PiecePlacementLayer({
       event.preventDefault()
       event.stopPropagation()
       hit.point.y = surfaceHeight(hit.point, hit.normal)
+      if (lightKindFromPiece(pieceRef.current)) {
+        const placed = lightPlacement(hit.point, hit.normal, yawRef.current)
+        onPlaceRef.current(pieceRef.current, new THREE.Vector3(...placed.position), placed.rotation)
+        return
+      }
       const upright = isInteractivePiece(pieceRef.current)
       onPlaceRef.current(
         pieceRef.current,
@@ -2378,6 +2608,7 @@ function SceneContents(props: Props) {
   }, [placePieceId])
 
   const placingInteractive = isInteractivePiece(placePieceId)
+  const placingLight = lightKindFromPiece(placePieceId)
   const previewY = previewHit ? surfaceHeight(previewHit.point, previewHit.normal) : 0
   const previewRotation = placingInteractive
     ? ([0, placeYaw, 0] as [number, number, number])
@@ -2455,6 +2686,24 @@ function SceneContents(props: Props) {
             />
           )
         }
+        if (obj.kind === 'light') {
+          return (
+            <LightItemView
+              key={obj.id}
+              obj={obj}
+              selected={obj.id === selectedId}
+              tool={tool}
+              transformMode={transformMode}
+              snap={snap}
+              onSelect={() => onSelectRef.current(obj.id)}
+              onCommit={(pos, rot) => {
+                onPatchRef.current(obj.id, { position: pos, rotation: rot })
+              }}
+              onGestureStart={() => onStartRef.current()}
+              onGestureEnd={() => onEndRef.current()}
+            />
+          )
+        }
         if (obj.kind === 'travel_point') {
           return (
             <TravelPointItemView
@@ -2502,7 +2751,9 @@ function SceneContents(props: Props) {
         </group>
       )}
 
-      {placePieceId && previewHit && !placingInteractive && (
+      {placingLight && previewHit && <LightGhost kind={placingLight} hit={previewHit} yaw={placeYaw} />}
+
+      {placePieceId && previewHit && !placingInteractive && !placingLight && (
         <group
           position={[previewHit.point.x, previewY, previewHit.point.z]}
           rotation={previewRotation}

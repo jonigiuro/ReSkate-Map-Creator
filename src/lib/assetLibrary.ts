@@ -31,7 +31,7 @@ export type AssetCatalog = {
 export const EMPTY_CATALOG: AssetCatalog = { categories: [], pieces: [], kits: [] }
 
 /** Drawn tools, not folders on disk. The catalog poll closes a path it cannot find. */
-export const BUILTIN_LIBRARY_ROOTS = ['generators', 'interactive', 'traffic'] as const
+export const BUILTIN_LIBRARY_ROOTS = ['generators', 'interactive', 'traffic', 'lights'] as const
 
 function withKits(catalog: Partial<AssetCatalog> | null | undefined): AssetCatalog {
   const categories = catalog?.categories ?? []

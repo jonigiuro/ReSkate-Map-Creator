@@ -43,6 +43,27 @@ import {
   trafficLaneName,
   trafficWidth,
 } from './lib/traffic'
+import {
+  colorToHex,
+  defaultLightTimes,
+  hexToColor,
+  LIGHT_AREA_PIECE,
+  LIGHT_AREA_SIZE,
+  LIGHT_ENERGY,
+  LIGHT_EXPOSURE,
+  LIGHT_POINT_PIECE,
+  LIGHT_RANGE_M,
+  LIGHT_SOFT_M,
+  LIGHT_SPOT_ANGLE,
+  LIGHT_SPOT_BLEND,
+  LIGHT_SPOT_PIECE,
+  LIGHT_SPREAD,
+  LIGHT_TIMES,
+  lightKindFromPiece,
+  lightKindLabel,
+  lightSwatch,
+  lightTimeMask,
+} from './lib/lights'
 import { generatorMaterialSlots, reloadTextureSets, useTextureSets } from './lib/textureSets'
 import { useSceneHistory } from './lib/sceneHistory'
 import {
@@ -57,6 +78,10 @@ import type {
   MapScene,
   MeshObject,
   SceneObject,
+  AreaLightMode,
+  AreaLightShape,
+  LightKind,
+  LightObject,
   TrafficLane,
   TrafficLaneObject,
   TravelPointObject,
@@ -135,8 +160,7 @@ export default function App() {
         if (cancel) return
         setCatalog(next)
         setCategoryPath((path) => {
-          // Built-in roots are not folders on disk. They are also injected into the catalog,
-          // so a poll that started before this list existed still leaves them open.
+          // Built-in roots are not folders on disk, so a missing catalog entry is not a deleted folder.
           if (path.length === 0 || (BUILTIN_LIBRARY_ROOTS as readonly string[]).includes(path[0])) return path
           const intact = path.every((id, index) => {
             const category = next.categories.find((item) => item.id === id)
@@ -156,7 +180,9 @@ export default function App() {
       cancel = true
       window.clearInterval(timer)
     }
-  }, [])
+    // Restart the poll when this list changes. A timer started before a new
+    // root existed keeps the old list and would close that category.
+  }, [BUILTIN_LIBRARY_ROOTS])
 
   useEffect(() => {
     const desktop = window.reskateDesktop
@@ -442,6 +468,39 @@ export default function App() {
     point: THREE.Vector3,
     rotation: [number, number, number],
   ) {
+    const lightKind = lightKindFromPiece(libraryId)
+    if (lightKind) {
+      const before = history.checkpoint()
+      const prev = history.sceneRef.current
+      const count = prev.objects.filter((obj) => obj.kind === 'light' && obj.light === lightKind).length
+      const obj: LightObject = {
+        id: uid('light'),
+        kind: 'light',
+        light: lightKind,
+        name: `${lightKindLabel(lightKind)} ${count + 1}`,
+        position: [round4(point.x), round4(point.y), round4(point.z)],
+        rotation: [round4(rotation[0]), round4(rotation[1]), round4(rotation[2])],
+        color: [1, 1, 1],
+        energy: LIGHT_ENERGY,
+        exposure: LIGHT_EXPOSURE,
+        castShadow: true,
+        range: LIGHT_RANGE_M,
+        radius: LIGHT_SOFT_M,
+        spotSize: LIGHT_SPOT_ANGLE,
+        spotBlend: LIGHT_SPOT_BLEND,
+        areaMode: 'area',
+        shape: 'square',
+        size: LIGHT_AREA_SIZE,
+        sizeY: LIGHT_AREA_SIZE,
+        spread: LIGHT_SPREAD,
+        times: defaultLightTimes(),
+      }
+      applyScene({ ...prev, objects: [...prev.objects, obj] })
+      history.remember(before)
+      setStatus(`Placed ${obj.name}`)
+      setError(null)
+      return
+    }
     if (isInteractivePiece(libraryId)) {
       const shelter = libraryId === BUS_STOP_PIECE
       const before = history.checkpoint()
@@ -1209,6 +1268,7 @@ export default function App() {
     if (id === 'generators') return 'Generators'
     if (id === 'interactive') return 'Interactive'
     if (id === 'traffic') return 'Traffic'
+    if (id === 'lights') return 'Lights'
     return catalog.categories.find((category) => category.id === id)?.label ?? id
   }
 
@@ -1328,8 +1388,10 @@ export default function App() {
                 ? 'Click a bus stop or a fast-travel point, then click the map. It stands on the ground. Right-click turns it 90°. Escape leaves the tool.'
                 : categoryPath[0] === 'traffic'
                   ? 'Click a route, then click along the ground. After two points it closes back to the start. Pedestrians walk both ways on a 2 m path. Cars and buses stay one way. Uncheck Closed loop when it should join another route of the same type. Escape leaves the tool.'
+                : categoryPath[0] === 'lights'
+                  ? 'Click a light, then click the map. It sits 4 m off that face and shines back at it. Right-click turns it 90°. Escape leaves the tool.'
                 : categoryPath.length === 0
-                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Traffic draws cars, buses, or people along a path. Drop a .blend in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own. Several blends in one folder share its textures.'
+                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Traffic draws cars, buses, or people along a path. Lights are point, spot, and area lamps. Drop a .blend in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own. Several blends in one folder share its textures.'
                   : 'Click a piece to pick it up. It follows the cursor and stands on the surface under it. Right-click turns it 90° on that surface. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid.'}
           </p>
           {categoryPath.length > 0 && (
@@ -1391,6 +1453,17 @@ export default function App() {
                   <span>
                     <strong>Traffic</strong>
                     <small>3 routes</small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath.length === 0 && (
+              <li>
+                <button type="button" className="lib" onClick={() => setCategoryPath(['lights'])}>
+                  <span className="swatch folder" />
+                  <span>
+                    <strong>Lights</strong>
+                    <small>3 lights</small>
                   </span>
                 </button>
               </li>
@@ -1567,6 +1640,29 @@ export default function App() {
                 </button>
               </li>
             )}
+            {categoryPath[0] === 'lights' &&
+              (
+                [
+                  ['point', LIGHT_POINT_PIECE],
+                  ['spot', LIGHT_SPOT_PIECE],
+                  ['area', LIGHT_AREA_PIECE],
+                ] as const
+              ).map(([kind, id]) => (
+                <li key={id}>
+                  <button
+                    type="button"
+                    className={activePiece === id ? 'lib active' : 'lib'}
+                    aria-pressed={activePiece === id}
+                    onClick={() => togglePiece(id)}
+                  >
+                    <span className="swatch" style={{ background: lightSwatch(kind) }} />
+                    <span>
+                      <strong>{lightKindLabel(kind)}</strong>
+                      <small>{activePiece === id ? 'Click the map to place' : 'Click to place'}</small>
+                    </span>
+                  </button>
+                </li>
+              ))}
             {categoryPath[0] === 'interactive' && (
               <li>
                 <PieceButton
@@ -1736,6 +1832,8 @@ export default function App() {
                       ? 'Buses follow the arrow, from the first point. Drag a sphere to move that point.'
                       : 'Traffic follows the arrow, from the first point. Drag a sphere to move that point.',
                 )
+              } else if (picked?.kind === 'light') {
+                setStatus('The beam shines along the light. Drag it to move or aim it. The wire sphere is its range.')
               } else if (picked?.kind === 'travel_point') {
                 setStatus(
                   picked.shelter
@@ -1787,6 +1885,10 @@ export default function App() {
               <span>
                 Click the ground to drop a pin. The next click starts a {trafficDrawLabel(activeGenerator.lane)} {trafficWidth(activeGenerator.lane)} m wide, and the point after that closes the loop. Escape leaves the tool.
               </span>
+            ) : lightKindFromPiece(activePiece) ? (
+              <span>
+                Click the map to place a {lightKindLabel(lightKindFromPiece(activePiece)!).toLowerCase()} 4 m off the surface, aimed back at it. Right-click turns it 90°. Escape leaves the tool.
+              </span>
             ) : activePiece === BUS_STOP_PIECE ? (
               <span>
                 Click the map to place a bus stop on the ground. Right-click turns it 90°. The arrow is the shelter&apos;s open front. Players arrive at the cross. Escape leaves the tool.
@@ -1811,7 +1913,10 @@ export default function App() {
           {(!selected || selected.kind === 'grind') && (
             <p className="hint">Select an object to edit its position, rotation, and scale.</p>
           )}
-          {(selected?.kind === 'mesh' || selected?.kind === 'spawn' || selected?.kind === 'travel_point') && (
+          {(selected?.kind === 'mesh' ||
+            selected?.kind === 'spawn' ||
+            selected?.kind === 'travel_point' ||
+            selected?.kind === 'light') && (
             <TransformBox
               key={selected.id}
               position={selected.position}
@@ -2106,6 +2211,229 @@ export default function App() {
               </p>
             </div>
           )}
+          {selected?.kind === 'light' && (
+            <div className="fields">
+              <p className={`badge ${selected.light}`}>
+                {selected.light === 'spot' ? 'SPOT LIGHT' : selected.light === 'area' ? 'AREA LIGHT' : 'POINT LIGHT'}
+              </p>
+              <label>
+                Name
+                <input value={selected.name} onChange={(event) => patchObject(selected.id, { name: event.target.value })} />
+              </label>
+              <label>
+                Type
+                <select
+                  value={selected.light}
+                  onChange={(event) => patchObject(selected.id, { light: event.target.value as LightKind })}
+                >
+                  <option value="point">Point</option>
+                  <option value="spot">Spot</option>
+                  <option value="area">Area</option>
+                </select>
+              </label>
+              <label>
+                Color
+                <input
+                  type="color"
+                  value={colorToHex(selected.color)}
+                  onChange={(event) => patchObject(selected.id, { color: hexToColor(event.target.value) })}
+                />
+              </label>
+              <label>
+                Energy
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={selected.energy}
+                  onChange={(event) => {
+                    const energy = Number(event.target.value)
+                    if (Number.isFinite(energy) && energy >= 0) patchObject(selected.id, { energy })
+                  }}
+                />
+              </label>
+              <label>
+                Exposure
+                <input
+                  type="number"
+                  step="0.1"
+                  value={selected.exposure}
+                  onChange={(event) => {
+                    const exposure = Number(event.target.value)
+                    if (Number.isFinite(exposure)) patchObject(selected.id, { exposure })
+                  }}
+                />
+              </label>
+              <label>
+                Range (m)
+                <input
+                  type="number"
+                  min="0.001"
+                  step="1"
+                  value={selected.range}
+                  onChange={(event) => {
+                    const range = Number(event.target.value)
+                    if (Number.isFinite(range) && range > 0) patchObject(selected.id, { range })
+                  }}
+                />
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={selected.castShadow}
+                  onChange={(event) => patchObject(selected.id, { castShadow: event.target.checked })}
+                />
+                Cast shadow
+              </label>
+              {selected.light !== 'area' && (
+                <label>
+                  Soft radius (m)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={selected.radius}
+                    onChange={(event) => {
+                      const radius = Number(event.target.value)
+                      if (Number.isFinite(radius) && radius >= 0) patchObject(selected.id, { radius })
+                    }}
+                  />
+                </label>
+              )}
+              {selected.light === 'spot' && (
+                <>
+                  <label>
+                    Cone (degrees)
+                    <input
+                      type="number"
+                      min="1"
+                      max="180"
+                      step="1"
+                      value={Math.round((selected.spotSize * 180) / Math.PI)}
+                      onChange={(event) => {
+                        const degrees = Number(event.target.value)
+                        if (!Number.isFinite(degrees)) return
+                        patchObject(selected.id, {
+                          spotSize: (Math.min(180, Math.max(1, degrees)) * Math.PI) / 180,
+                        })
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Edge softness
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={selected.spotBlend}
+                      onChange={(event) => {
+                        const spotBlend = Number(event.target.value)
+                        if (Number.isFinite(spotBlend)) {
+                          patchObject(selected.id, { spotBlend: Math.min(1, Math.max(0, spotBlend)) })
+                        }
+                      }}
+                    />
+                  </label>
+                </>
+              )}
+              {selected.light === 'area' && (
+                <>
+                  <label>
+                    Panel
+                    <select
+                      value={selected.areaMode}
+                      onChange={(event) =>
+                        patchObject(selected.id, { areaMode: event.target.value as AreaLightMode })
+                      }
+                    >
+                      <option value="area">Soft area</option>
+                      <option value="spotlight">Cone from the panel</option>
+                    </select>
+                  </label>
+                  <label>
+                    Shape
+                    <select
+                      value={selected.shape}
+                      onChange={(event) => patchObject(selected.id, { shape: event.target.value as AreaLightShape })}
+                    >
+                      <option value="square">Square</option>
+                      <option value="rectangle">Rectangle</option>
+                      <option value="disk">Disk</option>
+                      <option value="ellipse">Ellipse</option>
+                    </select>
+                  </label>
+                  <label>
+                    Width (m)
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.1"
+                      value={selected.size}
+                      onChange={(event) => {
+                        const size = Number(event.target.value)
+                        if (Number.isFinite(size) && size > 0) patchObject(selected.id, { size })
+                      }}
+                    />
+                  </label>
+                  {(selected.shape === 'rectangle' || selected.shape === 'ellipse') && (
+                    <label>
+                      Height (m)
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.1"
+                        value={selected.sizeY}
+                        onChange={(event) => {
+                          const sizeY = Number(event.target.value)
+                          if (Number.isFinite(sizeY) && sizeY > 0) patchObject(selected.id, { sizeY })
+                        }}
+                      />
+                    </label>
+                  )}
+                  {selected.areaMode === 'spotlight' && (
+                    <label>
+                      Cone (degrees)
+                      <input
+                        type="number"
+                        min="1"
+                        max="180"
+                        step="1"
+                        value={Math.round((selected.spread * 180) / Math.PI)}
+                        onChange={(event) => {
+                          const degrees = Number(event.target.value)
+                          if (!Number.isFinite(degrees)) return
+                          patchObject(selected.id, {
+                            spread: (Math.min(180, Math.max(1, degrees)) * Math.PI) / 180,
+                          })
+                        }}
+                      />
+                    </label>
+                  )}
+                </>
+              )}
+              <p className="hint">Active time of day. Clear every box and the game leaves this light out.</p>
+              {LIGHT_TIMES.map((entry) => (
+                <label key={entry.id} className="check">
+                  <input
+                    type="checkbox"
+                    checked={selected.times[entry.id]}
+                    onChange={(event) =>
+                      patchObject(selected.id, {
+                        times: { ...selected.times, [entry.id]: event.target.checked },
+                      })
+                    }
+                  />
+                  {entry.label}
+                </label>
+              ))}
+              <p className="hint">
+                {lightTimeMask(selected.times) === 0
+                  ? 'No time of day is selected, so this light is not used in the game.'
+                  : 'Direct light only. The game sun and sky stay on the time of day. Disk and ellipse panels export as rectangular bounds.'}
+              </p>
+            </div>
+          )}
           {selected?.kind === 'spawn' && (
             <div className="fields">
               <p className="badge spawn">SPAWN EMPTY</p>
@@ -2355,6 +2683,17 @@ function duplicateObject(
       position: [source.position[0] + shift, source.position[1], source.position[2]],
       rotation: [...source.rotation],
       points: source.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+    }
+  }
+  if (source.kind === 'light') {
+    return {
+      ...source,
+      id,
+      name: uniqueName(source.name, objects),
+      position: [source.position[0] + shift, source.position[1], source.position[2]],
+      rotation: [...source.rotation],
+      color: [...source.color],
+      times: { ...source.times },
     }
   }
   if (source.kind === 'grind') {

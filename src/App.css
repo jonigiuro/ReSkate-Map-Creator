@@ -634,6 +634,21 @@ button.ghost.danger {
   color: #c6efb0;
 }
 
+.badge.point {
+  border-color: #ffe08a;
+  color: #ffe08a;
+}
+
+.badge.spot {
+  border-color: #ff9f1c;
+  color: #ffd27a;
+}
+
+.badge.area {
+  border-color: #c4b5fd;
+  color: #ddd4ff;
+}
+
 .meta {
   margin: 0.25rem 0 0;
   font-size: 0.78rem;

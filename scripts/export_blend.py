@@ -416,6 +416,8 @@ def clear_scene():
         bpy.data.meshes.remove(block)
     for block in list(bpy.data.curves):
         bpy.data.curves.remove(block)
+    for block in list(bpy.data.lights):
+        bpy.data.lights.remove(block)
     for block in list(bpy.data.materials):
         bpy.data.materials.remove(block)
     for block in list(bpy.data.collections):
@@ -429,7 +431,7 @@ def clear_scene():
 
 def ensure_collections():
     root = bpy.context.scene.collection
-    names = ("Map", "Markers", "Grind curves", "NPC routes")
+    names = ("Map", "Markers", "Grind curves", "NPC routes", "Lights")
     out = {}
     for name in names:
         coll = bpy.data.collections.new(name)
@@ -2300,6 +2302,116 @@ def make_travel_point(name, position, rotation, shelter):
     return obj
 
 
+LIGHT_TIME_BITS = (
+    ("morning", 1),
+    ("noon", 2),
+    ("afternoon", 4),
+    ("evening", 8),
+    ("night", 16),
+    ("weatherday", 32),
+    ("weathernight", 64),
+)
+
+
+def ensure_light_rna():
+    """Register the addon's light fields when Studio is not loaded."""
+    if hasattr(bpy.types.Object, "sk8_light"):
+        return
+
+    def _sync_light_settings(self, _context):
+        if self.is_property_set("attenuation_radius"):
+            self.id_data["sk8_light_range"] = float(self.attenuation_radius)
+        self.id_data["sk8_light_tod"] = sum(bit for key, bit in LIGHT_TIME_BITS if key in self.time_of_day)
+        self.id_data["sk8_light_area_mode"] = self.area_mode
+
+    class Sk8LightSettings(bpy.types.PropertyGroup):
+        attenuation_radius: bpy.props.FloatProperty(
+            name="Range (m)", default=40.0, min=0.001, update=_sync_light_settings
+        )
+        time_of_day: bpy.props.EnumProperty(
+            name="Active Time of Day",
+            options={"ENUM_FLAG"},
+            items=[(key, key.title(), "", bit) for key, bit in LIGHT_TIME_BITS],
+            default={key for key, _bit in LIGHT_TIME_BITS},
+            update=_sync_light_settings,
+        )
+        area_mode: bpy.props.EnumProperty(
+            name="Native Type",
+            items=[
+                ("AREA", "Area", ""),
+                ("SPOTLIGHT", "Spotlight", ""),
+            ],
+            default="AREA",
+            update=_sync_light_settings,
+        )
+
+    try:
+        bpy.utils.register_class(Sk8LightSettings)
+    except Exception:
+        pass
+    bpy.types.Object.sk8_light = bpy.props.PointerProperty(type=Sk8LightSettings)
+
+
+def make_light(entry):
+    """Point, spot, or area lamp the addon exports in map.json lights."""
+    ensure_light_rna()
+    kind = entry.get("light")
+    if kind not in {"point", "spot", "area"}:
+        kind = "point"
+    bl_type = {"point": "POINT", "spot": "SPOT", "area": "AREA"}[kind]
+    label = {"point": "Point Light", "spot": "Spot Light", "area": "Area Light"}[kind]
+    data = bpy.data.lights.new(label, bl_type)
+    color = entry.get("color") or [1, 1, 1]
+    data.color = (
+        max(0.0, float(color[0])),
+        max(0.0, float(color[1])),
+        max(0.0, float(color[2])),
+    )
+    data.energy = max(0.0, float(entry.get("energy") if entry.get("energy") is not None else 10))
+    if hasattr(data, "exposure"):
+        data.exposure = float(entry.get("exposure") or 0)
+    if hasattr(data, "use_shadow"):
+        data.use_shadow = bool(entry.get("castShadow", True))
+    if kind in {"point", "spot"} and hasattr(data, "shadow_soft_size"):
+        data.shadow_soft_size = max(0.0, float(entry.get("radius") if entry.get("radius") is not None else 0.25))
+    if kind == "spot":
+        data.spot_size = min(math.pi, max(0.01, float(entry.get("spotSize") or math.pi / 4)))
+        blend = entry.get("spotBlend")
+        data.spot_blend = min(1.0, max(0.0, float(0.15 if blend is None else blend)))
+    if kind == "area":
+        shape = str(entry.get("shape") or "square").upper()
+        if shape not in {"SQUARE", "RECTANGLE", "DISK", "ELLIPSE"}:
+            shape = "SQUARE"
+        data.shape = shape
+        data.size = max(0.01, float(entry.get("size") or 1))
+        if hasattr(data, "size_y"):
+            data.size_y = max(0.01, float(entry.get("sizeY") or data.size))
+        if hasattr(data, "spread"):
+            data.spread = min(math.pi, max(0.01, float(entry.get("spread") or math.pi)))
+    obj = bpy.data.objects.new(label, data)
+    bpy.context.scene.collection.objects.link(obj)
+    obj.location = three_to_blender_pos(entry.get("position") or [0, 0, 0])
+    obj.rotation_euler = three_to_blender_euler(entry.get("rotation") or [0, 0, 0])
+    obj.show_in_front = True
+    times = entry.get("times") or {}
+    chosen = {key for key, _bit in LIGHT_TIME_BITS if times.get(key, True)}
+    mask = sum(bit for key, bit in LIGHT_TIME_BITS if key in chosen)
+    area_mode = "SPOTLIGHT" if entry.get("areaMode") == "spotlight" else "AREA"
+    distance = max(0.001, float(entry.get("range") if entry.get("range") is not None else 40))
+    try:
+        obj.sk8_light.attenuation_radius = distance
+        obj.sk8_light.time_of_day = chosen
+        obj.sk8_light.area_mode = area_mode
+    except Exception:
+        pass
+    obj["sk8_light_range"] = distance
+    obj["sk8_light_tod"] = mask
+    obj["sk8_light_area_mode"] = area_mode
+    obj["reskate_map_creator"] = "light"
+    obj["reskate_light_name"] = str(entry.get("name") or label)
+    return obj
+
+
 def ensure_npc_route_rna():
     """Register the addon's NPC route fields when Studio is not loaded.
 
@@ -3461,6 +3573,11 @@ def build(scene):
     for entry in objects:
         kind = entry.get("kind")
         name = entry.get("name") or kind or "Object"
+
+        if kind == "light":
+            obj = make_light(entry)
+            link_only(obj, colls["Lights"])
+            continue
 
         if kind == "travel_point":
             obj = make_travel_point(

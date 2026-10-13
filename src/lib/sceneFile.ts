@@ -12,6 +12,11 @@ import type {
   MeshObject,
   SceneObject,
   SpawnObject,
+  AreaLightMode,
+  AreaLightShape,
+  LightKind,
+  LightObject,
+  LightTimes,
   TrafficLane,
   TrafficLaneObject,
   TravelPointObject,
@@ -25,6 +30,7 @@ import {
   TRAFFIC_WEIGHT,
   TRAFFIC_WIDTH_M,
 } from './traffic'
+import { defaultLightTimes, LIGHT_TIMES } from './lights'
 import { STOP_NAME_MAX } from './travelPoints'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
@@ -288,6 +294,49 @@ function parseTravelPoint(raw: Record<string, unknown>, index: number): TravelPo
   }
 }
 
+function parseLightTimes(raw: unknown): LightTimes {
+  const source = isRecord(raw) ? raw : {}
+  const times = defaultLightTimes()
+  for (const entry of LIGHT_TIMES) times[entry.id] = source[entry.id] !== false
+  return times
+}
+
+function parseLight(raw: Record<string, unknown>, index: number): LightObject {
+  const where = `Object ${index + 1}`
+  if (typeof raw.id !== 'string') throw new Error(`${where} is missing an id.`)
+  const light: LightKind = raw.light === 'spot' || raw.light === 'area' ? raw.light : 'point'
+  const fallback = light === 'spot' ? 'Spot Light' : light === 'area' ? 'Area Light' : 'Point Light'
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : fallback
+  const color = vec3(raw.color ?? [1, 1, 1], `${where} color`).map((channel) =>
+    Math.min(1, Math.max(0, channel)),
+  ) as [number, number, number]
+  const shape: AreaLightShape =
+    raw.shape === 'rectangle' || raw.shape === 'disk' || raw.shape === 'ellipse' ? raw.shape : 'square'
+  const areaMode: AreaLightMode = raw.areaMode === 'spotlight' ? 'spotlight' : 'area'
+  return {
+    id: raw.id,
+    kind: 'light',
+    light,
+    name,
+    position: vec3(raw.position, `${where} position`),
+    rotation: vec3(raw.rotation, `${where} rotation`),
+    color,
+    energy: finiteAtLeast(raw.energy, 10, 0),
+    exposure: typeof raw.exposure === 'number' && Number.isFinite(raw.exposure) ? raw.exposure : 0,
+    castShadow: raw.castShadow !== false,
+    range: finiteAtLeast(raw.range, 40, 0.001),
+    radius: finiteAtLeast(raw.radius, 0.25, 0),
+    spotSize: finiteAtLeast(raw.spotSize, Math.PI / 4, 0.01, Math.PI),
+    spotBlend: finiteAtLeast(raw.spotBlend, 0.15, 0, 1),
+    areaMode,
+    shape,
+    size: finiteAtLeast(raw.size, 1, 0.01),
+    sizeY: finiteAtLeast(raw.sizeY, 1, 0.01),
+    spread: finiteAtLeast(raw.spread, Math.PI, 0.01, Math.PI),
+    times: parseLightTimes(raw.times),
+  }
+}
+
 function parseObject(value: unknown, index: number): SceneObject {
   if (!isRecord(value)) throw new Error(`Object ${index + 1} is not an object.`)
   if (value.kind === 'mesh') return parseMesh(value, index)
@@ -295,6 +344,7 @@ function parseObject(value: unknown, index: number): SceneObject {
   if (value.kind === 'spawn') return parseSpawn(value, index)
   if (value.kind === 'travel_point') return parseTravelPoint(value, index)
   if (value.kind === 'traffic_lane') return parseTrafficLane(value, index)
+  if (value.kind === 'light') return parseLight(value, index)
   throw new Error(`Object ${index + 1} has an unknown kind.`)
 }
 
