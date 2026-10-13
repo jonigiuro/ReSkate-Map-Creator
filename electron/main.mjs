@@ -16,6 +16,7 @@ import {
 } from '../scripts/blender_export.mjs'
 import {
   ensureAssetPreview,
+  readAssetPreviewMeta,
   resolveLibraryBlender,
   scanProjectLibrary,
 } from '../scripts/library_catalog.mjs'
@@ -255,6 +256,17 @@ function registerIpc() {
       scriptPath: previewScriptPath(),
     })
     return pathToFileURL(glbPath).href
+  })
+
+  ipcMain.handle('library:meta', async (_event, assetFile) => {
+    const blender = await resolveBlender()
+    const blenderPath = blender.ok && blender.path ? blender.path : await resolveLibraryBlender()
+    return readAssetPreviewMeta({
+      projectRoot: installDir(),
+      assetFile,
+      blenderPath,
+      scriptPath: previewScriptPath(),
+    })
   })
 
   ipcMain.handle('library:thumb', async (_event, assetFile) => {

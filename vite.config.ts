@@ -43,6 +43,12 @@ type LibraryHelpers = {
     blenderPath?: string | null
     scriptPath: string
   }) => Promise<string>
+  readAssetPreviewMeta: (options: {
+    projectRoot: string
+    assetFile: string
+    blenderPath?: string | null
+    scriptPath: string
+  }) => Promise<{ lightRig?: unknown }>
   resolveLibraryBlender: () => Promise<string | null>
 }
 
@@ -164,6 +170,43 @@ function blendExportPlugin(): Plugin {
             res.setHeader('Content-Type', 'image/png')
             res.setHeader('Cache-Control', 'no-cache')
             res.end(png)
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: message }))
+          }
+        })()
+      })
+
+      server.middlewares.use('/api/library-meta', (req, res) => {
+        if (req.method !== 'GET') {
+          res.statusCode = 405
+          res.end()
+          return
+        }
+        const query = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const assetFile = query.searchParams.get('file')
+        if (!assetFile) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'Missing file query.' }))
+          return
+        }
+        void (async () => {
+          try {
+            const { readAssetPreviewMeta, resolveLibraryBlender } = await loadLibraryHelpers()
+            const blenderPath = await resolveLibraryBlender()
+            const meta = await readAssetPreviewMeta({
+              projectRoot: root,
+              assetFile,
+              blenderPath,
+              scriptPath: path.join(root, 'scripts', 'preview_asset.py'),
+            })
+            res.statusCode = 200
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-cache')
+            res.end(JSON.stringify(meta))
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             res.statusCode = 500

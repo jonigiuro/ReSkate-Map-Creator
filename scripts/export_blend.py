@@ -3039,6 +3039,159 @@ def slot_material(project_root, texture_sets, overrides, sounds, slot, fallback)
     )
 
 
+def _under_object(obj, ancestor):
+    current = obj.parent
+    while current is not None:
+        if current == ancestor:
+            return True
+        current = current.parent
+    return False
+
+
+def prop_light_lamps(objects, node_name):
+    """Point, spot, and area lamps parented under the named empty.
+
+    A second copy of the same blend is renamed Direction.001, so the match
+    allows that numeric suffix.
+    """
+    node = next((obj for obj in objects if obj.name == node_name), None)
+    if node is None:
+        prefix = f"{node_name}."
+        node = next(
+            (
+                obj
+                for obj in objects
+                if obj.name.startswith(prefix) and obj.name[len(prefix) :].isdigit()
+            ),
+            None,
+        )
+    if node is None:
+        return None, []
+    lamps = [
+        obj
+        for obj in objects
+        if obj.type == "LIGHT"
+        and obj.data is not None
+        and obj.data.type in {"POINT", "SPOT", "AREA"}
+        and _under_object(obj, node)
+    ]
+    lamps.sort(key=lambda obj: obj.name)
+    return node, lamps
+
+
+def freeze_parent_inverses(objects):
+    """Keep each object's look, and drop parent inverses that hide its real rotation.
+
+    Library loads often cancel a lamp's euler with matrix_parent_inverse. Aiming
+    and then parenting the housing would otherwise let that euler spring back.
+    """
+    bpy.context.view_layer.update()
+    pending = list(objects)
+    ordered = []
+    while pending:
+        ready = [obj for obj in pending if obj.parent not in pending]
+        if not ready:
+            ordered.extend(pending)
+            break
+        ordered.extend(ready)
+        pending = [obj for obj in pending if obj not in ready]
+    for obj in ordered:
+        world = obj.matrix_world.copy()
+        obj.matrix_parent_inverse = Matrix.Identity(4)
+        obj.matrix_world = world
+    bpy.context.view_layer.update()
+
+
+def clamp_pitch(value):
+    """Direction's pitch around X, kept inside -360 to 360 degrees."""
+    try:
+        degrees = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if degrees < -360.0:
+        return -360.0
+    if degrees > 360.0:
+        return 360.0
+    return degrees
+
+
+def direction_pitch(rig):
+    """Editor X degrees. An older three-axis value keeps its X."""
+    raw = rig.get("rotation", 0)
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else 0
+    return clamp_pitch(raw)
+
+
+def aim_prop_light(node, degrees):
+    """Pitch Direction around X. 0 degrees is the pose in the blend."""
+    if node is None:
+        return
+    degrees = clamp_pitch(degrees)
+    if abs(degrees) < 1e-6 or abs(abs(degrees) - 360.0) < 1e-6:
+        return
+    extra = three_to_blender_euler((math.radians(degrees), 0.0, 0.0)).to_quaternion()
+    turned = node.rotation_quaternion @ extra
+    node.rotation_mode = "XYZ"
+    node.rotation_euler = turned.to_euler("XYZ")
+    bpy.context.view_layer.update()
+
+
+def stamp_prop_light(obj, rig):
+    """Write the inspector values onto a lamp. The type stays whatever the blend used."""
+    ensure_light_rna()
+    light = obj.data
+    kind = light.type
+    color = rig.get("color") or [1, 1, 1]
+    light.color = (
+        max(0.0, float(color[0])),
+        max(0.0, float(color[1])),
+        max(0.0, float(color[2])),
+    )
+    energy = rig.get("energy")
+    light.energy = max(0.0, float(10 if energy is None else energy))
+    if hasattr(light, "exposure"):
+        light.exposure = float(rig.get("exposure") or 0)
+    if hasattr(light, "use_shadow"):
+        light.use_shadow = bool(rig.get("castShadow", True))
+    if kind in {"POINT", "SPOT"} and hasattr(light, "shadow_soft_size"):
+        radius = rig.get("radius")
+        light.shadow_soft_size = max(0.0, float(0.25 if radius is None else radius))
+    if kind == "SPOT":
+        light.spot_size = min(math.pi, max(0.01, float(rig.get("spotSize") or math.pi / 4)))
+        blend = rig.get("spotBlend")
+        light.spot_blend = min(1.0, max(0.0, float(0.15 if blend is None else blend)))
+    if kind == "AREA":
+        shape = str(rig.get("shape") or "square").upper()
+        if shape not in {"SQUARE", "RECTANGLE", "DISK", "ELLIPSE"}:
+            shape = "SQUARE"
+        light.shape = shape
+        light.size = max(0.01, float(rig.get("size") or 1))
+        if hasattr(light, "size_y"):
+            light.size_y = max(0.01, float(rig.get("sizeY") or light.size))
+        if hasattr(light, "spread"):
+            light.spread = min(math.pi, max(0.01, float(rig.get("spread") or math.pi)))
+    times = rig.get("times") or {}
+    chosen = {key for key, _bit in LIGHT_TIME_BITS if times.get(key, True)}
+    mask = sum(bit for key, bit in LIGHT_TIME_BITS if key in chosen)
+    area_mode = "SPOTLIGHT" if rig.get("areaMode") == "spotlight" else "AREA"
+    distance = rig.get("range")
+    distance = max(0.001, float(40 if distance is None else distance))
+    try:
+        obj.sk8_light.attenuation_radius = distance
+        obj.sk8_light.time_of_day = chosen
+        obj.sk8_light.area_mode = area_mode
+    except Exception:
+        pass
+    if hasattr(light, "use_custom_distance"):
+        light.use_custom_distance = True
+        light.cutoff_distance = distance
+    obj["sk8_light_range"] = distance
+    obj["sk8_light_tod"] = mask
+    obj["sk8_light_area_mode"] = area_mode
+    obj["reskate_map_creator"] = "light"
+
+
 def append_authored_asset(
     name,
     blend_path,
@@ -3050,6 +3203,7 @@ def append_authored_asset(
     overrides=None,
     texture_sets=None,
     sounds=None,
+    light_rig=None,
 ):
     """
     Copy an authored .blend, .fbx, or .obj into the map.
@@ -3092,9 +3246,24 @@ def append_authored_asset(
     tag_imported_materials(before_materials, blend_path.as_posix())
 
     imported = [obj for obj in bpy.data.objects if obj not in before_objects]
-    dropped = [obj for obj in imported if obj.type not in KEEP_TYPES]
+    rig = light_rig if isinstance(light_rig, dict) else None
+    node_name = str((rig or {}).get("node") or "Direction")
+    direction_node, rig_lamps = prop_light_lamps(imported, node_name) if rig else (None, [])
+    lamp_ids = set(rig_lamps)
+    dropped = [obj for obj in imported if obj.type not in KEEP_TYPES and obj not in lamp_ids]
     dropped_ids = set(dropped)
     kept = [obj for obj in imported if obj not in dropped_ids]
+    if rig and direction_node is not None and direction_node in kept and rig_lamps:
+        # libraries.load leaves matrices at the identity until the objects are in a scene.
+        for obj in kept:
+            if obj.users_collection:
+                continue
+            bpy.context.scene.collection.objects.link(obj)
+        bpy.context.view_layer.update()
+        freeze_parent_inverses(kept)
+        aim_prop_light(direction_node, direction_pitch(rig))
+        for lamp in rig_lamps:
+            stamp_prop_light(lamp, rig)
 
     for obj in kept:
         parent = obj.parent
@@ -3115,7 +3284,9 @@ def append_authored_asset(
 
     kept_ids = set(kept)
     for obj in kept:
-        if is_grind_object(obj):
+        if obj.type == "LIGHT":
+            link_only(obj, colls["Lights"])
+        elif is_grind_object(obj):
             link_only(obj, colls["Grind curves"])
         else:
             link_only(obj, colls["Map"])
@@ -3144,8 +3315,11 @@ def append_authored_asset(
         obj.rotation_mode = "XYZ"
         obj.matrix_world = world
     cell = placement_cell(position)
-    for obj, _world in baked:
-        tag_join_piece(obj, blend_path.as_posix(), cell, blend_path.stem, part_name(obj))
+    # A prop light's lamps stay parented under Direction. Joining the housing
+    # into a neighbour would drop that hierarchy.
+    if not rig:
+        for obj, _world in baked:
+            tag_join_piece(obj, blend_path.as_posix(), cell, blend_path.stem, part_name(obj))
     bpy.data.objects.remove(root, do_unlink=True)
     if EXPORT_OPTIMIZE:
         share_duplicate_materials(collapse=False)
@@ -3627,6 +3801,7 @@ def build(scene):
                     overrides,
                     texture_sets,
                     sounds,
+                    entry.get("lightRig"),
                 )
                 continue
 

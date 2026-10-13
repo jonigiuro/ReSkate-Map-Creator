@@ -6,6 +6,7 @@ import {
   BUILTIN_LIBRARY_ROOTS,
   EMPTY_CATALOG,
   fetchAssetCatalog,
+  fetchPropLight,
   httpPreviewThumbUrl,
   type AssetCatalog,
 } from './lib/assetLibrary'
@@ -59,6 +60,10 @@ import {
   LIGHT_SPOT_PIECE,
   LIGHT_SPREAD,
   LIGHT_TIMES,
+  clampPitch,
+  clonePropLight,
+  parsePropLight,
+  isLightsFolderAsset,
   lightKindFromPiece,
   lightKindLabel,
   lightSwatch,
@@ -82,6 +87,7 @@ import type {
   AreaLightShape,
   LightKind,
   LightObject,
+  PropLight,
   TrafficLane,
   TrafficLaneObject,
   TravelPointObject,
@@ -125,6 +131,8 @@ export default function App() {
   const [pins, setPins] = useState<[number, number, number][]>([])
   history.pinsRef.current = pins
   const [placeYaw, setPlaceYaw] = useState(0)
+  const [heldPropLight, setHeldPropLight] = useState<PropLight | null>(null)
+  const heldPropLightRef = useRef<PropLight | null>(null)
   const [placeScaleX, setPlaceScaleX] = useState(1)
   const [transformMode, setTransformMode] = useState<TransformMode>('translate')
   const [snapMove, setSnapMove] = useState(false)
@@ -463,7 +471,7 @@ export default function App() {
     })
   }, [])
 
-  function placePiece(
+  async function placePiece(
     libraryId: string,
     point: THREE.Vector3,
     rotation: [number, number, number],
@@ -524,6 +532,11 @@ export default function App() {
     const builtin = getPiece(libraryId)
     const label = authored?.label ?? builtin?.label ?? libraryId
     const id = uid('mesh')
+    let lightRig: PropLight | undefined
+    if (authored?.assetFile && isLightsFolderAsset(authored.assetFile)) {
+      const rig = heldPropLightRef.current ?? (await fetchPropLight(authored.assetFile))
+      if (rig) lightRig = clonePropLight(rig)
+    }
     const before = history.checkpoint()
     const prev = history.sceneRef.current
     const obj: MeshObject = {
@@ -531,6 +544,7 @@ export default function App() {
       kind: 'mesh',
       libraryId,
       assetFile: authored?.assetFile,
+      lightRig,
       name: `${label.replace(/\s+/g, '_')}_${prev.objects.filter((o) => o.kind === 'mesh').length + 1}`,
       position: [round4(point.x), round4(point.y), round4(point.z)],
       rotation: [round4(rotation[0]), round4(rotation[1]), round4(rotation[2])],
@@ -1237,6 +1251,21 @@ export default function App() {
     ...(catalog.kits ?? []).map((kit) => [kit.assetFile, kit.revision] as const),
   ])
   const active = catalog.pieces.find((piece) => piece.id === activePiece)
+  const heldAssetFile = active?.assetFile && isLightsFolderAsset(active.assetFile) ? active.assetFile : null
+  useEffect(() => {
+    heldPropLightRef.current = null
+    setHeldPropLight(null)
+    if (!heldAssetFile) return
+    let cancel = false
+    void fetchPropLight(heldAssetFile).then((rig) => {
+      if (cancel) return
+      heldPropLightRef.current = rig
+      setHeldPropLight(rig)
+    })
+    return () => {
+      cancel = true
+    }
+  }, [heldAssetFile])
   const dedicatedAssets = useMemo(() => {
     const files = new Set<string>()
     for (const piece of catalog.pieces) {
@@ -1803,6 +1832,7 @@ export default function App() {
             placePieceId={activePiece}
             placeAssetFile={active?.assetFile}
             placeAssetRevision={active?.revision ?? 0}
+            placePropLight={heldPropLight}
             placeYaw={placeYaw}
             placeScaleX={placeScaleX}
             onRotatePiece={rotatePlacement}
@@ -1822,6 +1852,8 @@ export default function App() {
                 setStatus('Drag any sphere to move that corner. Each of the eight corners moves on its own.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'planter') {
                 setStatus('Drag a sphere sideways to move that corner. Up and down sets that corner only.')
+              } else if (picked?.kind === 'mesh' && picked.lightRig) {
+                setStatus('X looks the lamp up and down, from -360 to 360 degrees. The housing stays put.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'kit') {
                 setStatus('Drag the gizmo to move the whole run.')
               } else if (picked?.kind === 'traffic_lane') {
@@ -1949,6 +1981,19 @@ export default function App() {
               assetFile={selected.assetFile}
               dedicated={dedicatedAssets.has(selected.assetFile)}
               onName={(name) => patchObject(selected.id, { name })}
+            />
+          )}
+          {selected?.kind === 'mesh' && selected.lightRig && (
+            <PropLightFields
+              rig={parsePropLight(selected.lightRig) ?? selected.lightRig}
+              onPatch={(patch) =>
+                patchObject(selected.id, {
+                  lightRig: {
+                    ...(parsePropLight(selected.lightRig) ?? selected.lightRig),
+                    ...patch,
+                  } as PropLight,
+                })
+              }
             />
           )}
           {selected?.kind === 'mesh' && !selected.assetFile && (
@@ -2588,6 +2633,228 @@ function ExportDialog({
   )
 }
 
+function PropLightFields({
+  rig,
+  onPatch,
+}: {
+  rig: PropLight
+  onPatch: (patch: Partial<PropLight>) => void
+}) {
+  const badge = rig.kind === 'spot' ? 'SPOT LIGHT' : rig.kind === 'area' ? 'AREA LIGHT' : 'POINT LIGHT'
+  return (
+    <div className="fields">
+      <p className={`badge ${rig.kind}`}>{badge}</p>
+      <label>
+        X (degrees)
+        <input
+          type="number"
+          min={-360}
+          max={360}
+          step={1}
+          value={rig.rotation}
+          onChange={(event) => {
+            const rotation = Number(event.target.value)
+            if (!Number.isFinite(rotation)) return
+            onPatch({ rotation: clampPitch(rotation) })
+          }}
+        />
+      </label>
+      <p className="hint">
+        Looks the lamp up and down. 0 is how Direction faces in the blend. The housing stays put.
+      </p>
+      <label>
+        Color
+        <input
+          type="color"
+          value={colorToHex(rig.color)}
+          onChange={(event) => onPatch({ color: hexToColor(event.target.value) })}
+        />
+      </label>
+      <label>
+        Energy
+        <input
+          type="number"
+          min="0"
+          step="1"
+          value={rig.energy}
+          onChange={(event) => {
+            const energy = Number(event.target.value)
+            if (Number.isFinite(energy) && energy >= 0) onPatch({ energy })
+          }}
+        />
+      </label>
+      <label>
+        Exposure
+        <input
+          type="number"
+          step="0.1"
+          value={rig.exposure}
+          onChange={(event) => {
+            const exposure = Number(event.target.value)
+            if (Number.isFinite(exposure)) onPatch({ exposure })
+          }}
+        />
+      </label>
+      <label>
+        Range (m)
+        <input
+          type="number"
+          min="0.001"
+          step="1"
+          value={rig.range}
+          onChange={(event) => {
+            const range = Number(event.target.value)
+            if (Number.isFinite(range) && range > 0) onPatch({ range })
+          }}
+        />
+      </label>
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={rig.castShadow}
+          onChange={(event) => onPatch({ castShadow: event.target.checked })}
+        />
+        Cast shadow
+      </label>
+      {rig.kind !== 'area' && (
+        <label>
+          Soft radius (m)
+          <input
+            type="number"
+            min="0"
+            step="0.05"
+            value={rig.radius}
+            onChange={(event) => {
+              const radius = Number(event.target.value)
+              if (Number.isFinite(radius) && radius >= 0) onPatch({ radius })
+            }}
+          />
+        </label>
+      )}
+      {rig.kind === 'spot' && (
+        <>
+          <label>
+            Cone (degrees)
+            <input
+              type="number"
+              min="1"
+              max="180"
+              step="1"
+              value={Math.round((rig.spotSize * 180) / Math.PI)}
+              onChange={(event) => {
+                const degrees = Number(event.target.value)
+                if (!Number.isFinite(degrees)) return
+                onPatch({ spotSize: (Math.min(180, Math.max(1, degrees)) * Math.PI) / 180 })
+              }}
+            />
+          </label>
+          <label>
+            Edge softness
+            <input
+              type="number"
+              min="0"
+              max="1"
+              step="0.05"
+              value={rig.spotBlend}
+              onChange={(event) => {
+                const spotBlend = Number(event.target.value)
+                if (Number.isFinite(spotBlend)) onPatch({ spotBlend: Math.min(1, Math.max(0, spotBlend)) })
+              }}
+            />
+          </label>
+        </>
+      )}
+      {rig.kind === 'area' && (
+        <>
+          <label>
+            Panel
+            <select
+              value={rig.areaMode}
+              onChange={(event) => onPatch({ areaMode: event.target.value as AreaLightMode })}
+            >
+              <option value="area">Soft area</option>
+              <option value="spotlight">Cone from the panel</option>
+            </select>
+          </label>
+          <label>
+            Shape
+            <select
+              value={rig.shape}
+              onChange={(event) => onPatch({ shape: event.target.value as AreaLightShape })}
+            >
+              <option value="square">Square</option>
+              <option value="rectangle">Rectangle</option>
+              <option value="disk">Disk</option>
+              <option value="ellipse">Ellipse</option>
+            </select>
+          </label>
+          <label>
+            Width (m)
+            <input
+              type="number"
+              min="0.01"
+              step="0.1"
+              value={rig.size}
+              onChange={(event) => {
+                const size = Number(event.target.value)
+                if (Number.isFinite(size) && size > 0) onPatch({ size })
+              }}
+            />
+          </label>
+          {(rig.shape === 'rectangle' || rig.shape === 'ellipse') && (
+            <label>
+              Height (m)
+              <input
+                type="number"
+                min="0.01"
+                step="0.1"
+                value={rig.sizeY}
+                onChange={(event) => {
+                  const sizeY = Number(event.target.value)
+                  if (Number.isFinite(sizeY) && sizeY > 0) onPatch({ sizeY })
+                }}
+              />
+            </label>
+          )}
+          {rig.areaMode === 'spotlight' && (
+            <label>
+              Cone (degrees)
+              <input
+                type="number"
+                min="1"
+                max="180"
+                step="1"
+                value={Math.round((rig.spread * 180) / Math.PI)}
+                onChange={(event) => {
+                  const degrees = Number(event.target.value)
+                  if (!Number.isFinite(degrees)) return
+                  onPatch({ spread: (Math.min(180, Math.max(1, degrees)) * Math.PI) / 180 })
+                }}
+              />
+            </label>
+          )}
+        </>
+      )}
+      <p className="hint">Active time of day. Clear every box and the game leaves this light out.</p>
+      {LIGHT_TIMES.map((entry) => (
+        <label key={entry.id} className="check">
+          <input
+            type="checkbox"
+            checked={rig.times[entry.id]}
+            onChange={(event) => onPatch({ times: { ...rig.times, [entry.id]: event.target.checked } })}
+          />
+          {entry.label}
+        </label>
+      ))}
+      <p className="hint">
+        {lightTimeMask(rig.times) === 0
+          ? 'No time of day is selected, so this light is not used in the game.'
+          : 'These values are the lamp. The blend only supplies the type.'}
+      </p>
+    </div>
+  )
+}
+
 function radToDeg(radians: number) {
   return (radians * 180) / Math.PI
 }
@@ -2625,6 +2892,7 @@ function duplicateObject(
       rotation: [...source.rotation],
       scale: [...source.scale],
       sk8: { ...source.sk8 },
+      lightRig: source.lightRig ? clonePropLight(source.lightRig) : undefined,
       materials: source.materials ? { ...source.materials } : undefined,
       sounds: source.sounds ? { ...source.sounds } : undefined,
       generator: source.generator

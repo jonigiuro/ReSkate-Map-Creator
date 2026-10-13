@@ -78,6 +78,8 @@ Open **Lights**. **Point Light** shines every way. **Spot Light** is a cone. **A
 
 Select a light to set its color, energy, exposure, range, and shadow. A spot has a cone angle and edge softness. An area light has a shape and a size. Choose which times of day it is on. Clear every time and the game leaves it out. The sun and sky stay on the game's own time of day. These are direct lights.
 
+A `.blend` in a folder named Lights can carry its own lamp. Name an empty `Direction`, and parent a point, spot, or area lamp under it. Placing that piece keeps the mesh. The lamp type comes from the file. Color, energy, range, and the other lamp settings are the ones in the inspector. **X** pitches that empty so the lamp looks up and down, from -360 to 360 degrees. The housing stays put.
+
 ### Spawn
 
 Every map has one spawn. The figure is 1.7 m tall, and the arrow is where the skater heads. Export writes an empty named `spawn`.

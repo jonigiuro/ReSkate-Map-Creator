@@ -2,7 +2,9 @@ import { useGLTF, useTexture } from '@react-three/drei'
 import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
 import { httpPreviewUrl } from '../../lib/assetLibrary'
+import { clampPitch, lightPreviewIntensity } from '../../lib/lights'
 import { getPiece } from '../../lib/library'
+import type { PropLight } from '../../types/scene'
 import { materialNamesFromObject, setPreviewMaterials } from '../../lib/previewMaterials'
 import { assignSlotMaterials, useSlotOverrides } from '../TextureSetMaterial'
 
@@ -194,18 +196,89 @@ function bindMirrorDraw(root: THREE.Object3D, mirrored: boolean) {
   })
 }
 
+function bindPropLight(root: THREE.Object3D, rig: PropLight) {
+  const node = root.getObjectByName(rig.node)
+  if (!node) return () => {}
+  const stored = node.userData.propLightRest as THREE.Quaternion | undefined
+  const rest = stored ?? node.quaternion.clone()
+  node.userData.propLightRest = rest
+  node.quaternion.copy(rest)
+  const added: THREE.Object3D[] = []
+  const anchor = node.parent ?? node
+  anchor.updateWorldMatrix(true, true)
+  node.updateWorldMatrix(true, false)
+  for (const lamp of rig.lamps) {
+    const group = new THREE.Group()
+    const world = anchor.localToWorld(new THREE.Vector3(lamp.position[0], lamp.position[1], lamp.position[2]))
+    group.position.copy(node.worldToLocal(world))
+    const beam = new THREE.Vector3(lamp.beam[0], lamp.beam[1], lamp.beam[2])
+    if (beam.lengthSq() > 1e-8) {
+      group.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), beam.normalize())
+    }
+    group.userData.propLight = true
+    const color = new THREE.Color(rig.color[0], rig.color[1], rig.color[2])
+    const intensity = lightPreviewIntensity(rig.energy, rig.exposure)
+    if (rig.kind === 'point') {
+      group.add(new THREE.PointLight(color, intensity, rig.range, 2))
+    } else {
+      const angle = rig.kind === 'spot' ? rig.spotSize / 2 : Math.min(Math.PI / 2 - 0.01, rig.spread / 2)
+      const light = new THREE.SpotLight(color, intensity, rig.range, angle, rig.spotBlend, 2)
+      light.castShadow = false
+      const target = new THREE.Object3D()
+      target.position.set(0, -1, 0)
+      group.add(target)
+      light.target = target
+      group.add(light)
+      const length = 1.2
+      const radius = Math.max(Math.tan(angle) * length, 0.05)
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(radius, length, 16, 1, true),
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.28,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          toneMapped: false,
+        }),
+      )
+      cone.position.set(0, -length / 2, 0)
+      cone.raycast = () => {}
+      group.add(cone)
+    }
+    node.add(group)
+    added.push(group)
+  }
+  node.quaternion.copy(rest)
+  node.rotateX(THREE.MathUtils.degToRad(clampPitch(rig.rotation)))
+  return () => {
+    node.quaternion.copy(rest)
+    for (const group of added) {
+      group.traverse((child) => {
+        const mesh = child as THREE.Mesh
+        if (mesh.geometry) mesh.geometry.dispose()
+        const material = mesh.material as THREE.Material | undefined
+        if (material && 'dispose' in material) material.dispose()
+      })
+      group.removeFromParent()
+    }
+  }
+}
+
 function GltfMesh({
   url,
   assetFile,
   materials,
   ghost,
   mirrored = false,
+  propLight,
 }: {
   url: string
   assetFile?: string
   materials?: Record<string, string>
   ghost?: boolean
   mirrored?: boolean
+  propLight?: PropLight
 }) {
   const gltf = useGLTF(url)
   const overrides = useSlotOverrides(materials, ghost)
@@ -270,6 +343,11 @@ function GltfMesh({
     bindMirrorDraw(view.clone, mirrored)
   }, [mirrored, view])
 
+  useLayoutEffect(() => {
+    if (!propLight) return
+    return bindPropLight(view.clone, propLight)
+  }, [propLight, view])
+
   return <primitive object={view.clone} />
 }
 
@@ -279,19 +357,28 @@ function AuthoredMesh({
   materials,
   ghost,
   mirrored = false,
+  propLight,
 }: {
   assetFile: string
   revision: number
   materials?: Record<string, string>
   ghost?: boolean
   mirrored?: boolean
+  propLight?: PropLight
 }) {
   const url = useAuthoredPreviewUrl(assetFile, revision)
   if (!url) return <FallbackBox ghost={ghost} />
   return (
     <Suspense fallback={<FallbackBox ghost={ghost} />}>
       <PreviewErrorBoundary key={url} fallback={<FallbackBox ghost={ghost} />}>
-        <GltfMesh url={url} assetFile={assetFile} materials={materials} ghost={ghost} mirrored={mirrored} />
+        <GltfMesh
+          url={url}
+          assetFile={assetFile}
+          materials={materials}
+          ghost={ghost}
+          mirrored={mirrored}
+          propLight={propLight}
+        />
       </PreviewErrorBoundary>
     </Suspense>
   )
@@ -429,6 +516,7 @@ export function LibraryMesh({
   color,
   ghost,
   mirrored = false,
+  propLight,
 }: {
   libraryId: string
   assetFile?: string
@@ -438,6 +526,7 @@ export function LibraryMesh({
   ghost?: boolean
   /** Negative scale reverses triangle winding. Draw the outside, not the inside. */
   mirrored?: boolean
+  propLight?: PropLight
 }) {
   if (assetFile) {
     return (
@@ -447,6 +536,7 @@ export function LibraryMesh({
         materials={materials}
         ghost={ghost}
         mirrored={mirrored}
+        propLight={propLight}
       />
     )
   }

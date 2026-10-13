@@ -30,7 +30,7 @@ import {
   TRAFFIC_WEIGHT,
   TRAFFIC_WIDTH_M,
 } from './traffic'
-import { defaultLightTimes, LIGHT_TIMES } from './lights'
+import { defaultLightTimes, LIGHT_TIMES, parsePropLight } from './lights'
 import { STOP_NAME_MAX } from './travelPoints'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
@@ -195,6 +195,8 @@ function parseMesh(raw: Record<string, unknown>, index: number): MeshObject {
     },
   }
   if (typeof raw.assetFile === 'string' && raw.assetFile) mesh.assetFile = raw.assetFile
+  const lightRig = parsePropLight(raw.lightRig)
+  if (lightRig) mesh.lightRig = lightRig
   const materials = parseMaterials(raw.materials)
   if (materials) mesh.materials = materials
   const sounds = parseSounds(raw.sounds)

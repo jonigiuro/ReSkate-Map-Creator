@@ -1,3 +1,6 @@
+import { isLightsFolderAsset, parsePropLight } from './lights'
+import type { PropLight } from '../types/scene'
+
 export type AssetCategory = {
   id: string
   label: string
@@ -61,7 +64,23 @@ export async function fetchAssetCatalog(): Promise<AssetCatalog> {
 }
 
 // Keep in step with PREVIEW_PIPELINE in scripts/library_catalog.mjs so cached meshes reload.
-const PREVIEW_PIPELINE = 5
+const PREVIEW_PIPELINE = 7
+
+export async function fetchPropLight(assetFile: string): Promise<PropLight | null> {
+  if (!isLightsFolderAsset(assetFile)) return null
+  try {
+    if (window.location.protocol === 'file:' && window.reskateDesktop?.previewMeta) {
+      const meta = await window.reskateDesktop.previewMeta(assetFile)
+      return parsePropLight(meta?.lightRig)
+    }
+    const res = await fetch(`/api/library-meta?file=${encodeURIComponent(assetFile)}`)
+    if (!res.ok) return null
+    const meta = (await res.json()) as { lightRig?: unknown }
+    return parsePropLight(meta.lightRig)
+  } catch {
+    return null
+  }
+}
 
 export function httpPreviewUrl(assetFile: string, revision: number) {
   return `/api/library-preview?file=${encodeURIComponent(assetFile)}&v=${revision}&p=${PREVIEW_PIPELINE}`

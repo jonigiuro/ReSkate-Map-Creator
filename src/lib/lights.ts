@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { LightKind, LightTime, LightTimes } from '../types/scene'
+import type { AreaLightShape, LightKind, LightTime, LightTimes, PropLamp, PropLight } from '../types/scene'
 
 export const LIGHT_POINT_PIECE = 'light-point'
 export const LIGHT_SPOT_PIECE = 'light-spot'
@@ -113,6 +113,117 @@ export function lightAimRotation(normal: THREE.Vector3, yaw: number): [number, n
   align.premultiply(twist)
   const euler = new THREE.Euler().setFromQuaternion(align, 'XYZ')
   return [euler.x, euler.y, euler.z]
+}
+
+const LIGHT_KINDS = new Set<LightKind>(['point', 'spot', 'area'])
+const AREA_SHAPES = new Set<AreaLightShape>(['square', 'rectangle', 'disk', 'ellipse'])
+
+/** A path segment named Lights marks props whose lamps should become skate lights. */
+export function isLightsFolderAsset(assetFile: string) {
+  return assetFile.split(/[\\/]/).some((part) => part.toLowerCase() === 'lights')
+}
+
+/** Direction's pitch around X, kept inside -360 to 360 degrees. */
+export function clampPitch(value: number) {
+  if (!Number.isFinite(value)) return 0
+  if (value < -360) return -360
+  if (value > 360) return 360
+  return value
+}
+
+/** X degrees. An older three-axis value keeps its X and drops Y and Z. */
+export function clampDirection(value: unknown): number {
+  if (typeof value === 'number') return clampPitch(value)
+  if (Array.isArray(value)) return clampPitch(Number(value[0]))
+  return 0
+}
+
+function finiteVec3(value: unknown): [number, number, number] | null {
+  if (!Array.isArray(value) || value.length < 3) return null
+  const numbers = value.slice(0, 3).map((channel) => Number(channel))
+  if (numbers.some((channel) => !Number.isFinite(channel))) return null
+  return [numbers[0], numbers[1], numbers[2]]
+}
+
+function finiteNumber(value: unknown, fallback: number, min: number, max = Infinity) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(max, Math.max(min, number))
+}
+
+function unitVec3(value: unknown): [number, number, number] | null {
+  const vector = finiteVec3(value)
+  if (!vector) return null
+  const length = Math.hypot(vector[0], vector[1], vector[2])
+  if (length < 1e-8) return null
+  return [vector[0] / length, vector[1] / length, vector[2] / length]
+}
+
+export function parsePropLight(value: unknown): PropLight | null {
+  if (typeof value !== 'object' || value === null) return null
+  const raw = value as Record<string, unknown>
+  if (!Array.isArray(raw.lamps)) return null
+  const lamps: PropLamp[] = []
+  let lampKind: LightKind | null = null
+  for (const entry of raw.lamps) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const lamp = entry as Record<string, unknown>
+    const position = finiteVec3(lamp.position)
+    const beam = unitVec3(lamp.beam)
+    if (!position || !beam) continue
+    if (lampKind === null && typeof lamp.kind === 'string' && LIGHT_KINDS.has(lamp.kind as LightKind)) {
+      lampKind = lamp.kind as LightKind
+    }
+    lamps.push({ position, beam })
+  }
+  if (lamps.length === 0) return null
+  const kind = typeof raw.kind === 'string' && LIGHT_KINDS.has(raw.kind as LightKind)
+    ? (raw.kind as LightKind)
+    : lampKind
+  if (!kind) return null
+  const node = typeof raw.node === 'string' && raw.node.trim() ? raw.node : 'Direction'
+  const color = finiteVec3(raw.color) ?? [1, 1, 1]
+  const shape = typeof raw.shape === 'string' && AREA_SHAPES.has(raw.shape as AreaLightShape)
+    ? (raw.shape as AreaLightShape)
+    : 'square'
+  const times = defaultLightTimes()
+  if (typeof raw.times === 'object' && raw.times !== null) {
+    for (const entry of LIGHT_TIMES) {
+      if ((raw.times as Record<string, unknown>)[entry.id] === false) times[entry.id] = false
+    }
+  }
+  return {
+    node,
+    kind,
+    rotation: clampDirection(raw.rotation),
+    color: color.map((channel) => Math.min(1, Math.max(0, channel))) as [number, number, number],
+    energy: finiteNumber(raw.energy, LIGHT_ENERGY, 0),
+    exposure: finiteNumber(raw.exposure, LIGHT_EXPOSURE, -64, 64),
+    castShadow: raw.castShadow !== false,
+    range: finiteNumber(raw.range, LIGHT_RANGE_M, 0.001),
+    radius: finiteNumber(raw.radius, LIGHT_SOFT_M, 0),
+    spotSize: finiteNumber(raw.spotSize, LIGHT_SPOT_ANGLE, 0.01, Math.PI),
+    spotBlend: finiteNumber(raw.spotBlend, LIGHT_SPOT_BLEND, 0, 1),
+    areaMode: raw.areaMode === 'spotlight' ? 'spotlight' : 'area',
+    shape,
+    size: finiteNumber(raw.size, LIGHT_AREA_SIZE, 0.01),
+    sizeY: finiteNumber(raw.sizeY, LIGHT_AREA_SIZE, 0.01),
+    spread: finiteNumber(raw.spread, LIGHT_SPREAD, 0.01, Math.PI),
+    times,
+    lamps,
+  }
+}
+
+export function clonePropLight(rig: PropLight): PropLight {
+  return {
+    ...rig,
+    color: [...rig.color],
+    times: { ...rig.times },
+    lamps: rig.lamps.map((lamp) => ({
+      position: [...lamp.position],
+      beam: [...lamp.beam],
+    })),
+  }
 }
 
 export function lightPlacement(point: THREE.Vector3, normal: THREE.Vector3, yaw: number) {

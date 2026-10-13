@@ -35,6 +35,7 @@ export type ReskateDesktopApi = {
   >
   previewAsset: (assetFile: string) => Promise<string>
   previewThumb: (assetFile: string) => Promise<string>
+  previewMeta: (assetFile: string) => Promise<{ lightRig?: unknown }>
   exportBlend: (scene: unknown) => Promise<DesktopSaveResult>
   saveJson: (scene: unknown, filePath?: string) => Promise<DesktopSaveResult>
   openJson: () => Promise<DesktopSaveResult>

@@ -336,7 +336,7 @@ export function resolveLibraryBlender() {
 }
 
 // Bump when the preview mesh changes for the same source file.
-const PREVIEW_PIPELINE = 5
+const PREVIEW_PIPELINE = 7
 
 function cacheDirFor(projectRoot, assetFile) {
   const hash = createHash('sha1').update(assetFile).digest('hex').slice(0, 16)
@@ -397,6 +397,12 @@ async function buildPreview({ projectRoot, assetFile, blenderPath, scriptPath })
   written.pipeline = PREVIEW_PIPELINE
   await writeFile(metaPath, JSON.stringify(written), 'utf8')
   return glbPath
+}
+
+export async function readAssetPreviewMeta(options) {
+  const glbPath = await ensureAssetPreview(options)
+  const metaPath = path.join(path.dirname(glbPath), 'meta.json')
+  return JSON.parse(await readFile(metaPath, 'utf8'))
 }
 
 export function ensureAssetPreview(options) {

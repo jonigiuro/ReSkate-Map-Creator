@@ -83,12 +83,51 @@ export type MeshGenerator =
   | RailGenerator
   | PlanterGenerator
 
+/** Where a prop lamp sits. Only the placement comes from the blend. */
+export interface PropLamp {
+  /** Metres, Three.js Y-up, local to the mesh Direction hangs from. */
+  position: [number, number, number]
+  /** Unit beam, Three.js Y-up, local to Direction. */
+  beam: [number, number, number]
+}
+
+/**
+ * A library prop that carries its own lamp. The type is read from the blend.
+ * Color, energy, and the other lamp values are set in the editor.
+ * rotation pitches the Direction empty around X, in degrees from -360 to 360.
+ */
+export interface PropLight {
+  node: string
+  kind: LightKind
+  /** Degrees around X, from -360 to 360. 0 is the pose saved in the blend. */
+  rotation: number
+  /** Linear RGB. */
+  color: [number, number, number]
+  energy: number
+  exposure: number
+  castShadow: boolean
+  range: number
+  radius: number
+  /** Full cone angle in radians. */
+  spotSize: number
+  spotBlend: number
+  areaMode: AreaLightMode
+  shape: AreaLightShape
+  size: number
+  sizeY: number
+  spread: number
+  times: LightTimes
+  lamps: PropLamp[]
+}
+
 export interface MeshObject {
   id: string
   kind: 'mesh'
   libraryId: LibraryId
   /** Project-relative .blend, .fbx, or .obj. Set for objects dropped in from a folder. */
   assetFile?: string
+  /** Set when the blend has a Direction empty with a point, spot, or area lamp under it. */
+  lightRig?: PropLight
   /** Present when the mesh was drawn with a generator. */
   generator?: MeshGenerator
   name: string

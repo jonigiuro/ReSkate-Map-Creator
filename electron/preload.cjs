@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('reskateDesktop', {
   listTextureSets: () => ipcRenderer.invoke('textures:list'),
   previewAsset: (assetFile) => ipcRenderer.invoke('library:preview', assetFile),
   previewThumb: (assetFile) => ipcRenderer.invoke('library:thumb', assetFile),
+  previewMeta: (assetFile) => ipcRenderer.invoke('library:meta', assetFile),
   exportBlend: (scene) => ipcRenderer.invoke('blend:export', scene),
   saveJson: (scene, filePath) => ipcRenderer.invoke('json:save', scene, filePath),
   openJson: () => ipcRenderer.invoke('json:open'),

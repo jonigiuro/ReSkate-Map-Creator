@@ -26,6 +26,62 @@ def enable_gltf():
     addon_utils.enable("io_scene_gltf2")
 
 
+def swizzle_yup(vector):
+    """Blender Z-up → Three.js Y-up. Same swap the glTF exporter uses."""
+    return [float(vector.x), float(vector.z), float(-vector.y)]
+
+
+def _under(obj, ancestor):
+    current = obj.parent
+    while current is not None:
+        if current == ancestor:
+            return True
+        current = current.parent
+    return False
+
+
+def capture_light_rig():
+    """A Direction empty with point, spot, or area lamps under it.
+
+    Only the lamp type and where it sits are recorded. Energy, color, and the
+    cone are chosen in the editor.
+    """
+    direction = next((obj for obj in bpy.data.objects if obj.name == "Direction"), None)
+    if direction is None:
+        return None
+    bpy.context.view_layer.update()
+    lamps = []
+    for obj in bpy.data.objects:
+        data = obj.data
+        if obj.type != "LIGHT" or data is None or data.type not in {"POINT", "SPOT", "AREA"}:
+            continue
+        if not _under(obj, direction):
+            continue
+        anchor = direction.parent
+        rooted = anchor.matrix_world.inverted() @ obj.matrix_world if anchor else obj.matrix_world
+        beam_local = direction.matrix_world.inverted().to_3x3() @ (
+            obj.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0))
+        )
+        if beam_local.length < 1e-8:
+            continue
+        lamps.append(
+            {
+                "name": obj.name,
+                "kind": data.type.lower(),
+                "position": swizzle_yup(rooted.to_translation()),
+                "beam": swizzle_yup(beam_local.normalized()),
+            }
+        )
+    if not lamps:
+        return None
+    lamps.sort(key=lambda lamp: lamp["name"])
+    return {
+        "node": direction.name,
+        "kind": lamps[0]["kind"],
+        "lamps": [{key: value for key, value in lamp.items() if key != "name"} for lamp in lamps],
+    }
+
+
 def drop_non_geometry():
     for obj in list(bpy.data.objects):
         if obj.type in {"CAMERA", "LIGHT", "SPEAKER"}:
@@ -256,6 +312,7 @@ def main():
 
     ensure_sk8_material()
     load_source(source)
+    light_rig = capture_light_rig()
     drop_non_geometry()
     drop_invisible_collision()
     curves_to_mesh()
@@ -265,6 +322,8 @@ def main():
     promote_surface_for_gltf()
     bpy.context.view_layer.update()
     bounds = three_bounds()
+    if light_rig:
+        bounds["lightRig"] = light_rig
     render_thumbnail(Path(glb_path).with_suffix(".png"))
 
     enable_gltf()

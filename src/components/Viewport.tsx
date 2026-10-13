@@ -14,6 +14,7 @@ import type {
   SceneObject,
   SpawnObject,
   LightObject,
+  PropLight,
   TrafficLaneObject,
   TravelPointObject,
 } from '../types/scene'
@@ -56,7 +57,7 @@ import {
   trafficColor,
   trafficWidth,
 } from '../lib/traffic'
-import { lightKindFromPiece, lightPlacement, lightPreviewIntensity } from '../lib/lights'
+import { lightKindFromPiece, lightPlacement, lightPreviewIntensity, parsePropLight } from '../lib/lights'
 import { BUS_STOP_PIECE, isInteractivePiece, travelGuide } from '../lib/travelPoints'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
@@ -103,6 +104,7 @@ type Props = {
   placePieceId: string | null
   placeAssetFile?: string
   placeAssetRevision?: number
+  placePropLight?: PropLight | null
   placeYaw: number
   placeScaleX: number
   assetRevisions: Record<string, number>
@@ -804,6 +806,7 @@ function MeshItem({
             assetRevision={assetRevision}
             materials={authoredMaterials(obj.assetFile, obj.materials, dedicatedAssets)}
             mirrored={obj.scale[0] * obj.scale[1] * obj.scale[2] < 0}
+            propLight={obj.lightRig ? parsePropLight(obj.lightRig) ?? obj.lightRig : undefined}
           />
         )}
       </group>
@@ -1166,44 +1169,45 @@ function LightBeam({
   )
 }
 
-function AimedSpot({
-  color,
-  intensity,
-  range,
-  angle,
-  penumbra,
-  castShadow,
-}: {
-  color: [number, number, number]
-  intensity: number
-  range: number
-  angle: number
-  penumbra: number
-  castShadow: boolean
-}) {
-  const light = useRef<THREE.SpotLight>(null)
+function ActiveLightPreview({ obj }: { obj: LightObject | null }) {
+  const group = useRef<THREE.Group>(null)
+  const point = useRef<THREE.PointLight>(null)
+  const spot = useRef<THREE.SpotLight>(null)
   const target = useRef<THREE.Object3D>(null)
+
   useLayoutEffect(() => {
-    if (!light.current || !target.current) return
-    light.current.target = target.current
-    target.current.updateMatrixWorld()
+    if (spot.current && target.current) spot.current.target = target.current
   })
+
+  useLayoutEffect(() => {
+    const groupNode = group.current
+    const pointLight = point.current
+    const spotLight = spot.current
+    if (!groupNode || !pointLight || !spotLight) return
+    const spotOn = obj?.light === 'spot'
+    const intensity = obj ? lightPreviewIntensity(obj.energy, obj.exposure) : 0
+    if (obj) {
+      groupNode.position.set(obj.position[0], obj.position[1], obj.position[2])
+      groupNode.rotation.set(obj.rotation[0], obj.rotation[1], obj.rotation[2])
+      groupNode.updateMatrixWorld(true)
+      const color = new THREE.Color(obj.color[0], obj.color[1], obj.color[2])
+      pointLight.color.copy(color)
+      spotLight.color.copy(color)
+      pointLight.distance = obj.range
+      spotLight.distance = obj.range
+      spotLight.angle = obj.spotSize / 2
+      spotLight.penumbra = obj.spotBlend
+    }
+    pointLight.intensity = obj && !spotOn ? intensity : 0
+    spotLight.intensity = spotOn ? intensity : 0
+  }, [obj])
+
   return (
-    <>
-      <spotLight
-        ref={light}
-        color={color}
-        intensity={intensity}
-        distance={range}
-        decay={2}
-        angle={angle}
-        penumbra={penumbra}
-        castShadow={castShadow}
-        shadow-mapSize={[512, 512]}
-        shadow-bias={-0.0004}
-      />
+    <group ref={group}>
+      <pointLight ref={point} intensity={0} decay={2} />
+      <spotLight ref={spot} intensity={0} decay={2} angle={Math.PI / 4} penumbra={0.15} />
       <object3D ref={target} position={[0, -1, 0]} />
-    </>
+    </group>
   )
 }
 
@@ -1231,7 +1235,6 @@ function LightItem({
   const ref = useRef<THREE.Group>(null)
   const dragging = useRef(false)
   const mode = transformMode === 'scale' ? 'translate' : transformMode
-  const intensity = lightPreviewIntensity(obj.energy, obj.exposure)
 
   useLayoutEffect(() => {
     const group = ref.current
@@ -1262,30 +1265,10 @@ function LightItem({
         </mesh>
         <LightBeam obj={obj} />
         {selected && (
-          <mesh raycast={() => {}}>
+          <mesh raycast={() => {}} castShadow={false} receiveShadow={false}>
             <sphereGeometry args={[obj.range, 24, 12]} />
             <meshBasicMaterial color={obj.color} wireframe transparent opacity={0.08} toneMapped={false} />
           </mesh>
-        )}
-        {obj.light === 'spot' ? (
-          <AimedSpot
-            color={obj.color}
-            intensity={intensity}
-            range={obj.range}
-            angle={obj.spotSize / 2}
-            penumbra={obj.spotBlend}
-            castShadow={selected && obj.castShadow}
-          />
-        ) : (
-          <pointLight
-            color={obj.color}
-            intensity={intensity}
-            distance={obj.range}
-            decay={2}
-            castShadow={selected && obj.castShadow}
-            shadow-mapSize={[512, 512]}
-            shadow-bias={-0.0004}
-          />
         )}
       </group>
       {selected && tool === 'select' && (
@@ -2577,6 +2560,7 @@ function SceneContents(props: Props) {
     placePieceId,
     placeAssetFile,
     placeAssetRevision = 0,
+    placePropLight,
     placeYaw,
     placeScaleX,
     assetRevisions,
@@ -2609,6 +2593,8 @@ function SceneContents(props: Props) {
 
   const placingInteractive = isInteractivePiece(placePieceId)
   const placingLight = lightKindFromPiece(placePieceId)
+  const activeLight =
+    scene.objects.find((obj): obj is LightObject => obj.id === selectedId && obj.kind === 'light') ?? null
   const previewY = previewHit ? surfaceHeight(previewHit.point, previewHit.normal) : 0
   const previewRotation = placingInteractive
     ? ([0, placeYaw, 0] as [number, number, number])
@@ -2636,6 +2622,8 @@ function SceneContents(props: Props) {
       <ambientLight intensity={0.22} />
       <hemisphereLight args={['#d5e2ee', '#3a332c', 0.28]} />
       <Sun />
+      {/* These two stay mounted. A new light per lamp would rebuild every material shader. */}
+      <ActiveLightPreview obj={activeLight} />
 
       <Ground onGroundClick={onGroundClick} />
 
@@ -2765,6 +2753,7 @@ function SceneContents(props: Props) {
             assetFile={placeAssetFile}
             assetRevision={placeAssetRevision}
             mirrored={placeScaleX < 0}
+            propLight={placePropLight ? parsePropLight(placePropLight) ?? placePropLight : undefined}
             ghost
           />
         </group>
