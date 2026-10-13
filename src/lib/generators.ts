@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import type { BankGenerator } from '../types/scene'
 
 /** Upright curb. Width is the full width across the curb. */
 export const CURB_HEIGHT_M = 0.5
@@ -651,6 +652,78 @@ export function buildPlatformGeometry(corners: [Vec3, Vec3], height: number) {
     [minX, h],
     new THREE.Vector3(0, 0, -1),
   )
+
+  if (positions.length === 0) return null
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setAttribute('tangent', new THREE.Float32BufferAttribute(tangents, 4))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+/** Same starting box as a platform. Each of the eight corners is stored on its own. */
+export function bankFromWorld(a: Vec3, b: Vec3, height = PLATFORM_HEIGHT_M) {
+  const { origin, corners } = platformFromWorld(a, b)
+  const minX = Math.min(corners[0][0], corners[1][0])
+  const maxX = Math.max(corners[0][0], corners[1][0])
+  const minZ = Math.min(corners[0][2], corners[1][2])
+  const maxZ = Math.max(corners[0][2], corners[1][2])
+  const h = round4(Math.max(height, MIN_PLATFORM_HEIGHT_M))
+  const vertices: BankGenerator['vertices'] = [
+    [minX, 0, minZ],
+    [maxX, 0, minZ],
+    [maxX, 0, maxZ],
+    [minX, 0, maxZ],
+    [minX, h, minZ],
+    [maxX, h, minZ],
+    [maxX, h, maxZ],
+    [minX, h, maxZ],
+  ]
+  return { origin, vertices }
+}
+
+const BANK_FACES: [number, number, number][] = [
+  [0, 1, 2],
+  [0, 2, 3],
+  [4, 6, 5],
+  [4, 7, 6],
+  [0, 5, 1],
+  [0, 4, 5],
+  [1, 6, 2],
+  [1, 5, 6],
+  [2, 7, 3],
+  [2, 6, 7],
+  [3, 4, 0],
+  [3, 7, 4],
+]
+
+function metreUv(point: THREE.Vector3, normal: THREE.Vector3): [number, number] {
+  const ax = Math.abs(normal.x)
+  const ay = Math.abs(normal.y)
+  const az = Math.abs(normal.z)
+  if (ay >= ax && ay >= az) return [point.x, point.z]
+  if (ax >= az) return [point.z, point.y]
+  return [point.x, point.y]
+}
+
+/** Solid from eight free corners. Faces stay in the platform winding. UVs are metres. */
+export function buildBankGeometry(vertices: BankGenerator['vertices']) {
+  const positions: number[] = []
+  const normals: number[] = []
+  const uvs: number[] = []
+  const tangents: number[] = []
+  const at = (index: number) => new THREE.Vector3(vertices[index][0], vertices[index][1], vertices[index][2])
+
+  for (const [ia, ib, ic] of BANK_FACES) {
+    const a = at(ia)
+    const b = at(ib)
+    const c = at(ic)
+    const outward = b.clone().sub(a).cross(c.clone().sub(a))
+    if (outward.lengthSq() < 1e-12) continue
+    addTri(positions, normals, uvs, tangents, a, b, c, metreUv(a, outward), metreUv(b, outward), metreUv(c, outward), outward)
+  }
 
   if (positions.length === 0) return null
   const geometry = new THREE.BufferGeometry()

@@ -17,6 +17,7 @@ import {
   PLATFORM_HEIGHT_M,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
+  bankFromWorld,
   curbLocalPoints,
   railBaseFromHit,
   curbOrigin,
@@ -473,6 +474,13 @@ export default function App() {
     setActiveGenerator((current) => (current?.kind === 'platform' ? null : { kind: 'platform' }))
   }
 
+  function toggleBank() {
+    setActivePiece(null)
+    setSelectedId(null)
+    clearPins()
+    setActiveGenerator((current) => (current?.kind === 'bank' ? null : { kind: 'bank' }))
+  }
+
   function togglePlanter() {
     setActivePiece(null)
     setSelectedId(null)
@@ -658,6 +666,50 @@ export default function App() {
     setPins([])
     history.remember(before)
     setStatus(`Added platform, ${width.toFixed(2)} × ${depth.toFixed(2)} m, ${PLATFORM_HEIGHT_M} m tall`)
+    setError(null)
+  }
+
+  function clickBank(point: THREE.Vector3) {
+    const groundY = point.y < 0.02 ? 0 : point.y
+    const prevPins = history.pinsRef.current
+    const before = history.checkpoint()
+    if (prevPins.length === 0) {
+      const next: [number, number, number] = [round4(point.x), round4(groundY), round4(point.z)]
+      history.pinsRef.current = [next]
+      setPins([next])
+      history.remember(before)
+      setStatus('Pinned the first corner')
+      setError(null)
+      return
+    }
+    const first = prevPins[0]
+    const second: [number, number, number] = [round4(point.x), first[1], round4(point.z)]
+    if (platformFootprintTooSmall(first, second)) {
+      setStatus('That bank is too small.')
+      return
+    }
+    const { origin, vertices } = bankFromWorld(first, second)
+    const prev = history.sceneRef.current
+    const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'bank').length
+    const width = Math.abs(second[0] - first[0])
+    const depth = Math.abs(second[2] - first[2])
+    const obj: MeshObject = {
+      id: uid('mesh'),
+      kind: 'mesh',
+      libraryId: 'generator_bank',
+      name: `Bank_${count + 1}`,
+      position: origin,
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1],
+      generator: { kind: 'bank', vertices },
+      sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
+    }
+    history.pinsRef.current = []
+    history.strokeIdRef.current = null
+    applyScene({ ...prev, objects: [...prev.objects, obj] })
+    setPins([])
+    history.remember(before)
+    setStatus(`Added bank, ${width.toFixed(2)} × ${depth.toFixed(2)} m, ${PLATFORM_HEIGHT_M} m tall`)
     setError(null)
   }
 
@@ -1135,7 +1187,7 @@ export default function App() {
           <h2>Library</h2>
           <p className="hint">
             {categoryPath[0] === 'generators'
-              ? 'Click Curbs or Rails to draw a run, Platforms for a flat pad, or Planters for a brick box with a granite rim. Escape leaves the tool.'
+              ? 'Click Curbs or Rails to draw a run, Platforms for a flat pad, Banks for a pad with eight free corners, or Planters for a brick box with a granite rim. Escape leaves the tool.'
               : categoryPath.length === 0
                 ? 'Open a category, then click a piece. Drop a .blend, .fbx, or .obj in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own.'
                 : 'Click a piece to pick it up. It follows the cursor and stands on the surface under it. Right-click turns it 90° on that surface. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid.'}
@@ -1175,7 +1227,7 @@ export default function App() {
                   <span>
                     <strong>Generators</strong>
                     <small>
-                      {`${(catalog.kits ?? []).length + 4} generators`}
+                      {`${(catalog.kits ?? []).length + 5} generators`}
                     </small>
                   </span>
                 </button>
@@ -1225,6 +1277,22 @@ export default function App() {
                   <span>
                     <strong>Platforms</strong>
                     <small>{activeGenerator?.kind === 'platform' ? 'Click two corners' : 'Click to draw'}</small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath[0] === 'generators' && (
+              <li>
+                <button
+                  type="button"
+                  className={activeGenerator?.kind === 'bank' ? 'lib active' : 'lib'}
+                  aria-pressed={activeGenerator?.kind === 'bank'}
+                  onClick={toggleBank}
+                >
+                  <span className="swatch" style={{ background: '#8ea0b0' }} />
+                  <span>
+                    <strong>Banks</strong>
+                    <small>{activeGenerator?.kind === 'bank' ? 'Click two corners' : 'Click to draw'}</small>
                   </span>
                 </button>
               </li>
@@ -1404,6 +1472,8 @@ export default function App() {
                 setStatus('Drag a sphere sideways to move the pin. Up and down sets the rail or the foot of the post.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'platform') {
                 setStatus('Drag a corner to reshape the pad. Up and down moves both corners, so the top stays flat.')
+              } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'bank') {
+                setStatus('Drag any sphere to move that corner. Each of the eight corners moves on its own.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'planter') {
                 setStatus('Drag a sphere sideways to move that corner. Up and down sets that corner only.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'kit') {
@@ -1421,6 +1491,7 @@ export default function App() {
             onGeneratorClick={(point) => {
               if (activeGenerator?.kind === 'kit') clickKit(point, activeGenerator)
               else if (activeGenerator?.kind === 'platform') clickPlatform(point)
+              else if (activeGenerator?.kind === 'bank') clickBank(point)
               else if (activeGenerator?.kind === 'planter') clickPlanter(point)
               else if (activeGenerator?.kind === 'rail') clickRail(point)
               else clickCurb(point)
@@ -1439,6 +1510,8 @@ export default function App() {
               <span>Click the map to drop a pin. The next click builds a 5 cm rail on 0.5 m posts. Another click turns the corner on the same mesh. Escape leaves Rails.</span>
             ) : activeGenerator?.kind === 'platform' ? (
               <span>Click two opposite corners. The pad is 0.5 m tall and the top stays flat. Escape leaves Platforms.</span>
+            ) : activeGenerator?.kind === 'bank' ? (
+              <span>Click two opposite corners. The bank starts 0.5 m tall. Select it and drag any of the eight spheres. Escape leaves Banks.</span>
             ) : activeGenerator?.kind === 'planter' ? (
               <span>Click two opposite corners. The box is 0.55 m tall, with a brick wall, a granite rim, and grass inside. Escape leaves Planters.</span>
             ) : activeGenerator?.kind === 'kit' ? (
@@ -1505,7 +1578,9 @@ export default function App() {
                     ? 'RAIL'
                     : selected.generator?.kind === 'platform'
                       ? 'PLATFORM'
-                      : selected.generator?.kind === 'planter'
+                      : selected.generator?.kind === 'bank'
+                        ? 'BANK'
+                        : selected.generator?.kind === 'planter'
                         ? 'PLANTER'
                       : selected.generator?.kind === 'kit'
                         ? 'KIT'
@@ -1524,6 +1599,11 @@ export default function App() {
               {selected.generator?.kind === 'platform' && (
                 <p className="hint">
                   Drag a corner sideways to resize the pad. Drag it up or down and both corners move together, so the top stays flat.
+                </p>
+              )}
+              {selected.generator?.kind === 'bank' && (
+                <p className="hint">
+                  Drag any sphere to move that corner. The base and the top are separate, so each of the eight corners moves on its own.
                 </p>
               )}
               {selected.generator?.kind === 'planter' && (
@@ -1755,7 +1835,7 @@ function duplicateObject(
               points: source.generator.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
               tops: source.generator.tops?.map((y) => y),
             }
-          : source.generator.kind === 'platform'
+            : source.generator.kind === 'platform'
             ? {
                 ...source.generator,
                 corners: [
@@ -1763,6 +1843,11 @@ function duplicateObject(
                   [source.generator.corners[1][0], source.generator.corners[1][1], source.generator.corners[1][2]],
                 ],
               }
+            : source.generator.kind === 'bank'
+              ? {
+                  ...source.generator,
+                  vertices: source.generator.vertices.map((point) => [point[0], point[1], point[2]]) as typeof source.generator.vertices,
+                }
             : source.generator.kind === 'rail'
               ? {
                   ...source.generator,

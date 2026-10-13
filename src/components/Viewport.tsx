@@ -27,6 +27,8 @@ import {
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   buildCurbGeometry,
+  bankFromWorld,
+  buildBankGeometry,
   buildCurbLipGeometry,
   buildCurbWaxGeometry,
   buildPlanterGeometry,
@@ -412,11 +414,13 @@ function MeshItem({
   const [pin, setPin] = useState<number | null>(null)
   const generator = obj.generator?.kind === 'curb' ? obj.generator : null
   const platform = obj.generator?.kind === 'platform' ? obj.generator : null
+  const bank = obj.generator?.kind === 'bank' ? obj.generator : null
   const rail = obj.generator?.kind === 'rail' ? obj.generator : null
   const planter = obj.generator?.kind === 'planter' ? obj.generator : null
   const kit = obj.generator?.kind === 'kit' ? obj.generator : null
   const editing = selected && tool === 'select' && generator != null
   const editingPlatform = selected && tool === 'select' && platform != null
+  const editingBank = selected && tool === 'select' && bank != null
   const editingRail = selected && tool === 'select' && rail != null
   const editingPlanter = selected && tool === 'select' && planter != null
 
@@ -452,6 +456,14 @@ function MeshItem({
     if (!corner) return
     g.position.set(corner[0], platform.height, corner[2])
   }, [platform, pin])
+
+  useLayoutEffect(() => {
+    const g = handleRef.current
+    if (!g || handleDragging.current || !bank || pin == null) return
+    const point = bank.vertices[pin]
+    if (!point) return
+    g.position.set(point[0], point[1], point[2])
+  }, [bank, pin])
 
   useLayoutEffect(() => {
     const g = handleRef.current
@@ -513,6 +525,18 @@ function MeshItem({
     onPatch({
       generator: { ...platform, corners, height: round4(y) },
     })
+  }
+
+  function commitBank() {
+    if (!bank || pin == null) return
+    const g = handleRef.current
+    if (!g || !bank.vertices[pin]) return
+    const vertices = bank.vertices.map((point, index) =>
+      index === pin
+        ? ([round4(g.position.x), round4(g.position.y), round4(g.position.z)] as Vec3)
+        : ([point[0], point[1], point[2]] as Vec3),
+    ) as typeof bank.vertices
+    onPatch({ generator: { ...bank, vertices } })
   }
 
   function commitRail() {
@@ -605,12 +629,35 @@ function MeshItem({
         ref={ref}
         userData={{ snap: true, focusId: obj.id }}
         onPointerDown={(e) => {
+          if (e.button !== 0) return
+          if (gizmoOwnsPointer.current) {
+            e.stopPropagation()
+            return
+          }
+          const root = ref.current
+          const mine = (hit: THREE.Intersection) => {
+            let node: THREE.Object3D | null = hit.object
+            while (node) {
+              if (node === root) return true
+              node = node.parent
+            }
+            return false
+          }
+          const picked = e.intersections.find((hit) => hit.object.userData.curbHandle && mine(hit))?.object
+            .userData.curbHandle as { index: number; end: 'bottom' | 'top' } | undefined
+          const pickedPinData = e.intersections.find(
+            (hit) =>
+              mine(hit) && (hit.object.userData.platformPin != null || hit.object.userData.bankPin != null),
+          )?.object.userData
+          const pickedPin =
+            typeof pickedPinData?.platformPin === 'number'
+              ? pickedPinData.platformPin
+              : typeof pickedPinData?.bankPin === 'number'
+                ? pickedPinData.bankPin
+                : undefined
+          // A handle on another mesh is drawn through this one. Leave the click for that handle.
+          if (!picked && pickedPin == null && e.intersections.some((hit) => isEditHandle(hit.object))) return
           e.stopPropagation()
-          if (e.button !== 0 || gizmoOwnsPointer.current) return
-          const picked = e.intersections.find((hit) => hit.object.userData.curbHandle)?.object.userData
-            .curbHandle as { index: number; end: 'bottom' | 'top' } | undefined
-          const pickedPin = e.intersections.find((hit) => hit.object.userData.platformPin != null)?.object
-            .userData.platformPin as number | undefined
           if (picked) {
             setHandle(picked)
             return
@@ -669,6 +716,33 @@ function MeshItem({
                 </mesh>
               ))}
             {editingPlatform && pin != null && <group ref={handleRef} />}
+          </>
+        ) : bank ? (
+          <>
+            <BankMesh vertices={bank.vertices} materials={obj.materials} />
+            {editingBank &&
+              bank.vertices.map((point, index) => (
+                <mesh
+                  key={index}
+                  position={point}
+                  renderOrder={4}
+                  raycast={editHandleRaycast}
+                  userData={{ bankPin: index }}
+                  onPointerDown={(event) => {
+                    event.stopPropagation()
+                    if (event.button !== 0 || gizmoOwnsPointer.current) return
+                    setPin(index)
+                  }}
+                >
+                  <sphereGeometry args={[0.16, 16, 12]} />
+                  <meshBasicMaterial
+                    color={pin === index ? '#fff4d6' : '#ffb703'}
+                    toneMapped={false}
+                    depthTest={false}
+                  />
+                </mesh>
+              ))}
+            {editingBank && pin != null && <group ref={handleRef} />}
           </>
         ) : rail ? (
           <>
@@ -752,6 +826,18 @@ function MeshItem({
           space="world"
           snap={snap}
           onCommit={commitPlatform}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+      {editingBank && pin != null && (
+        <TransformGizmo
+          target={handleRef}
+          dragging={handleDragging}
+          mode="translate"
+          space="world"
+          snap={snap}
+          onCommit={commitBank}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
         />
@@ -1570,6 +1656,46 @@ function PlatformGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
   )
 }
 
+function BankMesh({
+  vertices,
+  materials,
+  ghost,
+}: {
+  vertices: [
+    Vec3,
+    Vec3,
+    Vec3,
+    Vec3,
+    Vec3,
+    Vec3,
+    Vec3,
+    Vec3,
+  ]
+  materials?: Record<string, string>
+  ghost?: boolean
+}) {
+  const geometry = useMemo(() => buildBankGeometry(vertices), [vertices])
+  useEffect(() => () => geometry?.dispose(), [geometry])
+  if (!geometry) return null
+  return (
+    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+      <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
+    </mesh>
+  )
+}
+
+function BankGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
+  const first = pins[0]
+  const second: Vec3 = [to.x, first[1], to.z]
+  if (platformFootprintTooSmall(first, second)) return null
+  const { origin, vertices } = bankFromWorld(first, second)
+  return (
+    <group position={origin} userData={{ placementGhost: true }}>
+      <BankMesh vertices={vertices} ghost />
+    </group>
+  )
+}
+
 function BrickMaterial({ ghost }: { ghost?: boolean }) {
   const colorMap = useTexture(BRICK_MAP)
   const material = useMemo(() => {
@@ -1994,7 +2120,7 @@ function SceneContents(props: Props) {
               ? railBaseFromHit([generatorPreview.x, generatorPreview.y, generatorPreview.z])
               : [
                   generatorPreview.x,
-                  (generator.kind === 'platform' || generator.kind === 'planter') && pins[0]
+                  (generator.kind === 'platform' || generator.kind === 'bank' || generator.kind === 'planter') && pins[0]
                     ? pins[0][1]
                     : generatorPreview.y < 0.02
                       ? 0
@@ -2012,6 +2138,9 @@ function SceneContents(props: Props) {
       )}
       {generator?.kind === 'platform' && pins.length > 0 && generatorPreview && (
         <PlatformGhost pins={pins} to={generatorPreview} />
+      )}
+      {generator?.kind === 'bank' && pins.length > 0 && generatorPreview && (
+        <BankGhost pins={pins} to={generatorPreview} />
       )}
       {generator?.kind === 'planter' && pins.length > 0 && generatorPreview && (
         <PlanterGhost pins={pins} to={generatorPreview} />
@@ -2095,7 +2224,20 @@ function Skybox() {
 
 /** Handles are drawn through meshes. A click on that visible sphere should hit the handle, not the mesh in front. */
 function isEditHandle(object: THREE.Object3D) {
-  return object.userData.curbHandle != null || object.userData.platformPin != null
+  let current: THREE.Object3D | null = object
+  while (current) {
+    const data = current.userData
+    if (data.curbHandle != null || data.platformPin != null || data.bankPin != null) return true
+    current = current.parent
+  }
+  return false
+}
+
+/** Pulls a handle in front of whatever mesh it is drawn through, without reordering the handles themselves. */
+function editHandleRaycast(this: THREE.Mesh, raycaster: THREE.Raycaster, intersects: THREE.Intersection[]) {
+  const start = intersects.length
+  THREE.Mesh.prototype.raycast.call(this, raycaster, intersects)
+  for (let i = start; i < intersects.length; i++) intersects[i].distance -= 1e6
 }
 
 function preferEditHandles(hits: THREE.Intersection[]) {
@@ -2118,8 +2260,11 @@ function preferEditHandles(hits: THREE.Intersection[]) {
 
 function EditHandlePriority() {
   const set = useThree((s) => s.set)
+  const filterRef = useRef(preferEditHandles)
+  filterRef.current = preferEditHandles
   useLayoutEffect(() => {
-    set((state) => ({ events: { ...state.events, filter: preferEditHandles } }))
+    const filter = (hits: THREE.Intersection[]) => filterRef.current(hits)
+    set((state) => ({ events: { ...state.events, filter } }))
     return () => {
       set((state) => ({ events: { ...state.events, filter: undefined } }))
     }

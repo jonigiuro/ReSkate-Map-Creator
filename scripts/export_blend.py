@@ -1685,6 +1685,32 @@ def make_platform_mesh(name, corners, height, color, material=None):
     return _link_mesh(name, verts, faces, color, material=material, tile=1.0)
 
 
+def make_bank_mesh(name, vertices, color, material=None):
+    """Eight free corners. 0-3 are the base loop, 4-7 the top loop. Same winding as a platform."""
+    if not isinstance(vertices, (list, tuple)) or len(vertices) != 8:
+        return None
+    verts = []
+    for vertex in vertices:
+        if not isinstance(vertex, (list, tuple)) or len(vertex) != 3:
+            return None
+        verts.append((float(vertex[0]), float(vertex[1]), float(vertex[2])))
+    faces = [
+        (0, 1, 2),
+        (0, 2, 3),
+        (4, 6, 5),
+        (4, 7, 6),
+        (0, 5, 1),
+        (0, 4, 5),
+        (1, 6, 2),
+        (1, 5, 6),
+        (2, 7, 3),
+        (2, 6, 7),
+        (3, 4, 0),
+        (3, 7, 4),
+    ]
+    return _link_mesh(name, verts, faces, color, material=material, tile=1.0)
+
+
 PLANTER_HEIGHT_M = 0.55
 PLANTER_CAP_M = 0.14
 PLANTER_WALL_M = 0.34
@@ -3463,6 +3489,46 @@ def build(scene):
                     placement_cell(position),
                     "generator_platform",
                     "generator_platform",
+                )
+                link_only(obj, colls["Map"])
+                continue
+
+            if gen.get("kind") == "bank":
+                vertices = gen.get("vertices") or []
+                if len(vertices) != 8:
+                    print(f"Skipping bank {name}: needs eight corners")
+                    continue
+                obj = make_bank_mesh(
+                    name,
+                    vertices,
+                    (0.55, 0.58, 0.62),
+                    slot_material(
+                        project_root,
+                        texture_sets,
+                        overrides,
+                        sounds,
+                        "striped_concrete",
+                        lambda: striped_concrete_material(project_root),
+                    ),
+                )
+                if obj is None:
+                    print(f"Skipping bank {name}: could not build the mesh")
+                    continue
+                obj.name = name
+                position = entry.get("position") or [0, 0, 0]
+                apply_transform(
+                    obj,
+                    position,
+                    entry.get("rotation") or [0, 0, 0],
+                    entry.get("scale") or [1, 1, 1],
+                )
+                set_sk8_mesh_props(obj, entry.get("sk8"))
+                tag_join_piece(
+                    obj,
+                    "generator_bank",
+                    placement_cell(position),
+                    "generator_bank",
+                    "generator_bank",
                 )
                 link_only(obj, colls["Map"])
                 continue

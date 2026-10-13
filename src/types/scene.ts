@@ -39,6 +39,21 @@ export interface PlatformGenerator {
   height: number
 }
 
+/** Pad whose eight corners move independently. 0–3 are the base loop, 4–7 the top loop. */
+export interface BankGenerator {
+  kind: 'bank'
+  vertices: [
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+  ]
+}
+
 /** Round rail. Points are the feet of the posts. Tops are the rail centre at each pin. */
 export interface RailGenerator {
   kind: 'rail'
@@ -60,7 +75,13 @@ export interface PlanterGenerator {
   sideTops?: [number, number]
 }
 
-export type MeshGenerator = CurbGenerator | KitGenerator | PlatformGenerator | RailGenerator | PlanterGenerator
+export type MeshGenerator =
+  | CurbGenerator
+  | KitGenerator
+  | PlatformGenerator
+  | BankGenerator
+  | RailGenerator
+  | PlanterGenerator
 
 export interface MeshObject {
   id: string

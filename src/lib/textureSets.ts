@@ -106,7 +106,7 @@ export function generatorMaterialSlots(kind: string | undefined): { id: string; 
     ]
   }
   if (kind === 'rail') return [{ id: 'galvanized', label: 'Metal' }]
-  if (kind === 'platform') return [{ id: 'striped_concrete', label: 'Surface' }]
+  if (kind === 'platform' || kind === 'bank') return [{ id: 'striped_concrete', label: 'Surface' }]
   if (kind === 'planter') {
     return [
       { id: 'brick', label: 'Brick' },
