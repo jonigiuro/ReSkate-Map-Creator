@@ -4,6 +4,7 @@ Build a ReSkate Studio–oriented .blend from a Map Creator scene JSON.
 
 Collections / props follow the public Spotbuilder + Skaterino contract
 documented in docs/feasibility.md (Project store): Map, Markers, Grind curves,
+NPC routes,
 spawn empty, sk8_collision_mode, sk8_grind_curve fallback properties.
 """
 
@@ -428,7 +429,7 @@ def clear_scene():
 
 def ensure_collections():
     root = bpy.context.scene.collection
-    names = ("Map", "Markers", "Grind curves")
+    names = ("Map", "Markers", "Grind curves", "NPC routes")
     out = {}
     for name in names:
         coll = bpy.data.collections.new(name)
@@ -2299,6 +2300,130 @@ def make_travel_point(name, position, rotation, shelter):
     return obj
 
 
+def ensure_npc_route_rna():
+    """Register the addon's NPC route fields when Studio is not loaded.
+
+    The game reads a Bezier or Poly curve. Vehicle and bus lanes are one-way.
+    The addon stores the same values as sk8_npc_* custom properties.
+    """
+    if hasattr(bpy.types.Object, "sk8_npc_route"):
+        return
+
+    class Sk8NpcRouteSettings(bpy.types.PropertyGroup):
+        enabled: bpy.props.BoolProperty(name="NPC Route", default=False)
+        kind: bpy.props.EnumProperty(
+            name="Type",
+            items=[
+                ("pedestrian", "Pedestrian", ""),
+                ("vehicle", "Vehicle Lane", ""),
+                ("bus", "Bus Lane", ""),
+            ],
+            default="vehicle",
+        )
+        width: bpy.props.FloatProperty(name="Path Width", default=3.5, min=0.01, subtype="DISTANCE")
+        spacing: bpy.props.FloatProperty(name="Sample Spacing", default=5.0, min=0.01, subtype="DISTANCE")
+        weight: bpy.props.FloatProperty(name="Route Weight", default=1.0, min=0.001)
+        speed: bpy.props.IntProperty(name="Speed Class", default=5, min=1, max=9)
+        bidirectional: bpy.props.BoolProperty(name="Both Directions", default=False)
+        stairs: bpy.props.BoolProperty(name="Stairs", default=False)
+
+    try:
+        bpy.utils.register_class(Sk8NpcRouteSettings)
+    except Exception:
+        pass
+    bpy.types.Object.sk8_npc_route = bpy.props.PointerProperty(type=Sk8NpcRouteSettings)
+
+
+def make_traffic_lane(
+    name,
+    lane,
+    points_three,
+    position,
+    rotation,
+    width,
+    spacing,
+    weight,
+    speed,
+    closed,
+    bidirectional=False,
+    stairs=False,
+):
+    """Poly curve the addon exports as an npc_route.
+
+    Points are the editor centreline in local space. Traffic follows point order.
+    Pedestrian routes may run both ways and may be marked as stairs.
+    A loop needs three points, matching the addon's cyclic check.
+    """
+    ensure_npc_route_rna()
+    if lane == "bus":
+        lane = "bus"
+        label = "Bus Lane"
+        default_width = 3.5
+    elif lane == "pedestrian":
+        lane = "pedestrian"
+        label = "Pedestrian Route"
+        default_width = 2.0
+    else:
+        lane = "vehicle"
+        label = "Vehicle Lane"
+        default_width = 3.5
+    curve_data = bpy.data.curves.new(label, type="CURVE")
+    curve_data.dimensions = "3D"
+    curve_data.resolution_u = 24
+    spline = curve_data.splines.new("POLY")
+    rx, ry, rz = (rotation or [0, 0, 0])[:3]
+    spin = three_xyz_matrix(float(rx), float(ry), float(rz))
+    origin = position or [0, 0, 0]
+    pts = []
+    for point in points_three or []:
+        if not isinstance(point, (list, tuple)) or len(point) < 3:
+            continue
+        spun = spin @ Vector((float(point[0]), float(point[1]), float(point[2])))
+        pts.append(
+            three_to_blender_pos(
+                (spun.x + float(origin[0]), spun.y + float(origin[1]), spun.z + float(origin[2]))
+            )
+        )
+    if len(pts) < 2:
+        return None
+    spline.points.add(len(pts) - 1)
+    for index, point in enumerate(pts):
+        spline.points[index].co = (point.x, point.y, point.z, 1.0)
+    spline.use_cyclic_u = bool(closed) and len(pts) >= 3
+
+    obj = bpy.data.objects.new(label, curve_data)
+    bpy.context.scene.collection.objects.link(obj)
+    obj.show_in_front = True
+    width = max(0.01, float(width if width is not None else default_width))
+    spacing = max(0.01, float(spacing if spacing is not None else 5.0))
+    weight = max(0.001, float(weight if weight is not None else 1.0))
+    speed = min(9, max(1, int(round(float(speed if speed is not None else 5)))))
+    bidirectional = bool(lane == "pedestrian" and bidirectional)
+    stairs = bool(lane == "pedestrian" and stairs)
+    try:
+        obj.sk8_npc_route.enabled = True
+        obj.sk8_npc_route.kind = lane
+        obj.sk8_npc_route.width = width
+        obj.sk8_npc_route.spacing = spacing
+        obj.sk8_npc_route.weight = weight
+        obj.sk8_npc_route.speed = speed
+        obj.sk8_npc_route.bidirectional = bidirectional
+        obj.sk8_npc_route.stairs = stairs
+    except Exception:
+        pass
+    obj["sk8_npc_enabled"] = True
+    obj["sk8_npc_kind"] = lane
+    obj["sk8_npc_width"] = width
+    obj["sk8_npc_spacing"] = spacing
+    obj["sk8_npc_weight"] = weight
+    obj["sk8_npc_speed"] = speed
+    obj["sk8_npc_bidirectional"] = bidirectional
+    obj["sk8_npc_stairs"] = stairs
+    obj["reskate_map_creator"] = "traffic_lane"
+    obj["reskate_traffic_name"] = str(name or label)
+    return obj
+
+
 KEEP_TYPES = {
     "MESH",
     "CURVE",
@@ -2318,12 +2443,18 @@ def custom_prop_keys(obj):
 
 
 def is_grind_object(obj):
-    """Addon grind splines stay curves with sk8_* / grind custom props."""
+    """Addon grind splines stay curves with sk8_* / grind custom props.
+
+    NPC routes also use sk8_* props. Those stay curves the traffic exporter reads.
+    """
     if obj.type != "CURVE":
         return False
-    if any("grind" in str(key).lower() or str(key).lower().startswith("sk8_") for key in custom_prop_keys(obj)):
+    keys = [str(key).lower() for key in custom_prop_keys(obj)]
+    if any(key.startswith("sk8_npc_") for key in keys):
+        return False
+    if any("grind" in key or key.startswith("sk8_") for key in keys):
         return True
-    return hasattr(obj, "sk8_grind_curve") and len(custom_prop_keys(obj)) > 0
+    return hasattr(obj, "sk8_grind_curve") and len(keys) > 0
 
 
 def pack_images_from(source_blend, before_images):
@@ -3339,6 +3470,25 @@ def build(scene):
                 entry.get("shelter"),
             )
             link_only(obj, colls["Markers"])
+            continue
+
+        if kind == "traffic_lane":
+            obj = make_traffic_lane(
+                name,
+                entry.get("lane"),
+                entry.get("points") or [],
+                entry.get("position") or [0, 0, 0],
+                entry.get("rotation") or [0, 0, 0],
+                entry.get("width"),
+                entry.get("spacing"),
+                entry.get("weight"),
+                entry.get("speed"),
+                entry.get("closed"),
+                entry.get("bidirectional"),
+                entry.get("stairs"),
+            )
+            if obj is not None:
+                link_only(obj, colls["NPC routes"])
             continue
 
         if kind == "mesh":

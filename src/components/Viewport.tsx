@@ -13,6 +13,7 @@ import type {
   MeshObject,
   SceneObject,
   SpawnObject,
+  TrafficLaneObject,
   TravelPointObject,
 } from '../types/scene'
 import { createBlueprintMaterial } from '../lib/blueprintMaterial'
@@ -47,6 +48,13 @@ import {
   platformFromWorld,
   type Vec3,
 } from '../lib/generators'
+import {
+  buildTrafficCenterline,
+  buildTrafficRibbon,
+  trafficArrows,
+  trafficColor,
+  trafficWidth,
+} from '../lib/traffic'
 import { BUS_STOP_PIECE, isInteractivePiece, travelGuide } from '../lib/travelPoints'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
@@ -2023,13 +2031,238 @@ function CurbGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
   )
 }
 
-function CurbPin({ position, ghost }: { position: [number, number, number]; ghost?: boolean }) {
+function TrafficRibbon({
+  points,
+  width,
+  closed,
+  lane,
+  both = false,
+  ghost,
+}: {
+  points: [number, number, number][]
+  width: number
+  closed: boolean
+  lane: TrafficLaneObject['lane']
+  both?: boolean
+  ghost?: boolean
+}) {
+  const ribbon = useMemo(() => buildTrafficRibbon(points, width, closed), [points, width, closed])
+  const center = useMemo(() => buildTrafficCenterline(points, closed), [points, closed])
+  const arrows = useMemo(() => trafficArrows(points, both), [points, both])
+  useEffect(() => () => ribbon?.dispose(), [ribbon])
+  useEffect(() => () => center?.dispose(), [center])
+  const color = trafficColor(lane)
+  if (!ribbon) return null
+  return (
+    <group userData={ghost ? { placementGhost: true } : undefined}>
+      <mesh geometry={ribbon} renderOrder={2}>
+        <meshBasicMaterial
+          color={color}
+          transparent
+          opacity={ghost ? 0.28 : 0.42}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+          toneMapped={false}
+        />
+      </mesh>
+      {center && (
+        <lineSegments geometry={center} raycast={() => {}}>
+          <lineBasicMaterial color={color} toneMapped={false} transparent opacity={ghost ? 0.45 : 0.95} />
+        </lineSegments>
+      )}
+      {arrows.map((arrow, index) => (
+        <mesh key={index} position={arrow.position} rotation={[-Math.PI / 2, arrow.yaw, 0]} raycast={() => {}}>
+          <coneGeometry args={[0.55, 1.5, 3]} />
+          <meshBasicMaterial color="#fff6df" toneMapped={false} transparent={!!ghost} opacity={ghost ? 0.5 : 1} />
+        </mesh>
+      ))}
+    </group>
+  )
+}
+
+function TrafficGhost({
+  pins,
+  to,
+  lane,
+}: {
+  pins: [number, number, number][]
+  to: THREE.Vector3
+  lane: TrafficLaneObject['lane']
+}) {
+  const y = to.y < 0.02 ? 0 : to.y
+  const cursor: [number, number, number] = [to.x, y, to.z]
+  const last = pins[pins.length - 1]
+  const first = pins[0]
+  if (curbSegmentTooShort(last, cursor)) return null
+  const closing = pins.length >= 2 && !curbSegmentTooShort(cursor, first)
+  const points = closing ? [last, cursor, first] : [last, cursor]
+  return (
+    <TrafficRibbon
+      points={points}
+      width={trafficWidth(lane)}
+      closed={false}
+      lane={lane}
+      both={lane === 'pedestrian'}
+      ghost
+    />
+  )
+}
+
+function TrafficLaneItem({
+  obj,
+  selected,
+  tool,
+  transformMode,
+  snap,
+  onSelect,
+  onCommit,
+  onPatch,
+  onGestureStart,
+  onGestureEnd,
+}: {
+  obj: TrafficLaneObject
+  selected: boolean
+  tool: EditorTool
+  transformMode: TransformMode
+  snap: SnapSettings
+  onSelect: () => void
+  onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
+  onPatch: (patch: Partial<TrafficLaneObject>) => void
+  onGestureStart: () => void
+  onGestureEnd: () => void
+}) {
+  const ref = useRef<THREE.Group>(null)
+  const pinRef = useRef<THREE.Group>(null)
+  const dragging = useRef(false)
+  const pinDragging = useRef(false)
+  const [pin, setPin] = useState<number | null>(null)
+  const editing = selected && tool === 'select'
+  const mode = transformMode === 'scale' ? 'translate' : transformMode
+
+  useEffect(() => {
+    if (!selected) setPin(null)
+  }, [selected])
+
+  useLayoutEffect(() => {
+    const group = ref.current
+    if (!group || dragging.current) return
+    group.position.set(...obj.position)
+    group.rotation.set(...obj.rotation)
+    group.scale.set(1, 1, 1)
+  }, [obj.position, obj.rotation])
+
+  useLayoutEffect(() => {
+    const group = pinRef.current
+    if (!group || pinDragging.current || pin == null) return
+    const point = obj.points[pin]
+    if (!point) return
+    group.position.set(point[0], point[1], point[2])
+  }, [obj.points, pin])
+
+  function commitPin(position: [number, number, number]) {
+    if (pin == null) return
+    const points = obj.points.map((point, index) =>
+      index === pin ? position : ([point[0], point[1], point[2]] as [number, number, number]),
+    )
+    onPatch({ points })
+  }
+
+  return (
+    <>
+      <group
+        ref={ref}
+        userData={{ focusId: obj.id }}
+        onPointerDown={(event) => {
+          event.stopPropagation()
+          if (event.button !== 0 || gizmoOwnsPointer.current) return
+          setPin(null)
+          onSelect()
+        }}
+      >
+        <TrafficRibbon
+          points={obj.points}
+          width={obj.width}
+          closed={obj.closed}
+          lane={obj.lane}
+          both={obj.bidirectional}
+        />
+        {editing &&
+          obj.points.map((point, index) => (
+            <mesh
+              key={index}
+              position={point}
+              renderOrder={4}
+              raycast={editHandleRaycast}
+              userData={{ trafficPin: index }}
+              onPointerDown={(event) => {
+                event.stopPropagation()
+                if (event.button !== 0 || gizmoOwnsPointer.current) return
+                setPin(index)
+                onSelect()
+              }}
+            >
+              <sphereGeometry args={[0.22, 16, 12]} />
+              <meshBasicMaterial
+                color={pin === index ? '#fff4d6' : trafficColor(obj.lane)}
+                toneMapped={false}
+                depthTest={false}
+              />
+            </mesh>
+          ))}
+        {editing && pin != null && <group ref={pinRef} />}
+      </group>
+      {editing && pin == null && (
+        <TransformGizmo
+          target={ref}
+          dragging={dragging}
+          mode={mode}
+          snap={snap}
+          onCommit={(pos, rot) => onCommit(pos, rot)}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+      {editing && pin != null && (
+        <TransformGizmo
+          target={pinRef}
+          dragging={pinDragging}
+          mode="translate"
+          space="local"
+          snap={snap}
+          onCommit={(pos) => commitPin(pos)}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+    </>
+  )
+}
+
+const TrafficLaneItemView = memo(TrafficLaneItem, (prev, next) =>
+  prev.obj === next.obj &&
+  prev.selected === next.selected &&
+  prev.tool === next.tool &&
+  prev.transformMode === next.transformMode &&
+  prev.snap.move === next.snap.move &&
+  prev.snap.rotate === next.snap.rotate &&
+  prev.snap.scale === next.snap.scale,
+)
+
+function CurbPin({
+  position,
+  ghost,
+  color = '#ff9f1c',
+}: {
+  position: [number, number, number]
+  ghost?: boolean
+  color?: string
+}) {
   return (
     <group position={position} userData={ghost ? { placementGhost: true } : undefined}>
       <mesh position={[0, 0.55, 0]} raycast={() => {}}>
         <cylinderGeometry args={[0.035, 0.035, 1.1, 8]} />
         <meshBasicMaterial
-          color="#ff9f1c"
+          color={color}
           toneMapped={false}
           transparent={ghost}
           opacity={ghost ? 0.45 : 1}
@@ -2039,7 +2272,7 @@ function CurbPin({ position, ghost }: { position: [number, number, number]; ghos
       <mesh position={[0, 1.15, 0]} raycast={() => {}}>
         <sphereGeometry args={[0.09, 14, 10]} />
         <meshBasicMaterial
-          color="#ff9f1c"
+          color={color}
           toneMapped={false}
           transparent={ghost}
           opacity={ghost ? 0.45 : 1}
@@ -2203,6 +2436,25 @@ function SceneContents(props: Props) {
             />
           )
         }
+        if (obj.kind === 'traffic_lane') {
+          return (
+            <TrafficLaneItemView
+              key={obj.id}
+              obj={obj}
+              selected={obj.id === selectedId}
+              tool={tool}
+              transformMode={transformMode}
+              snap={snap}
+              onSelect={() => onSelectRef.current(obj.id)}
+              onCommit={(pos, rot) => {
+                onPatchRef.current(obj.id, { position: pos, rotation: rot })
+              }}
+              onPatch={(patch) => onPatchRef.current(obj.id, patch)}
+              onGestureStart={() => onStartRef.current()}
+              onGestureEnd={() => onEndRef.current()}
+            />
+          )
+        }
         if (obj.kind === 'travel_point') {
           return (
             <TravelPointItemView
@@ -2267,7 +2519,14 @@ function SceneContents(props: Props) {
         </group>
       )}
 
-      {generator && pins.map((pin, index) => <CurbPin key={index} position={pin} />)}
+      {generator &&
+        pins.map((pin, index) => (
+          <CurbPin
+            key={index}
+            position={pin}
+            color={generator.kind === 'traffic' ? trafficColor(generator.lane) : undefined}
+          />
+        ))}
       {generator && generatorPreview && (
         <CurbPin
           ghost
@@ -2300,6 +2559,9 @@ function SceneContents(props: Props) {
       )}
       {generator?.kind === 'planter' && pins.length > 0 && generatorPreview && (
         <PlanterGhost pins={pins} to={generatorPreview} />
+      )}
+      {generator?.kind === 'traffic' && pins.length > 0 && generatorPreview && (
+        <TrafficGhost pins={pins} to={generatorPreview} lane={generator.lane} />
       )}
       {generator?.kind === 'kit' && pins.length > 0 && generatorPreview && (
         <KitGhost

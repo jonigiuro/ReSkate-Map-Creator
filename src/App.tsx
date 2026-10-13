@@ -3,6 +3,7 @@ import { flushSync } from 'react-dom'
 import * as THREE from 'three'
 import { Viewport, type EditorTool, type TransformMode } from './components/Viewport'
 import {
+  BUILTIN_LIBRARY_ROOTS,
   EMPTY_CATALOG,
   fetchAssetCatalog,
   httpPreviewThumbUrl,
@@ -32,6 +33,16 @@ import { getPiece } from './lib/library'
 import { usePreviewMaterials } from './lib/previewMaterials'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
 import { SURFACE_SOUNDS } from './lib/surfaceSounds'
+import {
+  TRAFFIC_SPACING_M,
+  TRAFFIC_SPEED,
+  TRAFFIC_WEIGHT,
+  TRAFFIC_WIDTH_M,
+  PEDESTRIAN_WIDTH_M,
+  trafficDrawLabel,
+  trafficLaneName,
+  trafficWidth,
+} from './lib/traffic'
 import { generatorMaterialSlots, reloadTextureSets, useTextureSets } from './lib/textureSets'
 import { useSceneHistory } from './lib/sceneHistory'
 import {
@@ -46,6 +57,8 @@ import type {
   MapScene,
   MeshObject,
   SceneObject,
+  TrafficLane,
+  TrafficLaneObject,
   TravelPointObject,
 } from './types/scene'
 import './App.css'
@@ -122,8 +135,9 @@ export default function App() {
         if (cancel) return
         setCatalog(next)
         setCategoryPath((path) => {
-          // Generators and Interactive are built in, not folders in the asset catalog.
-          if (path.length === 0 || path[0] === 'generators' || path[0] === 'interactive') return path
+          // Built-in roots are not folders on disk. They are also injected into the catalog,
+          // so a poll that started before this list existed still leaves them open.
+          if (path.length === 0 || (BUILTIN_LIBRARY_ROOTS as readonly string[]).includes(path[0])) return path
           const intact = path.every((id, index) => {
             const category = next.categories.find((item) => item.id === id)
             if (!category) return false
@@ -523,6 +537,87 @@ export default function App() {
     setSelectedId(null)
     clearPins()
     setActiveGenerator((current) => (current?.kind === 'planter' ? null : { kind: 'planter' }))
+  }
+
+  function toggleTraffic(lane: TrafficLane) {
+    setActivePiece(null)
+    setSelectedId(null)
+    clearPins()
+    setActiveGenerator((current) =>
+      current?.kind === 'traffic' && current.lane === lane ? null : { kind: 'traffic', lane },
+    )
+  }
+
+  function clickTraffic(point: THREE.Vector3, lane: TrafficLane) {
+    const y = point.y < 0.02 ? 0 : point.y
+    const nextPoint: [number, number, number] = [round4(point.x), round4(y), round4(point.z)]
+    const prevPins = history.pinsRef.current
+    const previous = prevPins.at(-1)
+    if (previous && curbSegmentTooShort(previous, nextPoint)) {
+      setStatus('That lane point is too close to the last one.')
+      return
+    }
+    const before = history.checkpoint()
+    const nextPins = [...prevPins, nextPoint]
+    history.pinsRef.current = nextPins
+    if (previous) {
+      const prev = history.sceneRef.current
+      const origin = curbOrigin(nextPins)
+      const local = curbLocalPoints(nextPins, origin)
+      const strokeId = history.strokeIdRef.current
+      const existing = prev.objects.find(
+        (obj): obj is TrafficLaneObject =>
+          obj.kind === 'traffic_lane' && obj.id === strokeId && obj.lane === lane,
+      )
+      if (existing) {
+        applyScene({
+          ...prev,
+          objects: prev.objects.map((obj) =>
+            obj.id === existing.id && obj.kind === 'traffic_lane'
+              ? { ...obj, position: origin, rotation: [0, 0, 0], points: local }
+              : obj,
+          ),
+        })
+        setStatus(
+          local.length >= 3 && existing.closed
+            ? `Extended ${existing.name} to ${curbRunLength(nextPins)} m. ${existing.lane === 'pedestrian' ? 'People loop.' : 'Traffic loops.'}`
+            : `Extended ${existing.name} to ${curbRunLength(nextPins)} m`,
+        )
+      } else {
+        const count = prev.objects.filter((obj) => obj.kind === 'traffic_lane' && obj.lane === lane).length
+        const id = uid('traffic')
+        const obj: TrafficLaneObject = {
+          id,
+          kind: 'traffic_lane',
+          lane,
+          name: trafficLaneName(lane, count + 1),
+          points: local,
+          position: origin,
+          rotation: [0, 0, 0],
+          width: trafficWidth(lane),
+          spacing: TRAFFIC_SPACING_M,
+          weight: TRAFFIC_WEIGHT,
+          speed: TRAFFIC_SPEED,
+          closed: true,
+          bidirectional: lane === 'pedestrian',
+          stairs: false,
+        }
+        history.strokeIdRef.current = id
+        applyScene({ ...prev, objects: [...prev.objects, obj] })
+        setStatus(`Added ${obj.name}, ${curbRunLength(nextPins)} m. The next point closes the loop.`)
+      }
+    } else {
+      setStatus(
+        lane === 'bus'
+          ? 'Pinned the bus lane start'
+          : lane === 'pedestrian'
+            ? 'Pinned the pedestrian start'
+            : 'Pinned the vehicle lane start',
+      )
+    }
+    setPins(nextPins)
+    history.remember(before)
+    setError(null)
   }
 
   function toggleKit(kit: { assetFile: string; label: string }) {
@@ -1113,10 +1208,11 @@ export default function App() {
   function crumbLabel(id: string) {
     if (id === 'generators') return 'Generators'
     if (id === 'interactive') return 'Interactive'
+    if (id === 'traffic') return 'Traffic'
     return catalog.categories.find((category) => category.id === id)?.label ?? id
   }
 
-  const browsingCatalog = categoryPath[0] !== 'generators' && categoryPath[0] !== 'interactive'
+  const browsingCatalog = !(BUILTIN_LIBRARY_ROOTS as readonly string[]).includes(categoryPath[0] ?? '')
 
   return (
     <div className="app" aria-busy={exporting}>
@@ -1230,8 +1326,10 @@ export default function App() {
               ? 'Click Curbs or Rails to draw a run, Platforms for a flat pad, Banks for a pad with eight free corners, or Planters for a brick box with a granite rim. Escape leaves the tool.'
               : categoryPath[0] === 'interactive'
                 ? 'Click a bus stop or a fast-travel point, then click the map. It stands on the ground. Right-click turns it 90°. Escape leaves the tool.'
+                : categoryPath[0] === 'traffic'
+                  ? 'Click a route, then click along the ground. After two points it closes back to the start. Pedestrians walk both ways on a 2 m path. Cars and buses stay one way. Uncheck Closed loop when it should join another route of the same type. Escape leaves the tool.'
                 : categoryPath.length === 0
-                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Drop a .blend in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own. Several blends in one folder share its textures.'
+                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Traffic draws cars, buses, or people along a path. Drop a .blend in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own. Several blends in one folder share its textures.'
                   : 'Click a piece to pick it up. It follows the cursor and stands on the surface under it. Right-click turns it 90° on that surface. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid.'}
           </p>
           {categoryPath.length > 0 && (
@@ -1282,6 +1380,17 @@ export default function App() {
                   <span>
                     <strong>Interactive</strong>
                     <small>2 points</small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath.length === 0 && (
+              <li>
+                <button type="button" className="lib" onClick={() => setCategoryPath(['traffic'])}>
+                  <span className="swatch folder" />
+                  <span>
+                    <strong>Traffic</strong>
+                    <small>3 routes</small>
                   </span>
                 </button>
               </li>
@@ -1398,6 +1507,66 @@ export default function App() {
                 />
               </li>
             )}
+            {categoryPath[0] === 'traffic' && (
+              <li>
+                <button
+                  type="button"
+                  className={activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'vehicle' ? 'lib active' : 'lib'}
+                  aria-pressed={activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'vehicle'}
+                  onClick={() => toggleTraffic('vehicle')}
+                >
+                  <span className="swatch" style={{ background: '#f0a202' }} />
+                  <span>
+                    <strong>Vehicle Lane</strong>
+                    <small>
+                      {activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'vehicle'
+                        ? 'Click the road to draw'
+                        : 'Click to draw'}
+                    </small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath[0] === 'traffic' && (
+              <li>
+                <button
+                  type="button"
+                  className={activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'bus' ? 'lib active' : 'lib'}
+                  aria-pressed={activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'bus'}
+                  onClick={() => toggleTraffic('bus')}
+                >
+                  <span className="swatch" style={{ background: '#6ea8ff' }} />
+                  <span>
+                    <strong>Bus Lane</strong>
+                    <small>
+                      {activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'bus'
+                        ? 'Click the road to draw'
+                        : 'Click to draw'}
+                    </small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath[0] === 'traffic' && (
+              <li>
+                <button
+                  type="button"
+                  className={activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'pedestrian' ? 'lib active' : 'lib'}
+                  aria-pressed={activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'pedestrian'}
+                  onClick={() => toggleTraffic('pedestrian')}
+                >
+                  <span className="swatch" style={{ background: '#8dce6a' }} />
+                  <span>
+                    <strong>Pedestrian Route</strong>
+                    <small>
+                      {activeGenerator?.kind === 'traffic' && activeGenerator.lane === 'pedestrian'
+                        ? 'Click the ground to draw'
+                        : 'Click to draw'}
+                    </small>
+                  </span>
+                </button>
+              </li>
+            )}
             {categoryPath[0] === 'interactive' && (
               <li>
                 <PieceButton
@@ -1412,7 +1581,11 @@ export default function App() {
             )}
             {categoryPath[0] !== 'generators' && categoryPath.length === 0 &&
               catalog.categories
-                .filter((category) => category.parentId === null)
+                .filter(
+                  (category) =>
+                    category.parentId === null &&
+                    !(BUILTIN_LIBRARY_ROOTS as readonly string[]).includes(category.id),
+                )
                 .map((category) => {
                   const count = subtreePieceCount(category.id)
                   return (
@@ -1555,6 +1728,14 @@ export default function App() {
                 setStatus('Drag a sphere sideways to move that corner. Up and down sets that corner only.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'kit') {
                 setStatus('Drag the gizmo to move the whole run.')
+              } else if (picked?.kind === 'traffic_lane') {
+                setStatus(
+                  picked.lane === 'pedestrian'
+                    ? 'People follow the arrows. Drag a sphere to move that point.'
+                    : picked.lane === 'bus'
+                      ? 'Buses follow the arrow, from the first point. Drag a sphere to move that point.'
+                      : 'Traffic follows the arrow, from the first point. Drag a sphere to move that point.',
+                )
               } else if (picked?.kind === 'travel_point') {
                 setStatus(
                   picked.shelter
@@ -1573,6 +1754,7 @@ export default function App() {
             pins={pins}
             onGeneratorClick={(point) => {
               if (activeGenerator?.kind === 'kit') clickKit(point, activeGenerator)
+              else if (activeGenerator?.kind === 'traffic') clickTraffic(point, activeGenerator.lane)
               else if (activeGenerator?.kind === 'platform') clickPlatform(point)
               else if (activeGenerator?.kind === 'bank') clickBank(point)
               else if (activeGenerator?.kind === 'planter') clickPlanter(point)
@@ -1600,6 +1782,10 @@ export default function App() {
             ) : activeGenerator?.kind === 'kit' ? (
               <span>
                 Click the map to drop a pin. The next clicks extend {activeGenerator.label} and turn the corner. Escape leaves the tool.
+              </span>
+            ) : activeGenerator?.kind === 'traffic' ? (
+              <span>
+                Click the ground to drop a pin. The next click starts a {trafficDrawLabel(activeGenerator.lane)} {trafficWidth(activeGenerator.lane)} m wide, and the point after that closes the loop. Escape leaves the tool.
               </span>
             ) : activePiece === BUS_STOP_PIECE ? (
               <span>
@@ -1764,6 +1950,161 @@ export default function App() {
               onMaterials={(materials) => patchObject(selected.id, { materials })}
               onSounds={(sounds) => patchObject(selected.id, { sounds })}
             />
+          )}
+          {selected?.kind === 'traffic_lane' && (
+            <div className="fields">
+              <p
+                className={
+                  selected.lane === 'bus'
+                    ? 'badge travel'
+                    : selected.lane === 'pedestrian'
+                      ? 'badge pedestrian'
+                      : 'badge lane'
+                }
+              >
+                {selected.lane === 'bus' ? 'BUS LANE' : selected.lane === 'pedestrian' ? 'PEDESTRIAN' : 'VEHICLE LANE'}
+              </p>
+              <label>
+                Name
+                <input
+                  value={selected.name}
+                  onChange={(event) => patchObject(selected.id, { name: event.target.value })}
+                />
+              </label>
+              <label>
+                Type
+                <select
+                  value={selected.lane}
+                  onChange={(event) => {
+                    const lane: TrafficLane =
+                      event.target.value === 'bus'
+                        ? 'bus'
+                        : event.target.value === 'pedestrian'
+                          ? 'pedestrian'
+                          : 'vehicle'
+                    const patch: Partial<TrafficLaneObject> = { lane }
+                    if (lane === 'pedestrian' && selected.lane !== 'pedestrian') {
+                      if (selected.width === TRAFFIC_WIDTH_M) patch.width = PEDESTRIAN_WIDTH_M
+                      patch.bidirectional = true
+                      patch.stairs = false
+                    } else if (lane !== 'pedestrian' && selected.lane === 'pedestrian') {
+                      if (selected.width === PEDESTRIAN_WIDTH_M) patch.width = TRAFFIC_WIDTH_M
+                      patch.bidirectional = false
+                      patch.stairs = false
+                    }
+                    patchObject(selected.id, patch)
+                  }}
+                >
+                  <option value="vehicle">Vehicle lane</option>
+                  <option value="bus">Bus lane</option>
+                  <option value="pedestrian">Pedestrian route</option>
+                </select>
+              </label>
+              <label>
+                Width (m)
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.1"
+                  value={selected.width}
+                  onChange={(event) => {
+                    const width = Number(event.target.value)
+                    if (Number.isFinite(width) && width > 0) patchObject(selected.id, { width })
+                  }}
+                />
+              </label>
+              <label>
+                Sample spacing (m)
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.5"
+                  value={selected.spacing}
+                  onChange={(event) => {
+                    const spacing = Number(event.target.value)
+                    if (Number.isFinite(spacing) && spacing > 0) patchObject(selected.id, { spacing })
+                  }}
+                />
+              </label>
+              <label>
+                Weight
+                <input
+                  type="number"
+                  min="0.001"
+                  step="0.1"
+                  value={selected.weight}
+                  onChange={(event) => {
+                    const weight = Number(event.target.value)
+                    if (Number.isFinite(weight) && weight > 0) patchObject(selected.id, { weight })
+                  }}
+                />
+              </label>
+              {selected.lane === 'pedestrian' ? (
+                <>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={selected.bidirectional}
+                      onChange={(event) => patchObject(selected.id, { bidirectional: event.target.checked })}
+                    />
+                    Both directions
+                  </label>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={selected.stairs}
+                      onChange={(event) => patchObject(selected.id, { stairs: event.target.checked })}
+                    />
+                    Stairs
+                  </label>
+                </>
+              ) : (
+                <label>
+                  Speed class
+                  <input
+                    type="number"
+                    min="1"
+                    max="9"
+                    step="1"
+                    value={selected.speed}
+                    onChange={(event) => {
+                      const speed = Math.round(Number(event.target.value))
+                      if (Number.isFinite(speed)) patchObject(selected.id, { speed: Math.min(9, Math.max(1, speed)) })
+                    }}
+                  />
+                </label>
+              )}
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={selected.closed}
+                  onChange={(event) => patchObject(selected.id, { closed: event.target.checked })}
+                />
+                Closed loop
+              </label>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() =>
+                  patchObject(selected.id, {
+                    points: [...selected.points].reverse() as TrafficLaneObject['points'],
+                  })
+                }
+              >
+                Reverse direction
+              </button>
+              <p className="hint">
+                {selected.closed && selected.points.length < 3
+                  ? 'Add a third point. Two points cannot loop, so the route would stop at the end.'
+                  : selected.lane === 'pedestrian'
+                    ? selected.closed
+                      ? 'People walk this loop. Both directions is on unless you uncheck it. Stairs marks the route as steps. Uncheck Closed loop to join another pedestrian route.'
+                      : 'This route is open. People stop at the last point unless another pedestrian route meets it.'
+                    : selected.closed
+                      ? 'Traffic drives one way around the loop. Uncheck Closed loop when this lane should join another of the same type.'
+                      : 'This lane is open. Traffic stops at the last point unless another lane of the same type meets it.'}
+              </p>
+            </div>
           )}
           {selected?.kind === 'spawn' && (
             <div className="fields">
@@ -2004,6 +2345,16 @@ function duplicateObject(
                 points: source.generator.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
               }
         : undefined,
+    }
+  }
+  if (source.kind === 'traffic_lane') {
+    return {
+      ...source,
+      id,
+      name: uniqueName(source.name, objects),
+      position: [source.position[0] + shift, source.position[1], source.position[2]],
+      rotation: [...source.rotation],
+      points: source.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
     }
   }
   if (source.kind === 'grind') {

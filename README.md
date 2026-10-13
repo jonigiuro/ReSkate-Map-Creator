@@ -1,152 +1,143 @@
-# ReSkate Map Creator (MVP)
+# ReSkate Map Creator
 
 ![ReSkate Map Creator, placing a skatepark](public/img/screenshot.JPG)
 
-An easy to use, vibe-coded, editor for people that don't want to learn blender just for mapping.
-It allows you to place some assets and export a blend file. After that you still have to rely on ReSkate to actually load and run the map.
+An editor for people who want to lay out a skatepark and export a `.blend`, without building the whole map inside Blender. Place pieces, draw curbs and rails, drop a spawn and a few travel points, then export. ReSkate Studio is what loads that file and turns it into a skateable map.
 
 ## Warning
 
-This is vibe-coded, I'm not responsible if it messes up your pc or if anything happens as a consequence of downloading and/or using this repo or it's releases.
-By downlading anything from this repo you accept this terms.
+This is vibe-coded. I'm not responsible if it messes up your PC, or if anything happens as a consequence of downloading or using this repo or its releases. By downloading anything from this repo you accept these terms.
 
-## What you need
+## Get the app
 
-Blender has to be installed on your computer (for ToS reasons) and you'll need ReSkate studio to convert your map to a skateable map.
-On the first startup the editor should ask for the location of your blender executable, just point it to it.
+Download the latest Windows zip from the [releases page](https://github.com/jonigiuro/ReSkate-Map-Creator/releases). Unzip it and run `ReSkate Map Creator.exe`. The `Objects` folder next to the exe is the library.
 
-## Adding your own assets
+The download is a normal folder. The exe is unsigned, so Avast and other antivirus tools may warn.
 
-You can create your own assets or download them from the internet. To use them in the editor place them in the Objects folder alongside the runnable exe file.
-Supported formats are *.blend, *.fbx, *.obj. Place the texture in a **textures** folder alongside the 3D file.
-The folder structure dictates the categories in the editor. If you place a stairset in /Objects/New York/Stairs/Single stair/Single stair.blend the same structure will be used in the editor.
-See inside the Objects/Blueprints to see an example of this.
+Blender has to be installed on your computer. The first time export cannot find it, the editor asks you to pick `blender.exe` and remembers that path. ReSkate Studio is separate, and it is what you open the exported `.blend` with.
 
-## How to use it
+## How to use the editor
 
-Click and hold right mouse button to orbit.
-Click and hold mouse wheel to pan.
-Mousewheel is for zooming in and out.
+### Camera
 
-Click on an object in the library (left bar) to select it, then move the mouse on the scene, you should see the asset following the mouse. Click to place the asset.
-In the top bar you can turn on snapping and change the snapping steps. Snapping works while moving assets and when placing assets.
+Right-drag orbits. Middle-drag pans. The mouse wheel zooms. Press `C` to frame whatever is selected.
 
-You can save and load your scenes as *.json in the File dropdown.
+### Placing a piece
 
-Once your map is created hit **Export .blend** to create your blend file. 
-From then on you need ReSkate to load and convert the file.
+The left bar is the library. Folders in `Objects` show up as categories. Open one, click a piece, and it follows the cursor. It stands on the surface under the cursor, including walls and slopes. Right-click turns it 90° on that surface. Click the map to place it. Click the same piece again, or press Escape, to go back to selecting.
 
-# From here on the README is AI generated.
+`M` mirrors a held mesh, or the current selection, left to right. A bus stop or fast-travel point turns with right-click.
 
-# ReSkate Map Creator (MVP)
+### Select, move, scale, rotate
 
-Standalone object placer for custom skate parks aimed at **ReSkate Studio**.
+Click an object to select it. The inspector on the right shows its name, position, rotation, and scale, and you can type those numbers in.
 
-Place placeholder kit meshes + grind splines + a `spawn` empty, then export a **Studio-oriented `.blend`**.
+| Key | Action |
+|---|---|
+| `W` | Move |
+| `E` | Scale |
+| `R` | Rotate |
+| `Delete` | Remove the selection |
+| `Ctrl+C` / `Ctrl+V` | Copy and paste |
+| `Ctrl+Z` / `Ctrl+Y` | Undo and redo |
+| `M` | Mirror left to right |
+| `C` | Frame the selection |
 
-**Blender is required and is not bundled.** Install Blender and ensure `blender` is on your `PATH`.
+The spawn point stays in the map. Move it when you want the skater to start somewhere else.
 
-## Requirements
+### Snapping
 
-- Node.js 20+
-- [Blender](https://www.blender.org/) on `PATH` as `blender` (headless export via `bpy` — we never hand-write `.blend` bytes)
+The top bar has Move, Scale, and Rotate. Turn one on and set the step. Move snap locks X and Z to the world grid while you place or drag. Scale and rotate snap apply while you use those tools.
 
-Verify Blender:
+### Generators
 
-```bash
-blender --version
+Open **Generators** in the library. These are drawn on the map. Escape leaves the tool. After you finish a shape, select it and drag the spheres to edit it. The inspector can give each material slot its own texture.
+
+- **Curbs.** Click to drop a pin. The next click builds a 0.5 m wide curb, and another click turns the corner on the same mesh. The top 10 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move that pin, or up and down to set that end.
+- **Rails.** The same kind of drawing: a 5 cm rail on 0.5 m posts. The top sphere sets the rail. The bottom sphere sets the foot of the post.
+- **Platforms.** Click two opposite corners. The pad is 0.5 m tall and the top stays flat. Dragging a corner up or down moves both corners together.
+- **Banks.** Click two opposite corners. The bank starts 0.5 m tall. Each of the eight corners has its own sphere, so the base and the top can slope independently.
+- **Planters.** Click two opposite corners. You get a brick box with a granite rim and grass inside. Each corner's height is its own.
+- **Kits.** A `.blend` in `Objects/Generators` shows up here as its own tool. Click to extend the run, and click off the line to turn the corner. Straight pieces stretch so they meet.
+
+### Interactive
+
+**Bus Stop** and **Fast Travel Point** stand on the ground. Right-click turns them 90°.
+
+The wire preview matches what the game reads. On a bus stop, the arrow is the shelter's open front and players arrive at the cross. On a fast-travel point, the arrow is the way players face when they arrive, and they arrive at the cross. The inspector name is the pause-map label, about 35 characters. The shelter checkbox turns one into the other.
+
+### Traffic
+
+Open **Traffic**. **Vehicle Lane** is cars, **Bus Lane** is buses, and **Pedestrian Route** is people. Click along the ground to drop pins. The route appears on the second click. The next point closes it back to the start, so nobody stops at the end. The arrow is the direction. Cars and buses are one way. Pedestrians walk both ways unless you uncheck **Both directions**.
+
+Select a route to change its width (3.5 m for cars and buses, 2 m for people), how often the game samples it, and its weight. Cars and buses also have a speed class from 1 to 9. A pedestrian route can be marked **Stairs**. **Reverse direction** flips the point order. Uncheck **Closed loop** when the route should join another of the same type where their points meet. A loop needs three points. Drag a sphere to move that point.
+
+### Spawn
+
+Every map has one spawn. The figure is 1.7 m tall, and the arrow is where the skater heads. Export writes an empty named `spawn`.
+
+### Materials
+
+Select a curb, rail, platform, bank, planter, or a library piece that uses the shared texture list. Each slot can take a texture and a contact sound. **Original** keeps the texture and sound already on that material. **Rescan textures** picks up new texture folders.
+
+A mesh with its own textures beside the file keeps those. Export copies them with the object.
+
+### Save and export
+
+**File** holds New, Open (`Ctrl+O`), Save (`Ctrl+S`), and Save As. A scene is a `.json` file, so you can keep working on it later.
+
+**Export .blend** builds the map through Blender. Leave **Optimize for Studio** on unless you need every object written on its own. Optimization joins copies of the same piece inside each chunk and shares duplicate materials, which keeps Studio's build shorter. The chunk size is in metres.
+
+Open the `.blend` in ReSkate Studio after that.
+
+## Adding your own objects
+
+Put them in the `Objects` folder next to the exe. The folders become the categories in the library.
+
+The library reads `.blend`, `.fbx`, and `.obj`. Use a `.blend` when the object was made with the ReSkate addon: that file keeps the materials, textures, collision, and grind splines. An `.fbx` or `.obj` with the same name as a `.blend` in the same folder is treated as the same object, and the `.blend` is the one that shows up.
+
+```text
+Objects/New York/Stairs/Single stair/Single stair.blend
 ```
 
-On Windows, add the Blender install folder (e.g. `C:\Program Files\Blender Foundation\Blender 4.2\`) to your user **PATH**, then reopen the terminal / app.
+That piece is under New York → Stairs, named Single stair. Look in `Objects/Blueprints` for the same kind of layout.
 
-## Desktop app (Electron)
+Several models can share one folder and one texture folder, so you don't have to copy the textures for every file:
 
-### Dev (recommended)
+```text
+Objects/Props/signs/stop.blend
+Objects/Props/signs/yield.blend
+Objects/Props/signs/textures/
+```
+
+Each file is its own piece, and `signs` is the category. A folder whose name contains "texture", or image files sitting next to the model, counts as that piece's own textures.
+
+Model with the origin on the pivot, Z up, in metres. The library refreshes on its own when a file is added or saved.
+
+For a decal, set the material's domain to Decal in Blender before you export the object. That is what keeps it from z-fighting in the game.
+
+`Objects/Generators` is for kit runs, so those blends show up under Generators. `Objects/Private` stays on your machine and is left out of the public download.
+
+## Building it yourself
+
+You need Node.js 20+ and Blender.
 
 ```bash
 npm install
 npm run desktop
 ```
 
-Opens a native window loading the Vite UI on port **47321**. Export uses a native **Save** dialog and shells `blender` on PATH. If Blender is missing, you get a clear error dialog + banner.
-
-### Packaged build
+That opens the editor on port **47321**. `npm run dev` is the same UI in a browser. Browser export downloads the `.blend`. The desktop app uses a save dialog.
 
 ```bash
-# Linux (this repo’s CI/cloud VM)
-npm run build:desktop
-# → release/ReSkate Map Creator-*.AppImage
-# → release/linux-unpacked/ (dir target)
-
-# Windows (run on a Windows machine)
 npm run build:desktop:win
-# → release/win-unpacked/ReSkate Map Creator.exe
+npm run pack:win
 ```
 
-The build copies `Objects` next to that exe, without `Objects/Private`. Zip the `win-unpacked` folder to ship it. The app is not a self-extracting exe: those unpack into a temp folder on every launch, which is slow and is what antivirus tools flag. The exe is still unsigned, so Avast can warn anyway. Blender must still be installed separately.
+The first command writes `release/win-unpacked/ReSkate Map Creator.exe` and copies `Objects` next to it, aside from `Objects/Private` and `Objects/OfficialMeshes`. The second command zips that folder as `release/ReSkate-Map-Creator-<version>-win.zip`. Build the Windows package on Windows.
 
-> Cross-building Windows installers from Linux often needs Wine and extra electron-builder setup. Prefer building `build:desktop:win` **on Windows**.
-
-## Browser / web UI
+To export a scene file from the command line:
 
 ```bash
-npm install
-npm run dev
-```
-
-Open **[http://127.0.0.1:47321](http://127.0.0.1:47321)**. Browser export downloads the `.blend`; desktop export uses a file save dialog.
-
-### Export without the UI
-
-```bash
-npm run export:demo
-# or
 npm run export:blend -- path/to/scene.json path/to/out.blend
 ```
-
-## What you can do
-
-1. Open a library category and drag a piece into the scene. Built-in pieces live under **Generic**. Your own objects come from folders in the project (see below).
-2. Move / rotate / scale with the gizmo
-3. Draw a **grind spline** (radius + Studio surface preset)
-4. Keep the required **`spawn`** empty (facing arrow = Studio local −Z)
-5. **Export `.blend`** — collections `Map` / `Markers` / `Grind curves`, `sk8_collision_mode`, `sk8_grind_curve`
-
-## Your own objects
-
-Save each object from Blender as a `.blend` (not FBX or glTF). That file keeps the ReSkate addon data: materials, textures, collision, and grind splines. Put it in a folder named after the object, or put several `.blend` files in one folder when they share a texture folder. Each file is its own piece, and that folder is the category. An `.fbx` or `.obj` with the same name as a `.blend` is the same object, so only the `.blend` is listed. Parent folders become categories.
-
-```text
-Objects/grindable/bench/short metal bench/short metal bench.blend
-```
-
-The library shows **Objects → grindable → bench**, and **short metal bench** is the piece you drag in. The list refreshes on its own when you add or save a file. Model the object with its origin where you want the pivot, Z up, in metres. Export copies those objects into the map `.blend` without rewriting the addon properties.
-
-## Studio handoff
-
-1. Export the `.blend` (desktop save dialog or browser download)
-2. Open it in **ReSkate Studio**
-
-Real Skate meshes are not included. Replace placeholders in Blender before shipping a mod if you need game-accurate art.
-
-## Project layout
-
-| Path | Role |
-|---|---|
-| `src/` | React + Three.js placer UI |
-| `electron/` | Desktop shell (main + preload IPC) |
-| `scripts/export_blend.py` | Blender/`bpy` scene builder → `.blend` |
-| `scripts/library_catalog.mjs` | Finds authored `.blend` files in the project folders |
-| `scripts/preview_asset.py` | Builds the editor preview for an authored `.blend` |
-| `scripts/blender_export.mjs` | Shared Blender PATH check + spawn helper |
-| `scripts/export_cli.mjs` | CLI wrapper |
-| `exports/` | Demo scene JSON + generated blends |
-| `release/` | Packaged desktop artifacts (gitignored) |
-| `vite.config.ts` | Dev server on port **47321** + `/api/export-blend` |
-
-## Notes
-
-- Units: metres. Editor is Three.js Y-up; export remaps to Blender Z-up.
-- Grind curves are Blender Curve objects under `Grind curves`.
-- This MVP does not automate Studio CLI, Frostbite packing, auth, or asset ripping.
-- Electron was chosen over Tauri for least friction with the existing Vite + React + Three stack.

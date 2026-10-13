@@ -111,6 +111,35 @@ export interface GrindObject {
   surface: GrindSurface
 }
 
+/** Native NPC route. Vehicle and bus drive one way. Pedestrians can walk both ways. */
+export type TrafficLane = 'vehicle' | 'bus' | 'pedestrian'
+
+export interface TrafficLaneObject {
+  id: string
+  kind: 'traffic_lane'
+  /** Vehicle is cars. Bus is the bus lane. Pedestrian is people on foot. */
+  lane: TrafficLane
+  name: string
+  /** Centreline in local space. The first point is where the route starts. */
+  points: [number, number, number][]
+  position: [number, number, number]
+  rotation: [number, number, number]
+  /** Path width in metres. Vehicles and buses start at 3.5. Pedestrians start at 2. */
+  width: number
+  /** Distance between samples along the curve, in metres. */
+  spacing: number
+  /** Route weight. Higher values are used more often. */
+  weight: number
+  /** Speed class, 1 through 9. The addon panel shows this for vehicles and buses. */
+  speed: number
+  /** Closed loop. The addon needs three points before a loop is a route. */
+  closed: boolean
+  /** Pedestrian routes can run both ways. The addon forces this off for cars and buses. */
+  bidirectional: boolean
+  /** Pedestrian routes can be marked as stairs. The addon forces this off for cars and buses. */
+  stairs: boolean
+}
+
 export interface SpawnObject {
   id: string
   kind: 'spawn'
@@ -136,7 +165,7 @@ export interface TravelPointObject {
   rotation: [number, number, number]
 }
 
-export type SceneObject = MeshObject | GrindObject | SpawnObject | TravelPointObject
+export type SceneObject = MeshObject | GrindObject | SpawnObject | TravelPointObject | TrafficLaneObject
 
 export interface MapScene {
   version: 1

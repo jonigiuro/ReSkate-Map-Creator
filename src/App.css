@@ -624,6 +624,16 @@ button.ghost.danger {
   color: #b7e7f5;
 }
 
+.badge.lane {
+  border-color: #f0a202;
+  color: #ffd27a;
+}
+
+.badge.pedestrian {
+  border-color: #8dce6a;
+  color: #c6efb0;
+}
+
 .meta {
   margin: 0.25rem 0 0;
   font-size: 0.78rem;

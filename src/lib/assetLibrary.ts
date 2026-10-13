@@ -30,9 +30,19 @@ export type AssetCatalog = {
 
 export const EMPTY_CATALOG: AssetCatalog = { categories: [], pieces: [], kits: [] }
 
+/** Drawn tools, not folders on disk. The catalog poll closes a path it cannot find. */
+export const BUILTIN_LIBRARY_ROOTS = ['generators', 'interactive', 'traffic'] as const
+
 function withKits(catalog: Partial<AssetCatalog> | null | undefined): AssetCatalog {
+  const categories = catalog?.categories ?? []
+  const known = new Set(categories.map((category) => category.id))
+  const builtin = BUILTIN_LIBRARY_ROOTS.filter((id) => !known.has(id)).map((id) => ({
+    id,
+    label: id,
+    parentId: null,
+  }))
   return {
-    categories: catalog?.categories ?? [],
+    categories: builtin.length > 0 ? [...builtin, ...categories] : categories,
     pieces: catalog?.pieces ?? [],
     kits: catalog?.kits ?? [],
   }

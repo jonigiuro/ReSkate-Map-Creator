@@ -12,10 +12,19 @@ import type {
   MeshObject,
   SceneObject,
   SpawnObject,
+  TrafficLane,
+  TrafficLaneObject,
   TravelPointObject,
 } from '../types/scene'
 import { GRIND_SURFACE_LABELS } from '../types/scene'
 import { isSurfaceSound } from './surfaceSounds'
+import {
+  PEDESTRIAN_WIDTH_M,
+  TRAFFIC_SPACING_M,
+  TRAFFIC_SPEED,
+  TRAFFIC_WEIGHT,
+  TRAFFIC_WIDTH_M,
+} from './traffic'
 import { STOP_NAME_MAX } from './travelPoints'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
@@ -226,6 +235,40 @@ function parseSpawn(raw: Record<string, unknown>, index: number): SpawnObject {
   }
 }
 
+function finiteAtLeast(value: unknown, fallback: number, min: number, max?: number) {
+  const number = typeof value === 'number' && Number.isFinite(value) ? value : fallback
+  const clamped = Math.max(min, number)
+  return max == null ? clamped : Math.min(max, clamped)
+}
+
+function parseTrafficLane(raw: Record<string, unknown>, index: number): TrafficLaneObject {
+  const where = `Object ${index + 1}`
+  if (typeof raw.id !== 'string') throw new Error(`${where} is missing an id.`)
+  const points = parsePoints(raw.points)
+  if (!points) throw new Error(`${where} needs at least two lane points.`)
+  const lane: TrafficLane =
+    raw.lane === 'bus' ? 'bus' : raw.lane === 'pedestrian' ? 'pedestrian' : 'vehicle'
+  const fallback =
+    lane === 'bus' ? 'Bus Lane' : lane === 'pedestrian' ? 'Pedestrian Route' : 'Vehicle Lane'
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : fallback
+  return {
+    id: raw.id,
+    kind: 'traffic_lane',
+    lane,
+    name,
+    points,
+    position: vec3(raw.position, `${where} position`),
+    rotation: vec3(raw.rotation, `${where} rotation`),
+    width: finiteAtLeast(raw.width, lane === 'pedestrian' ? PEDESTRIAN_WIDTH_M : TRAFFIC_WIDTH_M, 0.01),
+    spacing: finiteAtLeast(raw.spacing, TRAFFIC_SPACING_M, 0.01),
+    weight: finiteAtLeast(raw.weight, TRAFFIC_WEIGHT, 0.001),
+    speed: Math.round(finiteAtLeast(raw.speed, TRAFFIC_SPEED, 1, 9)),
+    closed: raw.closed === true,
+    bidirectional: lane === 'pedestrian' && raw.bidirectional !== false,
+    stairs: lane === 'pedestrian' && raw.stairs === true,
+  }
+}
+
 function parseTravelPoint(raw: Record<string, unknown>, index: number): TravelPointObject {
   const where = `Object ${index + 1}`
   if (typeof raw.id !== 'string') throw new Error(`${where} is missing an id.`)
@@ -251,6 +294,7 @@ function parseObject(value: unknown, index: number): SceneObject {
   if (value.kind === 'grind') return parseGrind(value, index)
   if (value.kind === 'spawn') return parseSpawn(value, index)
   if (value.kind === 'travel_point') return parseTravelPoint(value, index)
+  if (value.kind === 'traffic_lane') return parseTrafficLane(value, index)
   throw new Error(`Object ${index + 1} has an unknown kind.`)
 }
 
