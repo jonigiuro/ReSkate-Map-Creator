@@ -1,8 +1,8 @@
 # ReSkate Map Creator
 
-![ReSkate Map Creator, placing a skatepark](public/img/screenshot.JPG)
+![ReSkate Map Creator, laying out a skatepark](public/img/screenshot.JPG)
 
-An editor for people who want to lay out a skatepark and export a `.blend`, without building the whole map inside Blender. Place pieces, draw curbs and rails, drop a spawn and a few travel points, then export. ReSkate Studio is what loads that file and turns it into a skateable map.
+An editor for laying out a skatepark and exporting a `.blend` that ReSkate Studio can load. Place library pieces, draw curbs and rails, set a spawn, add travel points, traffic, and lights, then export.
 
 ## Warning
 
@@ -10,55 +10,93 @@ This is vibe-coded. I'm not responsible if it messes up your PC, or if anything 
 
 ## Get the app
 
-Download the latest Windows zip from the [releases page](https://github.com/jonigiuro/ReSkate-Map-Creator/releases). Unzip it and run `ReSkate Map Creator.exe`. The `Objects` folder next to the exe is the library.
+Download the latest Windows zip from the [releases page](https://github.com/jonigiuro/ReSkate-Map-Creator/releases). Unzip it and run `ReSkate Map Creator.exe`. The `Objects` folder next to the exe is the library. `public/img/textures` and `public/img/private-textures` sit next to it too. Export reads those texture folders from there.
 
 The download is a normal folder. The exe is unsigned, so Avast and other antivirus tools may warn.
 
-Blender has to be installed on your computer. The first time export cannot find it, the editor asks you to pick `blender.exe` and remembers that path. ReSkate Studio is separate, and it is what you open the exported `.blend` with.
+Blender has to be installed on your computer. The first time export cannot find it, the editor asks you to pick `blender.exe` and remembers that path. ReSkate Studio is separate. Open the exported `.blend` in Studio.
+
+## Features
+
+- **Library.** Folders in `Objects` become categories. The library reads `.blend`, `.fbx`, and `.obj`, and refreshes when a file is added or saved. A piece follows the cursor and stands on the surface under it, including walls and slopes.
+- **Generators.** Draw curbs, rails, platforms, banks, and planters on the map, then drag their pins. A `.blend` in `Objects/Generators` becomes its own kit run.
+- **Interactive.** Bus stops and fast-travel points, with the facing the game reads and a pause-map name.
+- **Traffic.** Vehicle lanes, bus lanes, and pedestrian routes, including loops, joins, width, weight, speed class, and stairs.
+- **Lights.** Point, spot, and area lights, with color, energy, exposure, range, shadow, and time of day. A prop in a folder named Lights can carry its own lamp.
+- **Spawn.** Every map has one spawn. The figure is where the skater starts, and the arrow is where they head.
+- **Selection.** Click to select one piece. Ctrl-click adds or removes pieces. Move, rotate, and scale a group around the center of the selection.
+- **Transform.** Move, rotate, and scale with the gizmo or by typing numbers. Snap each one to a step. Mirror a piece left to right.
+- **Materials.** Give each material slot a texture and a contact sound, or keep what the file already has. Rescan picks up new texture folders. A mesh with its own textures beside the file keeps those.
+- **Collision and the pause map.** Each mesh can use a triangle mesh, a hull, or no collision, and can be hidden from the pause map.
+- **Camera.** Orbit, pan, zoom, and frame the selection.
+- **Undo.** One hundred steps. Undo restores the map, the selection, and the pins of a generator you are still drawing.
+- **Copy and paste.** Copy any selection except the spawn. Each paste lands one metre further along X.
+- **Save and open.** A map is a `.json` file. Opening a map locks the editor and shows progress while its models load.
+- **Export.** Builds the `.blend` through Blender. Optimize for Studio joins copies of the same piece inside each chunk. The editor stays locked until export finishes.
+- **Your own pieces.** Drop models in `Objects`. `Objects/Private` stays on your machine and is left out of the public download.
 
 ## How to use the editor
 
 ### Camera
 
-Right-drag orbits. Middle-drag pans. The mouse wheel zooms. Press `C` to frame whatever is selected.
+Right-drag orbits. Middle-drag pans. The mouse wheel zooms. Press `C` to frame the selection. With several pieces selected, `C` frames all of them.
 
 ### Placing a piece
 
-The left bar is the library. Folders in `Objects` show up as categories. Open one, click a piece, and it follows the cursor. It stands on the surface under the cursor, including walls and slopes. Right-click turns it 90° on that surface. Click the map to place it. Click the same piece again, or press Escape, to go back to selecting.
+The left bar is the library. Open a category, click a piece, and it follows the cursor. It stands on the surface under the cursor. Right-click turns it 90° on that surface. `M` mirrors the held mesh left to right. Click the map to place it. Click the map again to place another. Click the same piece in the library, or press Escape, to go back to selecting.
 
-`M` mirrors a held mesh, or the current selection, left to right. A bus stop or fast-travel point turns with right-click.
+Move snap in the top bar locks X and Z to the world grid while you place or drag. The step is in metres. It starts at 1 m and is off until you turn it on.
 
-### Select, move, scale, rotate
+### Select, move, rotate, and scale
 
-Click an object to select it. The inspector on the right shows its name, position, rotation, and scale, and you can type those numbers in.
+Click an object to select it. The buttons above the view are Select, Move (`W`), Scale (`E`), and Rotate (`R`). The inspector on the right shows the name, position, rotation, and scale, and you can type those numbers in.
 
-| Key | Action |
-|---|---|
-| `W` | Move |
-| `E` | Scale |
-| `R` | Rotate |
-| `Delete` | Remove the selection |
-| `Ctrl+C` / `Ctrl+V` | Copy and paste |
-| `Ctrl+Z` / `Ctrl+Y` | Undo and redo |
-| `M` | Mirror left to right |
-| `C` | Frame the selection |
+Scale changes meshes. Spawn, lights, travel points, and traffic routes move and rotate. Their gizmo stays in move mode when Scale is on.
 
-The spawn point stays in the map. Move it when you want the skater to start somewhere else.
+The spawn stays in the map. Move it when you want the skater to start somewhere else. Delete and copy leave the spawn where it is.
+
+Click empty ground to clear the selection.
+
+### Several pieces at once
+
+Hold Ctrl and click a piece to add it to the selection, or to remove it if it is already selected. A plain click selects only that piece. Cmd-click does the same on a Mac.
+
+The inspector shows how many pieces are selected. Move, rotate, and scale apply to all of them, around the center of their combined bounds. Delete, mirror, copy, paste, and `C` use the whole selection.
+
+Generator pins hide while more than one piece is selected. Select a single piece to drag its pins.
 
 ### Snapping
 
-The top bar has Move, Scale, and Rotate. Turn one on and set the step. Move snap locks X and Z to the world grid while you place or drag. Scale and rotate snap apply while you use those tools.
+The top bar has Move, Scale, and Rotate. Turn one on and set the step.
+
+| Snap | Starts at | Applies while you |
+|---|---|---|
+| Move | 1 m | Place or drag. Locks X and Z to the world grid. |
+| Scale | 1.1 | Scale. |
+| Rotate | 45° | Rotate. |
+
+### Copy and paste
+
+`Ctrl+C` copies every selected object except the spawn. `Ctrl+V` pastes them, selects the new copies, and returns to Select. The first paste sits 1 m further along X. The next paste sits 2 m further, then 3 m, and so on, so the copies do not stack.
+
+Copying one piece reports that piece's name. Copying several reports how many.
+
+### Undo and redo
+
+`Ctrl+Z` undoes. `Ctrl+Y` redoes. The editor keeps the last 100 edits. An edit is a place, a move, a drawn pin, a material change, a delete, a paste, or a mirror. Undo also puts the selection back, and it restores the pins if you were still drawing a generator. A drag with the gizmo is one undo step, not one step per mouse move.
+
+Undo and redo still work while a number field is focused. The other shortcuts wait until you leave the field.
 
 ### Generators
 
-Open **Generators** in the library. These are drawn on the map. Escape leaves the tool. After you finish a shape, select it and drag the spheres to edit it. The inspector can give each material slot its own texture.
+Open **Generators** in the library. These are drawn on the map. Escape leaves the tool and drops an unfinished stroke. After you finish a shape, select it and drag the spheres. The inspector can give each material slot its own texture.
 
-- **Curbs.** Click to drop a pin. The next click builds a 0.5 m wide curb, and another click turns the corner on the same mesh. The top 10 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move that pin, or up and down to set that end.
+- **Curbs.** Click to drop a pin. The next click builds a 0.5 m wide curb, and another click turns the corner on the same mesh. The top 10 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move that pin. Drag it up or down to set that end's top or base.
 - **Rails.** The same kind of drawing: a 5 cm rail on 0.5 m posts. The top sphere sets the rail. The bottom sphere sets the foot of the post.
-- **Platforms.** Click two opposite corners. The pad is 0.5 m tall and the top stays flat. Dragging a corner up or down moves both corners together.
+- **Platforms.** Click two opposite corners. The pad is 0.5 m tall and the top stays flat. Drag a corner sideways to resize the pad. Drag it up or down and both corners move together.
 - **Banks.** Click two opposite corners. The bank starts 0.5 m tall. Each of the eight corners has its own sphere, so the base and the top can slope independently.
-- **Planters.** Click two opposite corners. You get a brick box with a granite rim and grass inside. Each corner's height is its own.
-- **Kits.** A `.blend` in `Objects/Generators` shows up here as its own tool. Click to extend the run, and click off the line to turn the corner. Straight pieces stretch so they meet.
+- **Planters.** Click two opposite corners. You get a brick box, about 0.55 m tall, with a granite rim and grass inside. Each corner's height is its own.
+- **Kits.** A `.blend` in `Objects/Generators` shows up here as its own tool. Click to extend the run, and click off the line to turn the corner. Straight pieces stretch so they meet. Corners slant the faces that meet.
 
 ### Interactive
 
@@ -76,7 +114,7 @@ Select a route to change its width (3.5 m for cars and buses, 2 m for people), h
 
 Open **Lights**. **Point Light** shines every way. **Spot Light** is a cone. **Area Light** is a panel, either soft or throwing a cone. Click the map. The light sits 4 m off that face and aims back at it. Right-click turns it 90° before you place it.
 
-Select a light to set its color, energy, exposure, range, and shadow. A spot has a cone angle and edge softness. An area light has a shape and a size. Choose which times of day it is on. Clear every time and the game leaves it out. The sun and sky stay on the game's own time of day. These are direct lights.
+Select a light to set its color, energy, exposure, range, and shadow. A spot has a cone angle and edge softness. An area light has a shape and a size. Choose which times of day it is on: morning, noon, afternoon, evening, night, weather day, and weather night. Clear every time and the game leaves it out. The sun and sky stay on the game's own time of day. These are direct lights.
 
 A `.blend` in a folder named Lights can carry its own lamp. Name an empty `Direction`, and parent a point, spot, or area lamp under it. Placing that piece keeps the mesh. The lamp type comes from the file. Color, energy, range, and the other lamp settings are the ones in the inspector. **X** pitches that empty so the lamp looks up and down, from -360 to 360 degrees. The housing stays put.
 
@@ -86,17 +124,62 @@ Every map has one spawn. The figure is 1.7 m tall, and the arrow is where the sk
 
 ### Materials
 
-Select a curb, rail, platform, bank, planter, or a library piece that uses the shared texture list. Each slot can take a texture and a contact sound. **Original** keeps the texture and sound already on that material. **Rescan textures** picks up new texture folders.
+Select a curb, rail, platform, bank, planter, or a library piece that uses the shared texture list. Each slot has a texture and a contact sound. **Original** keeps the texture and sound already on that material. Another choice changes this copy only. **Rescan textures** picks up new texture folders and reports how many sets it found.
 
 A mesh with its own textures beside the file keeps those. Export copies them with the object.
 
-### Save and export
+### Collision
 
-**File** holds New, Open (`Ctrl+O`), Save (`Ctrl+S`), and Save As. A scene is a `.json` file, so you can keep working on it later.
+On a generated mesh, or a placeholder that has no library file, the inspector has a collision mode: `triangle_mesh`, `hull`, or `none`. **Hide from pause map** leaves that mesh off the pause map. Export puts these meshes in a collection named `Map`.
 
-**Export .blend** builds the map through Blender. Leave **Optimize for Studio** on unless you need every object written on its own. Optimization joins copies of the same piece inside each chunk and shares duplicate materials, which keeps Studio's build shorter. The chunk size is in metres.
+### Save and open
+
+**File** holds New, Open (`Ctrl+O`), Save (`Ctrl+S`), and Save As. A scene is a `.json` file, so you can keep working on it later. The file name shows next to File after the first save. Save writes that file again. Save As asks for a new path.
+
+Opening a map that uses library models locks the editor. A popup reads **Opening map** and counts the models as they load. The window accepts input again when they are ready. A map with no library models opens immediately.
+
+New starts a fresh map with a spawn.
+
+### Export
+
+**Export .blend** asks Blender to build the map. The editor locks, with a popup, until Blender finishes. On the desktop app you pick where the `.blend` goes. In the browser the file downloads.
+
+Leave **Optimize for Studio** on unless you need every object written on its own. Optimization joins copies of the same piece inside each chunk and shares duplicate materials, which keeps Studio's build shorter. The chunk size is in metres and starts at 20. It has to be greater than 0. Turn optimization off and each object is written on its own.
 
 Open the `.blend` in ReSkate Studio after that.
+
+From a terminal, with the repo checked out:
+
+```bash
+npm run export:blend -- path/to/scene.json path/to/out.blend
+```
+
+## Hotkeys
+
+These work when you are not typing in a field, except undo, redo, and Escape, which also work from a field. On a Mac, Cmd stands in for Ctrl on the shortcuts marked Ctrl.
+
+| Input | Action |
+|---|---|
+| Left click | Select one object, or place the held piece. |
+| Ctrl-click | Add or remove a piece from the selection. |
+| Click empty ground | Clear the selection. |
+| Right-drag | Orbit. |
+| Middle-drag | Pan. |
+| Mouse wheel | Zoom. |
+| Right-click | Turn a held piece 90° on the surface under the cursor. |
+| `W` | Move. |
+| `E` | Scale. |
+| `R` | Rotate. |
+| `C` | Frame the selection. |
+| `M` | Mirror the selection, or a held mesh, left to right. |
+| `Delete` | Remove the selection. The spawn stays. |
+| `Escape` | Leave the placement tool, drop the pins you are drawing, or close the export dialog. |
+| `Ctrl+C` | Copy the selection. The spawn is skipped. |
+| `Ctrl+V` | Paste. Each paste steps 1 m further along X. |
+| `Ctrl+Z` | Undo. |
+| `Ctrl+Y` | Redo. |
+| `Ctrl+S` | Save. |
+| `Ctrl+O` | Open. |
 
 ## Adding your own objects
 
@@ -124,7 +207,7 @@ Model with the origin on the pivot, Z up, in metres. The library refreshes on it
 
 For a decal, set the material's domain to Decal in Blender before you export the object. That is what keeps it from z-fighting in the game.
 
-`Objects/Generators` is for kit runs, so those blends show up under Generators. `Objects/Private` stays on your machine and is left out of the public download.
+`Objects/Generators` is for kit runs, so those blends show up under Generators. `Objects/Private` stays on your machine and is left out of the public download. OfficialMeshes is left out of the download too.
 
 ## Building it yourself
 
@@ -142,10 +225,4 @@ npm run build:desktop:win
 npm run pack:win
 ```
 
-The first command writes `release/win-unpacked/ReSkate Map Creator.exe` and copies `Objects` next to it, aside from `Objects/Private` and `Objects/OfficialMeshes`. It also copies `public/img/textures` and `public/img/private-textures`, which export reads from that folder. The second command zips that folder as `release/ReSkate-Map-Creator-<version>-win.zip`. Build the Windows package on Windows.
-
-To export a scene file from the command line:
-
-```bash
-npm run export:blend -- path/to/scene.json path/to/out.blend
-```
+The first command writes `release/win-unpacked/ReSkate Map Creator.exe` and copies `Objects` next to it, aside from `Objects/Private` and `Objects/OfficialMeshes`. It also copies `public/img/textures` and `public/img/private-textures`. The second command zips that folder as `release/ReSkate-Map-Creator-<version>-win.zip`. Build the Windows package on Windows.
