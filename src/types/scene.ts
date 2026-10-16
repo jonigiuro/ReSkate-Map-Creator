@@ -32,10 +32,10 @@ export interface KitGenerator {
   points: [number, number, number][]
 }
 
-/** Axis-aligned pad. Corners are opposite footprint corners in local space. The top is one flat height. */
+/** Flat pad. Points are the outline in local space. The top is one shared height. */
 export interface PlatformGenerator {
   kind: 'platform'
-  corners: [[number, number, number], [number, number, number]]
+  points: [number, number, number][]
   height: number
 }
 
@@ -78,12 +78,16 @@ export interface PlanterGenerator {
 /** Stair flight along a drawn centreline. Width and height are one value for the whole run. */
 export interface StairsGenerator {
   kind: 'stairs'
-  /** Centreline in local space. The flight climbs from the first point to the last. */
+  /** Foot of the tall side, in local space. Steps run out from this line. */
   points: [number, number, number][]
   width: number
   /** Total rise of the flight. */
   height: number
   steps: number
+  /** Join the last pin back to the first. */
+  closed?: boolean
+  /** Steps run out to the other side of the pin line. */
+  reversed?: boolean
 }
 
 export type MeshGenerator =

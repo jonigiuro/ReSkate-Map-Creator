@@ -55,6 +55,7 @@ import {
   planterLayout,
   platformFootprintTooSmall,
   platformFromWorld,
+  platformOutlineTooSmall,
   type Vec3,
 } from '../lib/generators'
 import {
@@ -68,6 +69,13 @@ import { lightKindFromPiece, lightPlacement, lightPreviewIntensity, parsePropLig
 import { BUS_STOP_PIECE, isInteractivePiece, travelGuide } from '../lib/travelPoints'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
+import {
+  nearestVertex,
+  reportVertexSnap,
+  setVertexSnapListener,
+  snapObjectToVertex,
+  type VertexHit,
+} from '../lib/vertexSnap'
 import { TextureSetMaterial } from './TextureSetMaterial'
 import { useTextureSets } from '../lib/textureSets'
 import type { DrawGenerator } from '../lib/kitLayout'
@@ -289,6 +297,8 @@ function TransformGizmo({
   showY = true,
   showZ = true,
   space = 'world',
+  vertices = false,
+  vertexExclude,
 }: {
   target: RefObject<THREE.Group | null>
   dragging: RefObject<boolean>
@@ -305,10 +315,19 @@ function TransformGizmo({
   showY?: boolean
   showZ?: boolean
   space?: 'world' | 'local'
+  /** Hold Ctrl to snap this pin to a vertex. An axis arrow snaps only that axis. */
+  vertices?: boolean
+  /** The piece being dragged. Its own vertices are skipped so the pin does not stick to itself. */
+  vertexExclude?: RefObject<THREE.Object3D | null>
 }) {
   const controlsRef = useRef<GizmoControls | null>(null)
   const lock = useRef({ x: 0, y: 0, z: 0 })
+  const pointer = useRef({ x: 0, y: 0, ctrl: false })
+  const axisRef = useRef<string | null>(null)
+  const commitRef = useRef<() => void>(() => {})
   const gl = useThree((s) => s.gl)
+  const camera = useThree((s) => s.camera)
+  const scene = useThree((s) => s.scene)
 
   useEffect(() => {
     const el = gl.domElement
@@ -324,14 +343,31 @@ function TransformGizmo({
     const onPointerUp = () => {
       gizmoOwnsPointer.current = false
     }
+    const onPointerMove = (event: PointerEvent) => {
+      pointer.current.x = event.clientX
+      pointer.current.y = event.clientY
+      pointer.current.ctrl = event.ctrlKey
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Control') return
+      pointer.current.ctrl = event.type === 'keydown'
+      if (vertices && dragging.current) commitRef.current()
+      if (event.type === 'keyup') reportVertexSnap(null)
+    }
     el.addEventListener('pointerdown', onPointerDown, true)
     el.addEventListener('pointerup', onPointerUp, true)
+    window.addEventListener('pointermove', onPointerMove, true)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKey)
     return () => {
       el.removeEventListener('pointerdown', onPointerDown, true)
       el.removeEventListener('pointerup', onPointerUp, true)
+      window.removeEventListener('pointermove', onPointerMove, true)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKey)
       gizmoOwnsPointer.current = false
     }
-  }, [gl])
+  }, [gl, vertices])
 
   useLayoutEffect(() => {
     const controls = controlsRef.current
@@ -344,6 +380,21 @@ function TransformGizmo({
   function commit() {
     const g = target.current
     if (!g) return
+    const controls = controlsRef.current
+    if (controls?.axis) axisRef.current = controls.axis
+    if (vertices && pointer.current.ctrl && dragging.current) {
+      const hit = nearestVertex(
+        { clientX: pointer.current.x, clientY: pointer.current.y },
+        camera,
+        scene,
+        gl.domElement,
+        vertexExclude?.current,
+      )
+      if (hit && axisRef.current) snapObjectToVertex(g, hit, axisRef.current, space)
+      reportVertexSnap(hit)
+    } else if (vertices) {
+      reportVertexSnap(null)
+    }
     if (!showX) g.position.x = lock.current.x
     if (!showY) g.position.y = lock.current.y
     if (!showZ) g.position.z = lock.current.z
@@ -356,6 +407,7 @@ function TransformGizmo({
       [round4(s.x), round4(s.y), round4(s.z)],
     )
   }
+  commitRef.current = commit
 
   return (
     <TransformControls
@@ -379,8 +431,10 @@ function TransformGizmo({
       }}
       onObjectChange={commit}
       onMouseUp={() => {
-        dragging.current = false
         commit()
+        dragging.current = false
+        axisRef.current = null
+        if (vertices) reportVertexSnap(null)
         onGestureEnd()
       }}
     />
@@ -482,7 +536,7 @@ function MeshItem({
   useLayoutEffect(() => {
     const g = handleRef.current
     if (!g || handleDragging.current || !platform || pin == null) return
-    const corner = platform.corners[pin]
+    const corner = platform.points[pin]
     if (!corner) return
     g.position.set(corner[0], platform.height, corner[2])
   }, [platform, pin])
@@ -518,7 +572,7 @@ function MeshItem({
   useLayoutEffect(() => {
     const g = handleRef.current
     if (!g || handleDragging.current || !stairs || !handle) return
-    const layout = stairPinLayout(stairs.points, stairs.width, stairs.height)
+    const layout = stairPinLayout(stairs.points, stairs.width, stairs.height, stairs.closed === true, stairs.reversed === true)
     const pinLayout = layout[handle.index]
     if (!pinLayout) return
     const pos = handle.end === 'top' ? pinLayout.top : handle.end === 'width' ? pinLayout.width : pinLayout.base
@@ -548,22 +602,36 @@ function MeshItem({
   function commitPlatform() {
     if (!platform || pin == null) return
     const g = handleRef.current
-    const corner = platform.corners[pin]
-    const other = platform.corners[pin === 0 ? 1 : 0]
-    if (!g || !corner || !other) return
+    const corner = platform.points[pin]
+    if (!g || !corner) return
+    const count = platform.points.length
+    const points = platform.points.map((entry) => [entry[0], 0, entry[2]] as Vec3)
     let x = g.position.x
     let z = g.position.z
-    if (Math.abs(x - other[0]) < 0.05) x = other[0] + (x >= other[0] ? 0.05 : -0.05)
-    if (Math.abs(z - other[2]) < 0.05) z = other[2] + (z >= other[2] ? 0.05 : -0.05)
+    const keepApart = (anchor: Vec3) => {
+      const dx = x - anchor[0]
+      const dz = z - anchor[2]
+      const span = Math.hypot(dx, dz)
+      if (span >= 0.05) return
+      if (span < 1e-6) {
+        x = anchor[0] + 0.05
+        return
+      }
+      x = anchor[0] + (dx / span) * 0.05
+      z = anchor[2] + (dz / span) * 0.05
+    }
+    keepApart(points[(pin - 1 + count) % count])
+    keepApart(points[(pin + 1) % count])
+    points[pin] = [round4(x), 0, round4(z)]
+    if (platformOutlineTooSmall(points)) {
+      x = corner[0]
+      z = corner[2]
+      points[pin] = [corner[0], 0, corner[2]]
+    }
     const y = Math.max(g.position.y, MIN_PLATFORM_HEIGHT_M)
     g.position.set(x, y, z)
-    const corners: [Vec3, Vec3] = [
-      [platform.corners[0][0], 0, platform.corners[0][2]],
-      [platform.corners[1][0], 0, platform.corners[1][2]],
-    ]
-    corners[pin] = [round4(x), 0, round4(z)]
     onPatch({
-      generator: { ...platform, corners, height: round4(y) },
+      generator: { ...platform, points, height: round4(y) },
     })
   }
 
@@ -670,14 +738,14 @@ function MeshItem({
     if (!g || !point) return
     if (handle.end === 'top') {
       const height = clampStairHeight(g.position.y - point[1])
-      const edge = stairPinLayout(stairs.points, stairs.width, height)[handle.index]?.top
+      const edge = stairPinLayout(stairs.points, stairs.width, height, stairs.closed === true, stairs.reversed === true)[handle.index]?.top
       if (edge) g.position.set(edge[0], edge[1], edge[2])
       onPatch({ generator: { ...stairs, height: round4(height) } })
       return
     }
     if (handle.end === 'width') {
       const width = clampStairWidth(Math.hypot(g.position.x - point[0], g.position.z - point[2]))
-      const edge = stairPinLayout(stairs.points, width, stairs.height)[handle.index]?.width
+      const edge = stairPinLayout(stairs.points, width, stairs.height, stairs.closed === true, stairs.reversed === true)[handle.index]?.width
       if (edge) g.position.set(edge[0], point[1], edge[2])
       onPatch({ generator: { ...stairs, width: round4(width) } })
       return
@@ -777,9 +845,9 @@ function MeshItem({
           </>
         ) : platform ? (
           <>
-            <PlatformMesh corners={platform.corners} height={platform.height} materials={obj.materials} />
+            <PlatformMesh points={platform.points} height={platform.height} materials={obj.materials} />
             {editingPlatform &&
-              platform.corners.map((corner, index) => (
+              platform.points.map((corner, index) => (
                 <mesh
                   key={index}
                   position={[corner[0], platform.height, corner[2]]}
@@ -869,13 +937,15 @@ function MeshItem({
               width={stairs.width}
               height={stairs.height}
               steps={stairs.steps}
+              closed={stairs.closed === true}
+              reversed={stairs.reversed === true}
               materials={obj.materials}
             />
             {editingStairs &&
-              stairPinLayout(stairs.points, stairs.width, stairs.height).map((pin, index) => (
+              stairPinLayout(stairs.points, stairs.width, stairs.height, stairs.closed === true, stairs.reversed === true).map((pin, index) => (
                 <group key={index}>
+                  <StairPinRod from={pin.base} to={pin.top} />
                   <StairPinRod from={pin.base} to={pin.width} />
-                  <StairPinRod from={pin.width} to={pin.top} />
                   <CurbHandleSphere
                     position={pin.base}
                     color={handle?.index === index && handle.end === 'bottom' ? '#fff4d6' : '#ffb703'}
@@ -934,6 +1004,8 @@ function MeshItem({
           mode="translate"
           space="world"
           snap={snap}
+          vertices
+          vertexExclude={ref}
           onCommit={commitHeight}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
@@ -946,6 +1018,8 @@ function MeshItem({
           mode="translate"
           space="world"
           snap={snap}
+          vertices
+          vertexExclude={ref}
           onCommit={commitPlatform}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
@@ -958,6 +1032,8 @@ function MeshItem({
           mode="translate"
           space="world"
           snap={snap}
+          vertices
+          vertexExclude={ref}
           onCommit={commitBank}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
@@ -970,6 +1046,8 @@ function MeshItem({
           mode="translate"
           space="world"
           snap={snap}
+          vertices
+          vertexExclude={ref}
           onCommit={commitRail}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
@@ -982,6 +1060,8 @@ function MeshItem({
           mode="translate"
           space="world"
           snap={snap}
+          vertices
+          vertexExclude={ref}
           onCommit={commitPlanter}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
@@ -994,6 +1074,8 @@ function MeshItem({
           mode="translate"
           space="world"
           snap={snap}
+          vertices
+          vertexExclude={ref}
           onCommit={commitStairs}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
@@ -2235,17 +2317,17 @@ function KitGhost({
 }
 
 function PlatformMesh({
-  corners,
+  points,
   height,
   materials,
   ghost,
 }: {
-  corners: [Vec3, Vec3]
+  points: Vec3[]
   height: number
   materials?: Record<string, string>
   ghost?: boolean
 }) {
-  const geometry = useMemo(() => buildPlatformGeometry(corners, height), [corners, height])
+  const geometry = useMemo(() => buildPlatformGeometry(points, height), [points, height])
   useEffect(() => () => geometry?.dispose(), [geometry])
   if (!geometry) return null
   return (
@@ -2257,12 +2339,13 @@ function PlatformMesh({
 
 function PlatformGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
   const first = pins[0]
-  const second: Vec3 = [to.x, first[1], to.z]
-  if (platformFootprintTooSmall(first, second)) return null
-  const { origin, corners } = platformFromWorld(first, second)
+  const cursor: Vec3 = [to.x, first[1], to.z]
+  if (curbSegmentTooShort(pins[pins.length - 1], cursor)) return null
+  const preview = [...pins, cursor]
+  if (platformOutlineTooSmall(preview)) return null
   return (
-    <group position={origin} userData={{ placementGhost: true }}>
-      <PlatformMesh corners={corners} height={PLATFORM_HEIGHT_M} ghost />
+    <group position={[0, first[1], 0]} userData={{ placementGhost: true }}>
+      <PlatformMesh points={preview.map((point) => [point[0], 0, point[2]])} height={PLATFORM_HEIGHT_M} ghost />
     </group>
   )
 }
@@ -2431,7 +2514,7 @@ function StairPinRod({ from, to }: { from: Vec3; to: Vec3 }) {
   const mid = start.clone().add(end).multiplyScalar(0.5)
   const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), span.normalize())
   return (
-    <mesh position={mid} quaternion={quat} raycast={() => {}} renderOrder={3}>
+    <mesh position={mid} quaternion={quat} raycast={() => {}} renderOrder={3} userData={{ vertexSnapIgnore: true }}>
       <cylinderGeometry args={[0.025, 0.025, length, 6]} />
       <meshBasicMaterial color="#ff9f1c" toneMapped={false} depthTest={false} />
     </mesh>
@@ -2443,6 +2526,8 @@ function StairsMesh({
   width,
   height,
   steps,
+  closed,
+  reversed,
   materials,
   ghost,
 }: {
@@ -2450,19 +2535,32 @@ function StairsMesh({
   width: number
   height: number
   steps: number
+  closed?: boolean
+  reversed?: boolean
   materials?: Record<string, string>
   ghost?: boolean
 }) {
-  const geometry = useMemo(
-    () => buildStairsGeometry(points, width, height, steps),
-    [points, width, height, steps],
+  const parts = useMemo(
+    () => buildStairsGeometry(points, width, height, steps, closed === true, reversed === true),
+    [points, width, height, steps, closed, reversed],
   )
-  useEffect(() => () => geometry?.dispose(), [geometry])
-  if (!geometry) return null
+  useEffect(
+    () => () => {
+      parts?.body.dispose()
+      parts?.tread.dispose()
+    },
+    [parts],
+  )
+  if (!parts) return null
   return (
-    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-      <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
-    </mesh>
+    <>
+      <mesh geometry={parts.body} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
+      </mesh>
+      <mesh geometry={parts.tread} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.concrete} ghost={ghost} fallback="concrete" />
+      </mesh>
+    </>
   )
 }
 
@@ -2766,6 +2864,8 @@ function TrafficLaneItem({
           mode="translate"
           space="local"
           snap={snap}
+          vertices
+          vertexExclude={ref}
           onCommit={(pos) => commitPin(pos)}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
@@ -2796,7 +2896,7 @@ function CurbPin({
   color?: string
 }) {
   return (
-    <group position={position} userData={ghost ? { placementGhost: true } : undefined}>
+    <group position={position} userData={ghost ? { placementGhost: true, vertexSnapIgnore: true } : { vertexSnapIgnore: true }}>
       <mesh position={[0, 0.55, 0]} raycast={() => {}}>
         <cylinderGeometry args={[0.035, 0.035, 1.1, 8]} />
         <meshBasicMaterial
@@ -2818,6 +2918,24 @@ function CurbPin({
         />
       </mesh>
     </group>
+  )
+}
+
+function VertexSnapMarker({ point }: { point: VertexHit | null }) {
+  const ref = useRef<THREE.Mesh>(null)
+  const camera = useThree((s) => s.camera)
+  useFrame(() => {
+    const mesh = ref.current
+    if (!mesh) return
+    const dist = Math.max(camera.position.distanceTo(mesh.position), 0.5)
+    mesh.scale.setScalar(dist * 0.018)
+  })
+  if (!point) return null
+  return (
+    <mesh ref={ref} position={point} renderOrder={12} raycast={() => {}} userData={{ vertexSnapIgnore: true }}>
+      <octahedronGeometry args={[1, 0]} />
+      <meshBasicMaterial color="#5ce1ff" toneMapped={false} depthTest={false} />
+    </mesh>
   )
 }
 
@@ -2849,18 +2967,31 @@ function GeneratorLayer({
       return
     }
     el.style.cursor = 'crosshair'
+    const pointed = (event: PointerEvent) => {
+      if (!event.ctrlKey) {
+        reportVertexSnap(null)
+        return snapPointFromEvent(event, camera, scene, el, moveSnapRef.current)
+      }
+      const hit = nearestVertex(event, camera, scene, el)
+      reportVertexSnap(hit)
+      if (!hit) return snapPointFromEvent(event, camera, scene, el, moveSnapRef.current)
+      return new THREE.Vector3(hit[0], hit[1], hit[2])
+    }
     const move = (event: PointerEvent) => {
-      onPreviewRef.current(snapPointFromEvent(event, camera, scene, el, moveSnapRef.current))
+      onPreviewRef.current(pointed(event))
     }
     const down = (event: PointerEvent) => {
       if (event.button !== 0) return
-      const point = snapPointFromEvent(event, camera, scene, el, moveSnapRef.current)
+      const point = pointed(event)
       if (!point) return
       event.preventDefault()
       event.stopPropagation()
       onClickRef.current(point)
     }
-    const leave = () => onPreviewRef.current(null)
+    const leave = () => {
+      onPreviewRef.current(null)
+      reportVertexSnap(null)
+    }
     el.addEventListener('pointermove', move, true)
     el.addEventListener('pointerdown', down, true)
     el.addEventListener('pointerleave', leave)
@@ -2911,6 +3042,12 @@ function SceneContents(props: Props) {
   onEndRef.current = onTransformEnd
   const [previewHit, setPreviewHit] = useState<SurfaceHit | null>(null)
   const [generatorPreview, setGeneratorPreview] = useState<THREE.Vector3 | null>(null)
+  const [vertexSnapPoint, setVertexSnapPoint] = useState<VertexHit | null>(null)
+
+  useEffect(() => {
+    setVertexSnapListener(setVertexSnapPoint)
+    return () => setVertexSnapListener(null)
+  }, [])
 
   useEffect(() => {
     if (!placePieceId) setPreviewHit(null)
@@ -3163,6 +3300,8 @@ function SceneContents(props: Props) {
           to={generatorPreview}
         />
       )}
+
+      <VertexSnapMarker point={vertexSnapPoint} />
 
       <PiecePlacementLayer
         placePieceId={placePieceId}

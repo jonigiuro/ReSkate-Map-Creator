@@ -69,13 +69,27 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
     return kit
   }
   if (raw.kind === 'platform') {
-    const points = parsePoints(raw.corners)
-    if (!points || points.length !== 2) return undefined
+    const listed = parsePoints(raw.points)
+    const legacy = parsePoints(raw.corners)
+    let points = listed && listed.length >= 3 ? listed : undefined
+    if (!points && legacy && legacy.length === 2) {
+      const minX = Math.min(legacy[0][0], legacy[1][0])
+      const maxX = Math.max(legacy[0][0], legacy[1][0])
+      const minZ = Math.min(legacy[0][2], legacy[1][2])
+      const maxZ = Math.max(legacy[0][2], legacy[1][2])
+      points = [
+        [minX, 0, minZ],
+        [maxX, 0, minZ],
+        [maxX, 0, maxZ],
+        [minX, 0, maxZ],
+      ]
+    }
+    if (!points) return undefined
     const height = raw.height
     if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0) return undefined
     const platform: PlatformGenerator = {
       kind: 'platform',
-      corners: [points[0], points[1]],
+      points: points.map((point) => [point[0], 0, point[2]]),
       height,
     }
     return platform
@@ -148,6 +162,8 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
       width: clampStairWidth(width),
       height: clampStairHeight(height),
       steps: clampStairSteps(typeof raw.steps === 'number' ? raw.steps : Number.NaN),
+      closed: raw.closed === true,
+      reversed: raw.reversed === true,
     }
     return stairs
   }

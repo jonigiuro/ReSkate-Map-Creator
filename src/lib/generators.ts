@@ -573,14 +573,43 @@ export function platformFromWorld(a: Vec3, b: Vec3) {
   return { origin, corners }
 }
 
-/** Solid pad from two opposite corners. Local Y is the base. UVs are metres. */
-export function buildPlatformGeometry(corners: [Vec3, Vec3], height: number) {
-  const minX = Math.min(corners[0][0], corners[1][0])
-  const maxX = Math.max(corners[0][0], corners[1][0])
-  const minZ = Math.min(corners[0][2], corners[1][2])
-  const maxZ = Math.max(corners[0][2], corners[1][2])
+function platformSignedArea(points: Vec3[]) {
+  let area = 0
+  for (let i = 0; i < points.length; i += 1) {
+    const next = points[(i + 1) % points.length]
+    area += points[i][0] * next[2] - next[0] * points[i][2]
+  }
+  return area / 2
+}
+
+/** A pad needs three corners and enough area to stand on. */
+export function platformOutlineTooSmall(points: Vec3[]) {
+  return points.length < 3 || Math.abs(platformSignedArea(points)) < 0.001
+}
+
+/** Outline wound so the top faces up. The stored click order is left alone. */
+function platformRing(points: Vec3[]): Vec3[] | null {
+  if (platformOutlineTooSmall(points)) return null
+  const ring = points.map((point) => [point[0], 0, point[2]] as Vec3)
+  if (platformSignedArea(ring) < 0) ring.reverse()
+  return ring
+}
+
+/** Solid pad from an outline. Local Y is the base. The top is one flat height. UVs are metres. */
+export function buildPlatformGeometry(points: Vec3[], height: number) {
+  const ring = platformRing(points)
+  if (!ring) return null
   const h = Math.max(height, MIN_PLATFORM_HEIGHT_M)
-  if (maxX - minX < 1e-4 || maxZ - minZ < 1e-4) return null
+  const shape = new THREE.Shape()
+  shape.moveTo(ring[0][0], ring[0][2])
+  for (let i = 1; i < ring.length; i += 1) shape.lineTo(ring[i][0], ring[i][2])
+  const cap = new THREE.ShapeGeometry(shape)
+  const capPosition = cap.getAttribute('position')
+  const capIndex = cap.getIndex()
+  if (!capIndex || capPosition.count < 3) {
+    cap.dispose()
+    return null
+  }
 
   const positions: number[] = []
   const normals: number[] = []
@@ -601,73 +630,69 @@ export function buildPlatformGeometry(corners: [Vec3, Vec3], height: number) {
     addTri(positions, normals, uvs, tangents, a, b, c, ua, ub, uc, outward)
     addTri(positions, normals, uvs, tangents, a, c, d, ua, uc, ud, outward)
   }
+  const down = new THREE.Vector3(0, -1, 0)
 
-  quad(
-    v(minX, h, minZ),
-    v(maxX, h, minZ),
-    v(maxX, h, maxZ),
-    v(minX, h, maxZ),
-    [minX, minZ],
-    [maxX, minZ],
-    [maxX, maxZ],
-    [minX, maxZ],
-    UP,
-  )
-  quad(
-    v(minX, 0, maxZ),
-    v(maxX, 0, maxZ),
-    v(maxX, 0, minZ),
-    v(minX, 0, minZ),
-    [minX, maxZ],
-    [maxX, maxZ],
-    [maxX, minZ],
-    [minX, minZ],
-    new THREE.Vector3(0, -1, 0),
-  )
-  quad(
-    v(maxX, 0, minZ),
-    v(maxX, 0, maxZ),
-    v(maxX, h, maxZ),
-    v(maxX, h, minZ),
-    [minZ, 0],
-    [maxZ, 0],
-    [maxZ, h],
-    [minZ, h],
-    new THREE.Vector3(1, 0, 0),
-  )
-  quad(
-    v(minX, 0, maxZ),
-    v(minX, 0, minZ),
-    v(minX, h, minZ),
-    v(minX, h, maxZ),
-    [maxZ, 0],
-    [minZ, 0],
-    [minZ, h],
-    [maxZ, h],
-    new THREE.Vector3(-1, 0, 0),
-  )
-  quad(
-    v(maxX, 0, maxZ),
-    v(minX, 0, maxZ),
-    v(minX, h, maxZ),
-    v(maxX, h, maxZ),
-    [maxX, 0],
-    [minX, 0],
-    [minX, h],
-    [maxX, h],
-    new THREE.Vector3(0, 0, 1),
-  )
-  quad(
-    v(minX, 0, minZ),
-    v(maxX, 0, minZ),
-    v(maxX, h, minZ),
-    v(minX, h, minZ),
-    [minX, 0],
-    [maxX, 0],
-    [maxX, h],
-    [minX, h],
-    new THREE.Vector3(0, 0, -1),
-  )
+  for (let i = 0; i < capIndex.count; i += 3) {
+    const ia = capIndex.getX(i)
+    const ib = capIndex.getX(i + 1)
+    const ic = capIndex.getX(i + 2)
+    const ax = capPosition.getX(ia)
+    const az = capPosition.getY(ia)
+    const bx = capPosition.getX(ib)
+    const bz = capPosition.getY(ib)
+    const cx = capPosition.getX(ic)
+    const cz = capPosition.getY(ic)
+    addTri(
+      positions,
+      normals,
+      uvs,
+      tangents,
+      v(ax, h, az),
+      v(bx, h, bz),
+      v(cx, h, cz),
+      [ax, az],
+      [bx, bz],
+      [cx, cz],
+      UP,
+    )
+    addTri(
+      positions,
+      normals,
+      uvs,
+      tangents,
+      v(ax, 0, az),
+      v(cx, 0, cz),
+      v(bx, 0, bz),
+      [ax, az],
+      [cx, cz],
+      [bx, bz],
+      down,
+    )
+  }
+  cap.dispose()
+
+  let along = 0
+  for (let i = 0; i < ring.length; i += 1) {
+    const a = ring[i]
+    const b = ring[(i + 1) % ring.length]
+    const length = Math.hypot(b[0] - a[0], b[2] - a[2])
+    // Positive area keeps the inside on the right of each edge, so left is outside.
+    const outward = leftOf(horizontalDir(a, b))
+    const u0 = along
+    const u1 = along + length
+    along = u1
+    quad(
+      v(a[0], 0, a[2]),
+      v(b[0], 0, b[2]),
+      v(b[0], h, b[2]),
+      v(a[0], h, a[2]),
+      [u0, 0],
+      [u1, 0],
+      [u1, h],
+      [u0, h],
+      outward,
+    )
+  }
 
   if (positions.length === 0) return null
   const geometry = new THREE.BufferGeometry()
@@ -1170,9 +1195,11 @@ export function buildPlanterWaxGeometry(
   return geometry
 }
 
-/** Stair flight. The drawn path is the front edge. Steps run out to the side. */
+/** Stair flight. The drawn path is the foot of the tall side. Steps rise there and run down toward the outer edge. */
 export const STAIR_WIDTH_M = 2
 export const STAIR_HEIGHT_M = 0.6
+/** Separate slab on each tread, so the walking surface can use its own material. */
+export const STAIR_TREAD_M = 0.03
 export const DEFAULT_STAIR_STEPS = 4
 export const MIN_STAIR_STEPS = 1
 export const MAX_STAIR_STEPS = 40
@@ -1201,10 +1228,46 @@ type StairEdge = {
   floorY: number
 }
 
-/** One sample along the path. `outer` is a full step-run to the left of the path. */
-function stairEdges(points: Vec3[], depth: number): StairEdge[] | null {
+/** Closed runs miter the first pin with the last, so the ribbon has no loose ends. */
+function closedStairSections(points: Vec3[], halfWidth: number): Section[] {
+  const count = points.length
+  const dirs = points.map((point, index) => horizontalDir(point, points[(index + 1) % count]))
+  const sections: Section[] = []
+  const push = (point: Vec3, offset: THREE.Vector3, pointIndex: number) => {
+    const centre = new THREE.Vector3(...point)
+    sections.push({
+      left: centre.clone().add(offset),
+      right: centre.clone().sub(offset),
+      pointIndex,
+    })
+  }
+  for (let i = 0; i < count; i += 1) {
+    const incoming = leftOf(dirs[(i - 1 + count) % count])
+    const outgoing = leftOf(dirs[i])
+    const sum = incoming.clone().add(outgoing)
+    if (sum.lengthSq() < 1e-8) {
+      push(points[i], incoming.clone().multiplyScalar(halfWidth), i)
+      push(points[i], outgoing.clone().multiplyScalar(halfWidth), i)
+      continue
+    }
+    const miter = sum.normalize()
+    const denom = miter.dot(incoming)
+    if (denom < 0.25) {
+      push(points[i], incoming.clone().multiplyScalar(halfWidth), i)
+      push(points[i], outgoing.clone().multiplyScalar(halfWidth), i)
+      continue
+    }
+    const scale = Math.min(halfWidth / denom, halfWidth * 4)
+    push(points[i], miter.multiplyScalar(scale), i)
+  }
+  return sections
+}
+
+/** One sample along the path. `outer` is a full step-run off to the side. */
+function stairEdges(points: Vec3[], depth: number, closed: boolean, reversed: boolean): StairEdge[] | null {
   if (points.length < 2) return null
-  const sections = curbSections(points, depth)
+  const loop = closed && points.length >= 3
+  const sections = loop ? closedStairSections(points, depth) : curbSections(points, depth)
   if (sections.length < 2) return null
   let span = 0
   const edges: StairEdge[] = []
@@ -1216,9 +1279,14 @@ function stairEdges(points: Vec3[], depth: number): StairEdge[] | null {
     }
     edges.push({
       origin,
-      outer: section.left.clone(),
+      outer: (reversed ? section.right : section.left).clone(),
       floorY: points[section.pointIndex][1],
     })
+  }
+  if (loop) {
+    const first = edges[0].origin
+    const last = edges[edges.length - 1].origin
+    span += Math.hypot(first.x - last.x, first.z - last.z)
   }
   if (span < 0.05) return null
   return edges
@@ -1238,44 +1306,60 @@ function towardPath(edge: StairEdge) {
   return dir.normalize()
 }
 
-/** Where the edit pins sit. The side pin is the far edge of the flight, a full run off the path. */
-export function stairPinLayout(points: Vec3[], width: number, height: number) {
+/** Where the edit pins sit. The path is the foot of the tall side. The top pin is straight above it. */
+export function stairPinLayout(
+  points: Vec3[],
+  width: number,
+  height: number,
+  closed = false,
+  reversed = false,
+) {
   if (!points || points.length < 2) return []
   const depth = clampStairWidth(width)
   const rise = clampStairHeight(height)
-  const dirs = points.slice(1).map((point, index) => horizontalDir(points[index], point))
+  const loop = closed && points.length >= 3
+  const dirs = loop
+    ? points.map((point, index) => horizontalDir(point, points[(index + 1) % points.length]))
+    : points.slice(1).map((point, index) => horizontalDir(points[index], point))
+  const side = reversed ? -1 : 1
   return points.map((point, index) => {
-    const left = leftOf(dirs[Math.min(index, dirs.length - 1)]).multiplyScalar(depth)
+    const left = leftOf(dirs[loop ? index : Math.min(index, dirs.length - 1)]).multiplyScalar(depth * side)
     return {
       base: point,
-      top: [point[0] + left.x, point[1] + rise, point[2] + left.z] as Vec3,
+      top: [point[0], point[1] + rise, point[2]] as Vec3,
       width: [point[0] + left.x, point[1], point[2] + left.z] as Vec3,
     }
   })
 }
 
 /**
- * Closed concrete stair. The path is the front edge, and every step is the same
- * depth out to the side. The rise is a straight line from that edge up by `height`.
+ * Closed concrete stair. The path is the foot of the tall side. Every step is the
+ * same depth out to the side, and the treads step down from that side to the floor.
  */
 export function buildStairsGeometry(
   points: Vec3[],
   width = STAIR_WIDTH_M,
   height = STAIR_HEIGHT_M,
   stepCount = DEFAULT_STAIR_STEPS,
+  closed = false,
+  reversed = false,
 ) {
   if (!points || points.length < 2) return null
   const steps = clampStairSteps(stepCount)
   const depth = clampStairWidth(width)
   const rise = clampStairHeight(height)
-  const edges = stairEdges(points, depth)
+  const edges = stairEdges(points, depth, closed, reversed)
   if (!edges) return null
+  const loop = closed && edges.length >= 3
+  const segments = loop ? edges.length : edges.length - 1
   const startY = points[0][1]
-  const mesh = freshMesh()
+  const body = freshMesh()
+  const treadMesh = freshMesh()
   const tile = STONE_TILE_M
   const up = new THREE.Vector3(0, 1, 0)
   const down = new THREE.Vector3(0, -1, 0)
-  const face = (
+  const faceOn = (
+    mesh: MeshArrays,
     a: THREE.Vector3,
     b: THREE.Vector3,
     c: THREE.Vector3,
@@ -1288,43 +1372,95 @@ export function buildStairsGeometry(
   ) => {
     quadMesh(mesh, a, b, c, d, ua, ub, uc, ud, outward)
   }
+  const face = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    d: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    ud: [number, number],
+    outward: THREE.Vector3,
+  ) => faceOn(body, a, b, c, d, ua, ub, uc, ud, outward)
+  const faceTread = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    d: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    ud: [number, number],
+    outward: THREE.Vector3,
+  ) => faceOn(treadMesh, a, b, c, d, ua, ub, uc, ud, outward)
   const groundUv = (v: THREE.Vector3): [number, number] => [v.x / tile, v.z / tile]
+  const wallUv = (distance: number, y: number): [number, number] => [distance / tile, y / tile]
+  /** Distance along a vertical face, so its height is a real metre of texture. */
+  const wallRun = (fraction: number) => {
+    const runs = [0]
+    let along = 0
+    for (let j = 0; j < segments; j += 1) {
+      const a = edges[j]
+      const b = edges[(j + 1) % edges.length]
+      const ax = a.origin.x + (a.outer.x - a.origin.x) * fraction
+      const az = a.origin.z + (a.outer.z - a.origin.z) * fraction
+      const bx = b.origin.x + (b.outer.x - b.origin.x) * fraction
+      const bz = b.origin.z + (b.outer.z - b.origin.z) * fraction
+      along += Math.hypot(bx - ax, bz - az)
+      runs.push(along)
+    }
+    return runs
+  }
   const combine = (a: THREE.Vector3, b: THREE.Vector3) => {
     const sum = a.clone().add(b)
     if (sum.lengthSq() < 1e-8) return a
     return sum.normalize()
   }
 
+  const topY = startY + rise
+  const backRun = wallRun(0)
+  for (let j = 0; j < segments; j += 1) {
+    const a = edges[j]
+    const b = edges[(j + 1) % edges.length]
+    const floorA = Math.min(a.floorY, topY - 0.02)
+    const floorB = Math.min(b.floorY, topY - 0.02)
+    const backA0 = stairPoint(a, 0, floorA)
+    const backB0 = stairPoint(b, 0, floorB)
+    const backA1 = stairPoint(a, 0, topY)
+    const backB1 = stairPoint(b, 0, topY)
+    face(
+      backA0,
+      backB0,
+      backB1,
+      backA1,
+      wallUv(backRun[j], floorA),
+      wallUv(backRun[j + 1], floorB),
+      wallUv(backRun[j + 1], topY),
+      wallUv(backRun[j], topY),
+      combine(towardPath(a), towardPath(b)),
+    )
+  }
+
   for (let i = 0; i < steps; i += 1) {
     const f0 = i / steps
     const f1 = (i + 1) / steps
-    const y0 = startY + (rise * i) / steps
-    const y1 = startY + (rise * (i + 1)) / steps
+    const yHigh = startY + (rise * (steps - i)) / steps
+    const yLow = startY + (rise * (steps - i - 1)) / steps
+    const cap = Math.min(STAIR_TREAD_M, (rise / steps) * 0.85)
+    const treadY = yHigh - cap
+    const riserRun = wallRun(f1)
+    const backOfStep = wallRun(f0)
 
-    for (let j = 0; j < edges.length - 1; j += 1) {
+    for (let j = 0; j < segments; j += 1) {
       const a = edges[j]
-      const b = edges[j + 1]
-      const floorA = Math.min(a.floorY, y1 - 0.02)
-      const floorB = Math.min(b.floorY, y1 - 0.02)
-      const riserA0 = stairPoint(a, f0, y0)
-      const riserB0 = stairPoint(b, f0, y0)
-      const riserA1 = stairPoint(a, f0, y1)
-      const riserB1 = stairPoint(b, f0, y1)
-      face(
-        riserB0,
-        riserA0,
-        riserA1,
-        riserB1,
-        groundUv(riserB0),
-        groundUv(riserA0),
-        groundUv(riserA1),
-        groundUv(riserB1),
-        combine(towardPath(a), towardPath(b)),
-      )
-      const treadA0 = stairPoint(a, f0, y1)
-      const treadB0 = stairPoint(b, f0, y1)
-      const treadA1 = stairPoint(a, f1, y1)
-      const treadB1 = stairPoint(b, f1, y1)
+      const b = edges[(j + 1) % edges.length]
+      const floorA = Math.min(a.floorY, yHigh - 0.02)
+      const floorB = Math.min(b.floorY, yHigh - 0.02)
+      const treadA0 = stairPoint(a, f0, treadY)
+      const treadB0 = stairPoint(b, f0, treadY)
+      const treadA1 = stairPoint(a, f1, treadY)
+      const treadB1 = stairPoint(b, f1, treadY)
       face(
         treadA0,
         treadB0,
@@ -1335,6 +1471,73 @@ export function buildStairsGeometry(
         groundUv(treadB1),
         groundUv(treadA1),
         up,
+      )
+      const capA0 = stairPoint(a, f0, yHigh)
+      const capB0 = stairPoint(b, f0, yHigh)
+      const capA1 = stairPoint(a, f1, yHigh)
+      const capB1 = stairPoint(b, f1, yHigh)
+      faceTread(
+        capA0,
+        capB0,
+        capB1,
+        capA1,
+        groundUv(capA0),
+        groundUv(capB0),
+        groundUv(capB1),
+        groundUv(capA1),
+        up,
+      )
+      faceTread(
+        treadA0,
+        treadA1,
+        treadB1,
+        treadB0,
+        groundUv(treadA0),
+        groundUv(treadA1),
+        groundUv(treadB1),
+        groundUv(treadB0),
+        down,
+      )
+      faceTread(
+        stairPoint(a, f1, treadY),
+        stairPoint(b, f1, treadY),
+        stairPoint(b, f1, yHigh),
+        stairPoint(a, f1, yHigh),
+        wallUv(riserRun[j], treadY),
+        wallUv(riserRun[j + 1], treadY),
+        wallUv(riserRun[j + 1], yHigh),
+        wallUv(riserRun[j], yHigh),
+        combine(towardPath(a), towardPath(b)).negate(),
+      )
+      if (i > 0) {
+        faceTread(
+          stairPoint(a, f0, treadY),
+          stairPoint(b, f0, treadY),
+          stairPoint(b, f0, yHigh),
+          stairPoint(a, f0, yHigh),
+          wallUv(backOfStep[j], treadY),
+          wallUv(backOfStep[j + 1], treadY),
+          wallUv(backOfStep[j + 1], yHigh),
+          wallUv(backOfStep[j], yHigh),
+          combine(towardPath(a), towardPath(b)),
+        )
+      }
+      const dropA = i === steps - 1 ? floorA : yLow
+      const dropB = i === steps - 1 ? floorB : yLow
+      const riserA0 = stairPoint(a, f1, dropA)
+      const riserB0 = stairPoint(b, f1, dropB)
+      const riserA1 = stairPoint(a, f1, treadY)
+      const riserB1 = stairPoint(b, f1, treadY)
+      face(
+        riserA0,
+        riserB0,
+        riserB1,
+        riserA1,
+        wallUv(riserRun[j], dropA),
+        wallUv(riserRun[j + 1], dropB),
+        wallUv(riserRun[j + 1], treadY),
+        wallUv(riserRun[j], treadY),
+        combine(towardPath(a), towardPath(b)).negate(),
       )
       const botA0 = stairPoint(a, f0, floorA)
       const botB0 = stairPoint(b, f0, floorB)
@@ -1352,7 +1555,7 @@ export function buildStairsGeometry(
         down,
       )
 
-      if (j === 0) {
+      if (!loop && j === 0) {
         const out = new THREE.Vector3(a.origin.x - b.origin.x, 0, a.origin.z - b.origin.z)
         if (out.lengthSq() < 1e-8) out.set(-1, 0, 0)
         else out.normalize()
@@ -1360,17 +1563,28 @@ export function buildStairsGeometry(
         const u1 = f1 * depth / tile
         face(
           stairPoint(a, f0, floorA),
-          stairPoint(a, f0, y1),
-          stairPoint(a, f1, y1),
+          stairPoint(a, f0, treadY),
+          stairPoint(a, f1, treadY),
           stairPoint(a, f1, floorA),
           [u0, floorA / tile],
-          [u0, y1 / tile],
-          [u1, y1 / tile],
+          [u0, treadY / tile],
+          [u1, treadY / tile],
           [u1, floorA / tile],
           out,
         )
+        faceTread(
+          stairPoint(a, f0, treadY),
+          stairPoint(a, f0, yHigh),
+          stairPoint(a, f1, yHigh),
+          stairPoint(a, f1, treadY),
+          [u0, treadY / tile],
+          [u0, yHigh / tile],
+          [u1, yHigh / tile],
+          [u1, treadY / tile],
+          out,
+        )
       }
-      if (j === edges.length - 2) {
+      if (!loop && j === segments - 1) {
         const out = new THREE.Vector3(b.origin.x - a.origin.x, 0, b.origin.z - a.origin.z)
         if (out.lengthSq() < 1e-8) out.set(1, 0, 0)
         else out.normalize()
@@ -1379,36 +1593,37 @@ export function buildStairsGeometry(
         face(
           stairPoint(b, f0, floorB),
           stairPoint(b, f1, floorB),
-          stairPoint(b, f1, y1),
-          stairPoint(b, f0, y1),
+          stairPoint(b, f1, treadY),
+          stairPoint(b, f0, treadY),
           [u0, floorB / tile],
           [u1, floorB / tile],
-          [u1, y1 / tile],
-          [u0, y1 / tile],
+          [u1, treadY / tile],
+          [u0, treadY / tile],
           out,
         )
-      }
-      if (i === steps - 1) {
-        const lowA = stairPoint(a, 1, floorA)
-        const lowB = stairPoint(b, 1, floorB)
-        const highA = stairPoint(a, 1, y1)
-        const highB = stairPoint(b, 1, y1)
-        face(
-          lowA,
-          highA,
-          highB,
-          lowB,
-          groundUv(lowA),
-          groundUv(highA),
-          groundUv(highB),
-          groundUv(lowB),
-          combine(towardPath(a).negate(), towardPath(b).negate()),
+        faceTread(
+          stairPoint(b, f0, treadY),
+          stairPoint(b, f1, treadY),
+          stairPoint(b, f1, yHigh),
+          stairPoint(b, f0, yHigh),
+          [u0, treadY / tile],
+          [u1, treadY / tile],
+          [u1, yHigh / tile],
+          [u0, yHigh / tile],
+          out,
         )
       }
     }
   }
 
-  return finishMesh(mesh)
+  const bodyGeometry = finishMesh(body)
+  const treadGeometry = finishMesh(treadMesh)
+  if (!bodyGeometry || !treadGeometry) {
+    bodyGeometry?.dispose()
+    treadGeometry?.dispose()
+    return null
+  }
+  return { body: bodyGeometry, tread: treadGeometry }
 }
 
 /** Round rail along a centreline. Eight flat faces, one of them on top when the run is level. */

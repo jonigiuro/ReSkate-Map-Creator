@@ -174,6 +174,23 @@
   flex: 1;
 }
 
+.vertex-snap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.vertex-snap.on {
+  background: var(--accent);
+  border-color: #f0b45a;
+  color: #1a1208;
+}
+
 .snap-field {
   display: flex;
   flex-direction: row;

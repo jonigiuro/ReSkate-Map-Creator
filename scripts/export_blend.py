@@ -662,6 +662,7 @@ def _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward, loop_normals=None,
         b, c = c, b
         ub, uc = uc, ub
         nb, nc = nc, nb
+        normal = (-normal[0], -normal[1], -normal[2])
     if _vdot(normal, normal) < 1e-12:
         return
     start = len(verts)
@@ -1702,42 +1703,162 @@ def make_box_mesh(name, size, color, material=None, tile=None):
     return _link_mesh(name, verts, faces, color, material=material, tile=tile)
 
 
-def make_platform_mesh(name, corners, height, color, material=None):
-    """Axis-aligned pad. corners are two opposite footprint points in editor space. Base is Y=0."""
-    if not corners or len(corners) < 2:
+def _platform_signed_area(points):
+    area = 0.0
+    count = len(points)
+    for index in range(count):
+        a = points[index]
+        b = points[(index + 1) % count]
+        area += float(a[0]) * float(b[2]) - float(b[0]) * float(a[2])
+    return area / 2.0
+
+
+def _platform_cross(a, b, c):
+    return (b[0] - a[0]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[0] - a[0])
+
+
+def _platform_in_tri(point, a, b, c):
+    c1 = _platform_cross(a, b, point)
+    c2 = _platform_cross(b, c, point)
+    c3 = _platform_cross(c, a, point)
+    return c1 > 1e-8 and c2 > 1e-8 and c3 > 1e-8
+
+
+def _platform_triangles(points):
+    """Ear clip a counter-clockwise outline. Falls back to a fan if a corner will not clip."""
+    indices = list(range(len(points)))
+    triangles = []
+    guard = 0
+    while len(indices) > 3 and guard < 1000:
+        guard += 1
+        clipped = False
+        count = len(indices)
+        for index in range(count):
+            i0 = indices[(index - 1) % count]
+            i1 = indices[index]
+            i2 = indices[(index + 1) % count]
+            a, b, c = points[i0], points[i1], points[i2]
+            if _platform_cross(a, b, c) <= 1e-8:
+                continue
+            if any(
+                _platform_in_tri(points[indices[other]], a, b, c)
+                for other in range(count)
+                if indices[other] not in (i0, i1, i2)
+            ):
+                continue
+            triangles.append((i0, i1, i2))
+            del indices[index]
+            clipped = True
+            break
+        if not clipped:
+            break
+    if len(indices) == 3:
+        triangles.append((indices[0], indices[1], indices[2]))
+    elif len(indices) > 3:
+        head = indices[0]
+        for index in range(1, len(indices) - 1):
+            triangles.append((head, indices[index], indices[index + 1]))
+    return triangles
+
+
+def _platform_outline(raw_points):
+    """Outline in editor space, wound so the top faces up. Accepts an old two-corner box."""
+    points = raw_points or []
+    if len(points) == 2:
+        x0, _y0, z0 = points[0]
+        x1, _y1, z1 = points[1]
+        minx, maxx = min(float(x0), float(x1)), max(float(x0), float(x1))
+        minz, maxz = min(float(z0), float(z1)), max(float(z0), float(z1))
+        points = [(minx, 0.0, minz), (maxx, 0.0, minz), (maxx, 0.0, maxz), (minx, 0.0, maxz)]
+    if len(points) < 3:
         return None
-    x0, _y0, z0 = corners[0]
-    x1, _y1, z1 = corners[1]
-    minx, maxx = min(float(x0), float(x1)), max(float(x0), float(x1))
-    minz, maxz = min(float(z0), float(z1)), max(float(z0), float(z1))
-    if maxx - minx < 0.02 or maxz - minz < 0.02:
+    ring = [(float(point[0]), 0.0, float(point[2])) for point in points]
+    area = _platform_signed_area(ring)
+    if abs(area) < 0.001:
+        return None
+    if area < 0:
+        ring.reverse()
+    return ring
+
+
+def make_platform_mesh(name, points, height, color, material=None):
+    """Flat pad from an outline. Base is Y=0. The top is one height."""
+    ring = _platform_outline(points)
+    if ring is None:
         return None
     h = max(float(height or 0.5), 0.02)
-    verts = [
-        (minx, 0.0, minz),
-        (maxx, 0.0, minz),
-        (maxx, 0.0, maxz),
-        (minx, 0.0, maxz),
-        (minx, h, minz),
-        (maxx, h, minz),
-        (maxx, h, maxz),
-        (minx, h, maxz),
-    ]
-    faces = [
-        (0, 1, 2),
-        (0, 2, 3),
-        (4, 6, 5),
-        (4, 7, 6),
-        (0, 5, 1),
-        (0, 4, 5),
-        (1, 6, 2),
-        (1, 5, 6),
-        (2, 7, 3),
-        (2, 6, 7),
-        (3, 4, 0),
-        (3, 7, 4),
-    ]
-    return _link_mesh(name, verts, faces, color, material=material, tile=1.0)
+    verts = []
+    faces = []
+    uvs = []
+    loop_normals = []
+
+    def add_quad(a, b, c, d, ua, ub, uc, ud, outward):
+        _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward, loop_normals)
+        _add_tri(verts, faces, uvs, a, c, d, ua, uc, ud, outward, loop_normals)
+
+    for i0, i1, i2 in _platform_triangles(ring):
+        a, b, c = ring[i0], ring[i1], ring[i2]
+        top_a = (a[0], h, a[2])
+        top_b = (b[0], h, b[2])
+        top_c = (c[0], h, c[2])
+        _add_tri(
+            verts,
+            faces,
+            uvs,
+            top_a,
+            top_b,
+            top_c,
+            (a[0], a[2]),
+            (b[0], b[2]),
+            (c[0], c[2]),
+            (0.0, 1.0, 0.0),
+            loop_normals,
+        )
+        _add_tri(
+            verts,
+            faces,
+            uvs,
+            (a[0], 0.0, a[2]),
+            (c[0], 0.0, c[2]),
+            (b[0], 0.0, b[2]),
+            (a[0], a[2]),
+            (c[0], c[2]),
+            (b[0], b[2]),
+            (0.0, -1.0, 0.0),
+            loop_normals,
+        )
+    along = 0.0
+    for index, a in enumerate(ring):
+        b = ring[(index + 1) % len(ring)]
+        length = math.hypot(b[0] - a[0], b[2] - a[2])
+        direction = _horiz_dir(a, b)
+        # Positive area keeps the inside on the right of each edge, so left is outside.
+        outward = _left_of(direction)
+        u0 = along
+        u1 = along + length
+        along = u1
+        add_quad(
+            (a[0], 0.0, a[2]),
+            (b[0], 0.0, b[2]),
+            (b[0], h, b[2]),
+            (a[0], h, a[2]),
+            (u0, 0.0),
+            (u1, 0.0),
+            (u1, h),
+            (u0, h),
+            outward,
+        )
+    if not faces:
+        return None
+    return _link_mesh(
+        name,
+        verts,
+        faces,
+        color,
+        material=material,
+        loop_uvs=uvs,
+        loop_normals=loop_normals,
+    )
 
 
 def make_bank_mesh(name, vertices, color, material=None):
@@ -2051,6 +2172,7 @@ def make_planter_wax_mesh(name, corners, tops, project_root, side_bases=None, si
 
 STAIR_WIDTH_M = 2.0
 STAIR_HEIGHT_M = 0.6
+STAIR_TREAD_M = 0.03
 DEFAULT_STAIR_STEPS = 4
 MIN_STAIR_STEPS = 1
 MAX_STAIR_STEPS = 40
@@ -2087,16 +2209,43 @@ def _clamp_stair_height(value):
     return max(MIN_STAIR_HEIGHT_M, height)
 
 
-def _stair_edges(points, depth):
+def _closed_stair_sections(points, half):
+    count = len(points)
+    dirs = [_horiz_dir(points[i], points[(i + 1) % count]) for i in range(count)]
+    sections = []
+
+    def push(point, offset, index):
+        centre = (float(point[0]), float(point[1]), float(point[2]))
+        sections.append((_vadd(centre, offset), _vsub(centre, offset), index))
+
+    for i, point in enumerate(points):
+        incoming = _left_of(dirs[(i - 1) % count])
+        outgoing = _left_of(dirs[i])
+        miter = _vnorm(_vadd(incoming, outgoing))
+        if miter is None:
+            push(point, _vscale(incoming, half), i)
+            push(point, _vscale(outgoing, half), i)
+            continue
+        denom = _vdot(miter, incoming)
+        if denom < 0.25:
+            push(point, _vscale(incoming, half), i)
+            push(point, _vscale(outgoing, half), i)
+            continue
+        push(point, _vscale(miter, min(half / denom, half * 4.0)), i)
+    return sections
+
+
+def _stair_edges(points, depth, closed=False, reversed=False):
     if len(points) < 2:
         return None
-    sections = _curb_sections(points, depth)
+    loop = bool(closed) and len(points) >= 3
+    sections = _closed_stair_sections(points, depth) if loop else _curb_sections(points, depth)
     if len(sections) < 2:
         return None
     edges = []
     along = 0.0
     for index, section in enumerate(sections):
-        left, _right, point_index = section
+        left, right, point_index = section
         origin = (
             float(points[point_index][0]),
             float(points[point_index][1]),
@@ -2108,10 +2257,14 @@ def _stair_edges(points, depth):
         edges.append(
             {
                 "origin": origin,
-                "outer": left,
+                "outer": right if reversed else left,
                 "floorY": float(points[point_index][1]),
             }
         )
+    if loop:
+        first = edges[0]["origin"]
+        last = edges[-1]["origin"]
+        along += math.hypot(first[0] - last[0], first[2] - last[2])
     if along < 0.05:
         return None
     return edges
@@ -2138,58 +2291,92 @@ def _stair_combine(a, b):
     return _vnorm(total) or a
 
 
-def make_stairs_mesh(name, points, width=None, height=None, steps=None, material=None):
-    """Concrete flight. The path is the front edge. Steps run out to the side."""
+def make_stairs_mesh(name, points, width=None, height=None, steps=None, material=None, closed=False, reversed=False, tread_material=None):
+    """Concrete flight. The path is the foot of the tall side. Steps rise there and run down outward."""
     if not points or len(points) < 2:
         return None
     count = _clamp_stair_steps(steps if steps is not None else DEFAULT_STAIR_STEPS)
     depth = _clamp_stair_width(width if width is not None else STAIR_WIDTH_M)
     rise = _clamp_stair_height(height if height is not None else STAIR_HEIGHT_M)
-    edges = _stair_edges(points, depth)
+    edges = _stair_edges(points, depth, closed, reversed)
     if edges is None:
         return None
+    loop = bool(closed) and len(edges) >= 3
+    segments = len(edges) if loop else len(edges) - 1
     start_y = float(points[0][1])
     verts = []
     faces = []
     uvs = []
     loop_normals = []
+    slots = []
 
     def uv_ground(vertex):
         return (vertex[0] / STONE_TILE_M, vertex[2] / STONE_TILE_M)
 
-    def add_quad(a, b, c, d, ua, ub, uc, ud, outward):
+    def uv_wall(distance, y):
+        return (distance / STONE_TILE_M, y / STONE_TILE_M)
+
+    def wall_run(fraction):
+        runs = [0.0]
+        along = 0.0
+        for j in range(segments):
+            a = edges[j]
+            b = edges[(j + 1) % len(edges)]
+            ax = a["origin"][0] + (a["outer"][0] - a["origin"][0]) * fraction
+            az = a["origin"][2] + (a["outer"][2] - a["origin"][2]) * fraction
+            bx = b["origin"][0] + (b["outer"][0] - b["origin"][0]) * fraction
+            bz = b["origin"][2] + (b["outer"][2] - b["origin"][2]) * fraction
+            along += math.hypot(bx - ax, bz - az)
+            runs.append(along)
+        return runs
+
+    def add_quad(a, b, c, d, ua, ub, uc, ud, outward, slot=0):
+        before = len(faces)
         _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward, loop_normals)
         _add_tri(verts, faces, uvs, a, c, d, ua, uc, ud, outward, loop_normals)
+        slots.extend([slot] * (len(faces) - before))
+
+    top_y = start_y + rise
+    back_run = wall_run(0.0)
+    for j in range(segments):
+        a = edges[j]
+        b = edges[(j + 1) % len(edges)]
+        floor_a = min(a["floorY"], top_y - 0.02)
+        floor_b = min(b["floorY"], top_y - 0.02)
+        back_a0 = _stair_point(a, 0.0, floor_a)
+        back_b0 = _stair_point(b, 0.0, floor_b)
+        back_a1 = _stair_point(a, 0.0, top_y)
+        back_b1 = _stair_point(b, 0.0, top_y)
+        add_quad(
+            back_a0,
+            back_b0,
+            back_b1,
+            back_a1,
+            uv_wall(back_run[j], floor_a),
+            uv_wall(back_run[j + 1], floor_b),
+            uv_wall(back_run[j + 1], top_y),
+            uv_wall(back_run[j], top_y),
+            _stair_combine(_toward_path(a), _toward_path(b)),
+        )
 
     for index in range(count):
         f0 = index / count
         f1 = (index + 1) / count
-        y0 = start_y + rise * index / count
-        y1 = start_y + rise * (index + 1) / count
-        for j in range(len(edges) - 1):
+        y_high = start_y + rise * (count - index) / count
+        y_low = start_y + rise * (count - index - 1) / count
+        cap = min(STAIR_TREAD_M, (rise / count) * 0.85)
+        tread_y = y_high - cap
+        riser_run = wall_run(f1)
+        back_of_step = wall_run(f0)
+        for j in range(segments):
             a = edges[j]
-            b = edges[j + 1]
-            floor_a = min(a["floorY"], y1 - 0.02)
-            floor_b = min(b["floorY"], y1 - 0.02)
-            riser_a0 = _stair_point(a, f0, y0)
-            riser_b0 = _stair_point(b, f0, y0)
-            riser_a1 = _stair_point(a, f0, y1)
-            riser_b1 = _stair_point(b, f0, y1)
-            add_quad(
-                riser_b0,
-                riser_a0,
-                riser_a1,
-                riser_b1,
-                uv_ground(riser_b0),
-                uv_ground(riser_a0),
-                uv_ground(riser_a1),
-                uv_ground(riser_b1),
-                _stair_combine(_toward_path(a), _toward_path(b)),
-            )
-            tread_a0 = _stair_point(a, f0, y1)
-            tread_b0 = _stair_point(b, f0, y1)
-            tread_a1 = _stair_point(a, f1, y1)
-            tread_b1 = _stair_point(b, f1, y1)
+            b = edges[(j + 1) % len(edges)]
+            floor_a = min(a["floorY"], y_high - 0.02)
+            floor_b = min(b["floorY"], y_high - 0.02)
+            tread_a0 = _stair_point(a, f0, tread_y)
+            tread_b0 = _stair_point(b, f0, tread_y)
+            tread_a1 = _stair_point(a, f1, tread_y)
+            tread_b1 = _stair_point(b, f1, tread_y)
             add_quad(
                 tread_a0,
                 tread_b0,
@@ -2200,6 +2387,78 @@ def make_stairs_mesh(name, points, width=None, height=None, steps=None, material
                 uv_ground(tread_b1),
                 uv_ground(tread_a1),
                 (0.0, 1.0, 0.0),
+            )
+            cap_a0 = _stair_point(a, f0, y_high)
+            cap_b0 = _stair_point(b, f0, y_high)
+            cap_a1 = _stair_point(a, f1, y_high)
+            cap_b1 = _stair_point(b, f1, y_high)
+            outward_low = _vscale(_stair_combine(_toward_path(a), _toward_path(b)), -1.0)
+            outward_back = _stair_combine(_toward_path(a), _toward_path(b))
+            add_quad(
+                cap_a0,
+                cap_b0,
+                cap_b1,
+                cap_a1,
+                uv_ground(cap_a0),
+                uv_ground(cap_b0),
+                uv_ground(cap_b1),
+                uv_ground(cap_a1),
+                (0.0, 1.0, 0.0),
+                1,
+            )
+            add_quad(
+                tread_a0,
+                tread_a1,
+                tread_b1,
+                tread_b0,
+                uv_ground(tread_a0),
+                uv_ground(tread_a1),
+                uv_ground(tread_b1),
+                uv_ground(tread_b0),
+                (0.0, -1.0, 0.0),
+                1,
+            )
+            add_quad(
+                _stair_point(a, f1, tread_y),
+                _stair_point(b, f1, tread_y),
+                _stair_point(b, f1, y_high),
+                _stair_point(a, f1, y_high),
+                uv_wall(riser_run[j], tread_y),
+                uv_wall(riser_run[j + 1], tread_y),
+                uv_wall(riser_run[j + 1], y_high),
+                uv_wall(riser_run[j], y_high),
+                outward_low,
+                1,
+            )
+            if index > 0:
+                add_quad(
+                    _stair_point(a, f0, tread_y),
+                    _stair_point(b, f0, tread_y),
+                    _stair_point(b, f0, y_high),
+                    _stair_point(a, f0, y_high),
+                    uv_wall(back_of_step[j], tread_y),
+                    uv_wall(back_of_step[j + 1], tread_y),
+                    uv_wall(back_of_step[j + 1], y_high),
+                    uv_wall(back_of_step[j], y_high),
+                    outward_back,
+                    1,
+                )
+            drop_a = floor_a if index == count - 1 else y_low
+            drop_b = floor_b if index == count - 1 else y_low
+            riser_a0 = _stair_point(a, f1, drop_a)
+            riser_b0 = _stair_point(b, f1, drop_b)
+            riser_a1 = _stair_point(a, f1, tread_y)
+            riser_b1 = _stair_point(b, f1, tread_y)
+            add_quad(
+                riser_a0,
+                riser_b0,
+                riser_b1,
+                riser_a1,
+                uv_wall(riser_run[j], drop_a),
+                uv_wall(riser_run[j + 1], drop_b),
+                uv_wall(riser_run[j + 1], tread_y),
+                uv_wall(riser_run[j], tread_y),
+                outward_low,
             )
             bot_a0 = _stair_point(a, f0, floor_a)
             bot_b0 = _stair_point(b, f0, floor_b)
@@ -2216,7 +2475,7 @@ def make_stairs_mesh(name, points, width=None, height=None, steps=None, material
                 uv_ground(bot_b0),
                 (0.0, -1.0, 0.0),
             )
-            if j == 0:
+            if not loop and j == 0:
                 out = _vnorm(
                     (a["origin"][0] - b["origin"][0], 0.0, a["origin"][2] - b["origin"][2])
                 ) or (-1.0, 0.0, 0.0)
@@ -2224,16 +2483,28 @@ def make_stairs_mesh(name, points, width=None, height=None, steps=None, material
                 u1 = f1 * depth / STONE_TILE_M
                 add_quad(
                     _stair_point(a, f0, floor_a),
-                    _stair_point(a, f0, y1),
-                    _stair_point(a, f1, y1),
+                    _stair_point(a, f0, tread_y),
+                    _stair_point(a, f1, tread_y),
                     _stair_point(a, f1, floor_a),
                     (u0, floor_a / STONE_TILE_M),
-                    (u0, y1 / STONE_TILE_M),
-                    (u1, y1 / STONE_TILE_M),
+                    (u0, tread_y / STONE_TILE_M),
+                    (u1, tread_y / STONE_TILE_M),
                     (u1, floor_a / STONE_TILE_M),
                     out,
                 )
-            if j == len(edges) - 2:
+                add_quad(
+                    _stair_point(a, f0, tread_y),
+                    _stair_point(a, f0, y_high),
+                    _stair_point(a, f1, y_high),
+                    _stair_point(a, f1, tread_y),
+                    (u0, tread_y / STONE_TILE_M),
+                    (u0, y_high / STONE_TILE_M),
+                    (u1, y_high / STONE_TILE_M),
+                    (u1, tread_y / STONE_TILE_M),
+                    out,
+                    1,
+                )
+            if not loop and j == segments - 1:
                 out = _vnorm(
                     (b["origin"][0] - a["origin"][0], 0.0, b["origin"][2] - a["origin"][2])
                 ) or (1.0, 0.0, 0.0)
@@ -2242,34 +2513,29 @@ def make_stairs_mesh(name, points, width=None, height=None, steps=None, material
                 add_quad(
                     _stair_point(b, f0, floor_b),
                     _stair_point(b, f1, floor_b),
-                    _stair_point(b, f1, y1),
-                    _stair_point(b, f0, y1),
+                    _stair_point(b, f1, tread_y),
+                    _stair_point(b, f0, tread_y),
                     (u0, floor_b / STONE_TILE_M),
                     (u1, floor_b / STONE_TILE_M),
-                    (u1, y1 / STONE_TILE_M),
-                    (u0, y1 / STONE_TILE_M),
+                    (u1, tread_y / STONE_TILE_M),
+                    (u0, tread_y / STONE_TILE_M),
                     out,
                 )
-            if index == count - 1:
-                low_a = _stair_point(a, 1.0, floor_a)
-                low_b = _stair_point(b, 1.0, floor_b)
-                high_a = _stair_point(a, 1.0, y1)
-                high_b = _stair_point(b, 1.0, y1)
-                away = _stair_combine(_vscale(_toward_path(a), -1.0), _vscale(_toward_path(b), -1.0))
                 add_quad(
-                    low_a,
-                    high_a,
-                    high_b,
-                    low_b,
-                    uv_ground(low_a),
-                    uv_ground(high_a),
-                    uv_ground(high_b),
-                    uv_ground(low_b),
-                    away,
+                    _stair_point(b, f0, tread_y),
+                    _stair_point(b, f1, tread_y),
+                    _stair_point(b, f1, y_high),
+                    _stair_point(b, f0, y_high),
+                    (u0, tread_y / STONE_TILE_M),
+                    (u1, tread_y / STONE_TILE_M),
+                    (u1, y_high / STONE_TILE_M),
+                    (u0, y_high / STONE_TILE_M),
+                    out,
+                    1,
                 )
     if not faces:
         return None
-    return _link_mesh(
+    obj = _link_mesh(
         name,
         verts,
         faces,
@@ -2278,6 +2544,14 @@ def make_stairs_mesh(name, points, width=None, height=None, steps=None, material
         loop_uvs=uvs,
         loop_normals=loop_normals,
     )
+    if tread_material is not None and any(slot == 1 for slot in slots):
+        mesh = obj.data
+        mesh.materials.clear()
+        mesh.materials.append(material or placeholder_material(f"{name}_mat", (0.72, 0.7, 0.66)))
+        mesh.materials.append(tread_material)
+        for poly, slot in zip(mesh.polygons, slots):
+            poly.material_index = slot
+    return obj
 
 
 def make_wedge_mesh(name, size, color):
@@ -4223,13 +4497,13 @@ def build(scene):
                 continue
 
             if gen.get("kind") == "platform":
-                corners = gen.get("corners") or []
-                if len(corners) < 2:
-                    print(f"Skipping platform {name}: needs two corners")
+                points = gen.get("points") or gen.get("corners") or []
+                if len(points) < 2:
+                    print(f"Skipping platform {name}: needs an outline")
                     continue
                 obj = make_platform_mesh(
                     name,
-                    corners,
+                    points,
                     float(gen.get("height") or 0.5),
                     (0.62, 0.6, 0.58),
                     slot_material(
@@ -4410,6 +4684,16 @@ def build(scene):
                         sounds,
                         "striped_concrete",
                         lambda: striped_concrete_material(project_root),
+                    ),
+                    closed=gen.get("closed") is True,
+                    reversed=gen.get("reversed") is True,
+                    tread_material=slot_material(
+                        project_root,
+                        texture_sets,
+                        overrides,
+                        sounds,
+                        "concrete",
+                        lambda: concrete_material(project_root),
                     ),
                 )
                 if obj is None:
