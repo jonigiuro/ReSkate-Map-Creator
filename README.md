@@ -142,7 +142,7 @@ npm run build:desktop:win
 npm run pack:win
 ```
 
-The first command writes `release/win-unpacked/ReSkate Map Creator.exe` and copies `Objects` next to it, aside from `Objects/Private` and `Objects/OfficialMeshes`. The second command zips that folder as `release/ReSkate-Map-Creator-<version>-win.zip`. Build the Windows package on Windows.
+The first command writes `release/win-unpacked/ReSkate Map Creator.exe` and copies `Objects` next to it, aside from `Objects/Private` and `Objects/OfficialMeshes`. It also copies `public/img/textures` and `public/img/private-textures`, which export reads from that folder. The second command zips that folder as `release/ReSkate-Map-Creator-<version>-win.zip`. Build the Windows package on Windows.
 
 To export a scene file from the command line:
 
