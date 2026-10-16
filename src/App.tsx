@@ -122,8 +122,8 @@ function MirrorHotkey({ onMirror }: { onMirror: () => void }) {
 
 export default function App() {
   const [scene, setScene] = useState<MapScene>(() => createDefaultScene())
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const history = useSceneHistory(scene, selectedId)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const history = useSceneHistory(scene, selectedIds)
   const [tool, setTool] = useState<EditorTool>('select')
   const [catalog, setCatalog] = useState<AssetCatalog>(EMPTY_CATALOG)
   const [categoryPath, setCategoryPath] = useState<string[]>([])
@@ -158,7 +158,7 @@ export default function App() {
   useEffect(() => {
     if (didInitSelect) return
     const spawn = scene.objects.find((o) => o.kind === 'spawn')
-    if (spawn) setSelectedId(spawn.id)
+    if (spawn) setSelectedIds([spawn.id])
     setDidInitSelect(true)
   }, [scene, didInitSelect])
 
@@ -212,12 +212,15 @@ export default function App() {
   }, [])
 
   const selected = useMemo(
-    () => scene.objects.find((o) => o.id === selectedId) ?? null,
-    [scene, selectedId],
+    () =>
+      selectedIds.length === 1
+        ? (scene.objects.find((o) => o.id === selectedIds[0]) ?? null)
+        : null,
+    [scene, selectedIds],
   )
   const selectedRef = useRef(selected)
   selectedRef.current = selected
-  const clipboardRef = useRef<{ source: SceneObject; copies: number } | null>(null)
+  const clipboardRef = useRef<{ sources: SceneObject[]; copies: number } | null>(null)
   const fileMenuRef = useRef<HTMLDivElement>(null)
   const exportDialogRef = useRef(false)
   exportDialogRef.current = exportDialogOpen
@@ -245,6 +248,11 @@ export default function App() {
     setScene(next)
   }
 
+  function setSelection(next: string[]) {
+    history.selectedRef.current = next
+    setSelectedIds(next)
+  }
+
   function patchObject(
     id: string,
     patch: Partial<SceneObject>,
@@ -263,37 +271,40 @@ export default function App() {
   }
 
   function deleteSelected() {
-    const id = history.selectedRef.current
-    if (!id) return
-    const obj = history.sceneRef.current.objects.find((o) => o.id === id)
-    if (obj?.kind === 'spawn') {
+    const ids = history.selectedRef.current
+    if (ids.length === 0) return
+    const removing = new Set(
+      history.sceneRef.current.objects
+        .filter((obj) => ids.includes(obj.id) && obj.kind !== 'spawn')
+        .map((obj) => obj.id),
+    )
+    if (removing.size === 0) {
       setError('Spawn is required for Studio maps — move it instead of deleting.')
       return
     }
     const before = history.checkpoint()
     applyScene({
       ...history.sceneRef.current,
-      objects: history.sceneRef.current.objects.filter((o) => o.id !== id),
+      objects: history.sceneRef.current.objects.filter((obj) => !removing.has(obj.id)),
     })
-    history.selectedRef.current = null
-    setSelectedId(null)
+    setSelection(ids.filter((id) => !removing.has(id)))
     history.remember(before)
     setError(null)
   }
 
   function restoreSnap(snap: {
     scene: MapScene
-    selectedId: string | null
+    selectedIds: string[]
     pins?: [number, number, number][]
     strokeId?: string | null
   }) {
     const nextPins = snap.pins ?? []
     history.sceneRef.current = snap.scene
-    history.selectedRef.current = snap.selectedId
+    history.selectedRef.current = snap.selectedIds
     history.pinsRef.current = nextPins
     history.strokeIdRef.current = snap.strokeId ?? null
     setScene(snap.scene)
-    setSelectedId(snap.selectedId)
+    setSelectedIds(snap.selectedIds)
     setPins(nextPins)
     setError(null)
   }
@@ -342,18 +353,31 @@ export default function App() {
       setError(null)
       return
     }
-    const obj = selectedRef.current
-    if (obj?.kind === 'travel_point') {
+    const chosen = history.sceneRef.current.objects.filter((obj) =>
+      history.selectedRef.current.includes(obj.id),
+    )
+    if (chosen.length === 1 && chosen[0].kind === 'travel_point') {
       setStatus('Turn it with the rotate gizmo. The arrow is the facing.')
       return
     }
-    if (!obj || obj.kind !== 'mesh') {
+    const meshes = chosen.filter((obj) => obj.kind === 'mesh')
+    if (meshes.length === 0) {
       setStatus('Mirror a mesh, or hold a piece from the library.')
       return
     }
-    const [x, y, z] = obj.scale
-    patchObject(obj.id, { scale: [-x, y, z] })
-    setStatus(`Mirrored ${obj.name}`)
+    const meshIds = new Set(meshes.map((obj) => obj.id))
+    const before = history.checkpoint()
+    const prev = history.sceneRef.current
+    applyScene({
+      ...prev,
+      objects: prev.objects.map((obj) => {
+        if (!meshIds.has(obj.id) || obj.kind !== 'mesh') return obj
+        const [x, y, z] = obj.scale
+        return { ...obj, scale: [-x, y, z] as [number, number, number] }
+      }),
+    })
+    history.remember(before)
+    setStatus(meshes.length === 1 ? `Mirrored ${meshes[0].name}` : `Mirrored ${meshes.length} pieces`)
     setError(null)
   }
   mirrorRef.current = mirrorHorizontal
@@ -394,16 +418,18 @@ export default function App() {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && !typing) {
         const key = event.key.toLowerCase()
         if (key === 'c') {
-          const obj = selectedRef.current
-          if (!obj) return
-          event.preventDefault()
-          if (obj.kind === 'spawn') {
-            setError('Spawn stays unique. Copy a mesh instead.')
+          const ids = new Set(history.selectedRef.current)
+          const sources = history.sceneRef.current.objects.filter(
+            (obj) => ids.has(obj.id) && obj.kind !== 'spawn',
+          )
+          if (sources.length === 0) {
+            if (ids.size > 0) setError('Spawn stays unique. Copy a mesh instead.')
             return
           }
-          clipboardRef.current = { source: structuredClone(obj), copies: 0 }
+          event.preventDefault()
+          clipboardRef.current = { sources: sources.map((obj) => structuredClone(obj)), copies: 0 }
           setError(null)
-          setStatus(`Copied ${obj.name}`)
+          setStatus(sources.length === 1 ? `Copied ${sources[0].name}` : `Copied ${sources.length} pieces`)
           return
         }
         if (key === 's') {
@@ -418,24 +444,25 @@ export default function App() {
         }
         if (key === 'v') {
           const clip = clipboardRef.current
-          if (!clip || clip.source.kind === 'spawn') return
+          if (!clip || clip.sources.length === 0) return
           event.preventDefault()
           clip.copies += 1
           const shift = clip.copies
-          const src = clip.source
-          const id = uid(src.kind)
           const before = history.checkpoint()
           const prev = history.sceneRef.current
-          applyScene({
-            ...prev,
-            objects: [...prev.objects, duplicateObject(src, id, shift, prev.objects)],
-          })
-          history.selectedRef.current = id
-          setSelectedId(id)
+          let objects = prev.objects
+          const pasted: string[] = []
+          for (const src of clip.sources) {
+            const id = uid(src.kind)
+            objects = [...objects, duplicateObject(src, id, shift, objects)]
+            pasted.push(id)
+          }
+          applyScene({ ...prev, objects })
+          setSelection(pasted)
           history.remember(before)
           setTool('select')
           setError(null)
-          setStatus(`Pasted ${src.name}`)
+          setStatus(pasted.length === 1 ? `Pasted ${clip.sources[0].name}` : `Pasted ${pasted.length} pieces`)
           return
         }
       }
@@ -578,47 +605,47 @@ export default function App() {
     setActivePiece((current) => (current === id ? null : id))
     setPlaceYaw(0)
     setPlaceScaleX(1)
-    setSelectedId(null)
+    setSelection([])
   }
 
   function toggleCurb() {
     setActivePiece(null)
-    setSelectedId(null)
+    setSelection([])
     clearPins()
     setActiveGenerator((current) => (current?.kind === 'curb' ? null : { kind: 'curb' }))
   }
 
   function toggleRail() {
     setActivePiece(null)
-    setSelectedId(null)
+    setSelection([])
     clearPins()
     setActiveGenerator((current) => (current?.kind === 'rail' ? null : { kind: 'rail' }))
   }
 
   function togglePlatform() {
     setActivePiece(null)
-    setSelectedId(null)
+    setSelection([])
     clearPins()
     setActiveGenerator((current) => (current?.kind === 'platform' ? null : { kind: 'platform' }))
   }
 
   function toggleBank() {
     setActivePiece(null)
-    setSelectedId(null)
+    setSelection([])
     clearPins()
     setActiveGenerator((current) => (current?.kind === 'bank' ? null : { kind: 'bank' }))
   }
 
   function togglePlanter() {
     setActivePiece(null)
-    setSelectedId(null)
+    setSelection([])
     clearPins()
     setActiveGenerator((current) => (current?.kind === 'planter' ? null : { kind: 'planter' }))
   }
 
   function toggleTraffic(lane: TrafficLane) {
     setActivePiece(null)
-    setSelectedId(null)
+    setSelection([])
     clearPins()
     setActiveGenerator((current) =>
       current?.kind === 'traffic' && current.lane === lane ? null : { kind: 'traffic', lane },
@@ -699,7 +726,7 @@ export default function App() {
 
   function toggleKit(kit: { assetFile: string; label: string }) {
     setActivePiece(null)
-    setSelectedId(null)
+    setSelection([])
     clearPins()
     setActiveGenerator((current) =>
       current?.kind === 'kit' && current.assetFile === kit.assetFile
@@ -1036,9 +1063,9 @@ export default function App() {
     setPlaceYaw((yaw) => (yaw + Math.PI / 2) % (Math.PI * 2))
   }
 
-  function onGroundClick() {
+  function onGroundClick(_point: THREE.Vector3, additive = false) {
     if (activePiece || activeGenerator) return
-    if (tool === 'select') setSelectedId(null)
+    if (tool === 'select' && !additive) setSelection([])
   }
 
   async function locateBlender() {
@@ -1141,7 +1168,8 @@ export default function App() {
     setScene(next)
     setScenePath(path)
     const spawn = next.objects.find((obj) => obj.kind === 'spawn')
-    setSelectedId(spawn?.id ?? next.objects[0]?.id ?? null)
+    const first = spawn?.id ?? next.objects[0]?.id ?? null
+    setSelection(first ? [first] : [])
     setTool('select')
     setActivePiece(null)
     setActiveGenerator(null)
@@ -1847,7 +1875,7 @@ export default function App() {
 
           <Viewport
             scene={scene}
-            selectedId={selectedId}
+            selectedIds={selectedIds}
             tool={tool}
             transformMode={transformMode}
             snap={{
@@ -1865,10 +1893,26 @@ export default function App() {
             onRotatePiece={rotatePlacement}
             assetRevisions={assetRevisions}
             dedicatedAssets={dedicatedAssets}
-            onSelect={(id) => {
+            onSelect={(id, additive) => {
               if (activePiece || activeGenerator) return
-              setSelectedId(id)
-              const picked = id ? history.sceneRef.current.objects.find((obj) => obj.id === id) : null
+              const current = history.selectedRef.current
+              const next = !id
+                ? additive
+                  ? current
+                  : []
+                : !additive
+                  ? [id]
+                  : current.includes(id)
+                    ? current.filter((item) => item !== id)
+                    : [...current, id]
+              setSelection(next)
+              if (next.length > 1) {
+                setStatus('Move, rotate, and scale use the center of the selection. Select one piece to edit its pins.')
+                return
+              }
+              const picked = next.length === 1
+                ? history.sceneRef.current.objects.find((obj) => obj.id === next[0])
+                : null
               if (picked?.kind === 'mesh' && picked.generator?.kind === 'curb') {
                 setStatus('Drag a pin sideways to move it. Up and down sets that sphere, top or base.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'rail') {
@@ -1899,7 +1943,7 @@ export default function App() {
                     ? "The arrow is the shelter's open front. Players arrive at the cross."
                     : 'The arrow is the way players face on arrival. Players arrive at the cross.',
                 )
-              } else if (id) {
+              } else if (picked) {
                 setStatus(null)
               }
             }}
@@ -1958,7 +2002,7 @@ export default function App() {
               </span>
             ) : tool === 'select' && (
               <span>
-                Click to select. Right-drag orbits, middle-drag pans. C frames the selection. M
+                Click to select. Ctrl-click adds or removes a piece. Right-drag orbits, middle-drag pans. C frames the selection. M
                 mirrors the selection, or a held piece, left to right. Ctrl+C copies, Ctrl+V
                 pastes. Ctrl+Z undoes, Ctrl+Y redoes. Delete removes. Right-click turns a held
                 piece 90° on the surface under the cursor.
@@ -1969,7 +2013,18 @@ export default function App() {
 
         <aside className="panel inspector">
           <h2>Inspector</h2>
-          {(!selected || selected.kind === 'grind') && (
+          {selectedIds.length > 1 && (
+            <div className="fields">
+              <p className="badge">{selectedIds.length} SELECTED</p>
+              <p className="hint">
+                Move, rotate, and scale use the center of the selection. Select one piece to edit its pins.
+              </p>
+            </div>
+          )}
+          {selectedIds.length === 0 && (
+            <p className="hint">Select an object to edit its position, rotation, and scale.</p>
+          )}
+          {selected?.kind === 'grind' && (
             <p className="hint">Select an object to edit its position, rotation, and scale.</p>
           )}
           {(selected?.kind === 'mesh' ||

@@ -3,7 +3,7 @@ import type { MapScene } from '../types/scene'
 
 export type SceneSnap = {
   scene: MapScene
-  selectedId: string | null
+  selectedIds: string[]
   /** Pins for the generator that is being drawn. */
   pins: [number, number, number][]
   /** Mesh being extended by the current curb stroke. */
@@ -17,15 +17,21 @@ const HISTORY_LIMIT = 100
  * references, so undo restores the previous graph without copying the whole project
  * or rebuilding meshes that did not change.
  */
+function sameIds(a: string[], b: string[]) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
 function cloneSnap(
   scene: MapScene,
-  selectedId: string | null,
+  selectedIds: string[],
   pins: [number, number, number][],
   strokeId: string | null,
 ): SceneSnap {
   return {
     scene,
-    selectedId,
+    selectedIds,
     pins,
     strokeId,
   }
@@ -34,20 +40,20 @@ function cloneSnap(
 function sameSnap(a: SceneSnap, b: SceneSnap) {
   return (
     a.scene === b.scene &&
-    a.selectedId === b.selectedId &&
+    sameIds(a.selectedIds, b.selectedIds) &&
     a.strokeId === b.strokeId &&
     a.pins === b.pins
   )
 }
 
 /** Undo and redo snapshots. A gizmo drag is one step, from pointer down to pointer up. */
-export function useSceneHistory(scene: MapScene, selectedId: string | null) {
+export function useSceneHistory(scene: MapScene, selectedIds: string[]) {
   const sceneRef = useRef(scene)
-  const selectedRef = useRef(selectedId)
+  const selectedRef = useRef(selectedIds)
   const pinsRef = useRef<[number, number, number][]>([])
   const strokeIdRef = useRef<string | null>(null)
   sceneRef.current = scene
-  selectedRef.current = selectedId
+  selectedRef.current = selectedIds
 
   const undoStack = useRef<SceneSnap[]>([])
   const redoStack = useRef<SceneSnap[]>([])

@@ -97,7 +97,7 @@ type GizmoControls = {
 
 type Props = {
   scene: MapScene
-  selectedId: string | null
+  selectedIds: string[]
   tool: EditorTool
   transformMode: TransformMode
   snap: SnapSettings
@@ -108,11 +108,11 @@ type Props = {
   placeYaw: number
   placeScaleX: number
   assetRevisions: Record<string, number>
-  onSelect: (id: string | null) => void
+  onSelect: (id: string | null, additive: boolean) => void
   onPatchObject: (id: string, patch: Partial<SceneObject>) => void
   onTransformStart: () => void
   onTransformEnd: () => void
-  onGroundClick: (point: THREE.Vector3) => void
+  onGroundClick: (point: THREE.Vector3, additive: boolean) => void
   onPlacePiece: (
     id: string,
     point: THREE.Vector3,
@@ -245,7 +245,11 @@ function Sun() {
 
 const _sunFocus = new THREE.Vector3()
 
-function Ground({ onGroundClick }: { onGroundClick: (p: THREE.Vector3) => void }) {
+function additiveClick(event: { ctrlKey: boolean; metaKey: boolean }) {
+  return event.ctrlKey || event.metaKey
+}
+
+function Ground({ onGroundClick }: { onGroundClick: (p: THREE.Vector3, additive: boolean) => void }) {
   const material = useMemo(() => createBlueprintMaterial(), [])
   useEffect(() => () => material.dispose(), [material])
 
@@ -257,7 +261,7 @@ function Ground({ onGroundClick }: { onGroundClick: (p: THREE.Vector3) => void }
       onPointerDown={(e) => {
         e.stopPropagation()
         if (e.button !== 0 || gizmoOwnsPointer.current) return
-        onGroundClick(e.point.clone())
+        onGroundClick(e.point.clone(), additiveClick(e))
       }}
     >
       <planeGeometry args={[WORLD_SIZE, WORLD_SIZE]} />
@@ -392,6 +396,7 @@ function authoredMaterials(
 function MeshItem({
   obj,
   selected,
+  solo,
   tool,
   transformMode,
   snap,
@@ -405,11 +410,13 @@ function MeshItem({
 }: {
   obj: MeshObject
   selected: boolean
+  /** This piece is the only selection, so its pins and its own gizmo stay up. */
+  solo: boolean
   tool: EditorTool
   transformMode: TransformMode
   snap: SnapSettings
   assetRevision: number
-  onSelect: () => void
+  onSelect: (additive: boolean) => void
   onCommit: (
     pos: [number, number, number],
     rot: [number, number, number],
@@ -432,18 +439,18 @@ function MeshItem({
   const rail = obj.generator?.kind === 'rail' ? obj.generator : null
   const planter = obj.generator?.kind === 'planter' ? obj.generator : null
   const kit = obj.generator?.kind === 'kit' ? obj.generator : null
-  const editing = selected && tool === 'select' && generator != null
-  const editingPlatform = selected && tool === 'select' && platform != null
-  const editingBank = selected && tool === 'select' && bank != null
-  const editingRail = selected && tool === 'select' && rail != null
-  const editingPlanter = selected && tool === 'select' && planter != null
+  const editing = solo && tool === 'select' && generator != null
+  const editingPlatform = solo && tool === 'select' && platform != null
+  const editingBank = solo && tool === 'select' && bank != null
+  const editingRail = solo && tool === 'select' && rail != null
+  const editingPlanter = solo && tool === 'select' && planter != null
 
   useEffect(() => {
-    if (!selected) {
+    if (!solo) {
       setHandle(null)
       setPin(null)
     }
-  }, [selected])
+  }, [solo])
 
   useLayoutEffect(() => {
     const g = ref.current
@@ -641,7 +648,7 @@ function MeshItem({
     <>
       <group
         ref={ref}
-        userData={{ snap: true, focusId: obj.id }}
+        userData={{ snap: true, focusId: obj.id, selected }}
         onPointerDown={(e) => {
           if (e.button !== 0) return
           if (gizmoOwnsPointer.current) {
@@ -682,7 +689,7 @@ function MeshItem({
           }
           setHandle(null)
           setPin(null)
-          onSelect()
+          onSelect(additiveClick(e))
         }}
       >
         {generator ? (
@@ -810,7 +817,7 @@ function MeshItem({
           />
         )}
       </group>
-      {selected && tool === 'select' && !handle && pin == null && (
+      {solo && tool === 'select' && !handle && pin == null && (
         <TransformGizmo
           target={ref}
           dragging={dragging}
@@ -888,6 +895,7 @@ function MeshItem({
 const MeshItemView = memo(MeshItem, (prev, next) =>
   prev.obj === next.obj &&
   prev.selected === next.selected &&
+  prev.solo === next.solo &&
   prev.tool === next.tool &&
   prev.transformMode === next.transformMode &&
   prev.assetRevision === next.assetRevision &&
@@ -948,6 +956,7 @@ function SpawnFigure({ selected }: { selected: boolean }) {
 function SpawnItem({
   obj,
   selected,
+  solo,
   tool,
   transformMode,
   snap,
@@ -958,10 +967,11 @@ function SpawnItem({
 }: {
   obj: SpawnObject
   selected: boolean
+  solo: boolean
   tool: EditorTool
   transformMode: TransformMode
   snap: SnapSettings
-  onSelect: () => void
+  onSelect: (additive: boolean) => void
   onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
   onGestureStart: () => void
   onGestureEnd: () => void
@@ -987,12 +997,12 @@ function SpawnItem({
         onPointerDown={(e) => {
           e.stopPropagation()
           if (e.button !== 0 || gizmoOwnsPointer.current) return
-          onSelect()
+          onSelect(additiveClick(e))
         }}
       >
         <SpawnFigure selected={selected} />
       </group>
-      {selected && tool === 'select' && (
+      {solo && tool === 'select' && (
         <TransformGizmo
           target={ref}
           dragging={dragging}
@@ -1010,6 +1020,7 @@ function SpawnItem({
 const SpawnItemView = memo(SpawnItem, (prev, next) =>
   prev.obj === next.obj &&
   prev.selected === next.selected &&
+  prev.solo === next.solo &&
   prev.tool === next.tool &&
   prev.transformMode === next.transformMode &&
   prev.snap.move === next.snap.move &&
@@ -1057,6 +1068,7 @@ function TravelPointFigure({
 function TravelPointItem({
   obj,
   selected,
+  solo,
   tool,
   transformMode,
   snap,
@@ -1067,10 +1079,11 @@ function TravelPointItem({
 }: {
   obj: TravelPointObject
   selected: boolean
+  solo: boolean
   tool: EditorTool
   transformMode: TransformMode
   snap: SnapSettings
-  onSelect: () => void
+  onSelect: (additive: boolean) => void
   onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
   onGestureStart: () => void
   onGestureEnd: () => void
@@ -1096,12 +1109,12 @@ function TravelPointItem({
         onPointerDown={(e) => {
           e.stopPropagation()
           if (e.button !== 0 || gizmoOwnsPointer.current) return
-          onSelect()
+          onSelect(additiveClick(e))
         }}
       >
         <TravelPointFigure shelter={obj.shelter} selected={selected} />
       </group>
-      {selected && tool === 'select' && (
+      {solo && tool === 'select' && (
         <TransformGizmo
           target={ref}
           dragging={dragging}
@@ -1119,6 +1132,7 @@ function TravelPointItem({
 const TravelPointItemView = memo(TravelPointItem, (prev, next) =>
   prev.obj === next.obj &&
   prev.selected === next.selected &&
+  prev.solo === next.solo &&
   prev.tool === next.tool &&
   prev.transformMode === next.transformMode &&
   prev.snap.move === next.snap.move &&
@@ -1214,6 +1228,7 @@ function ActiveLightPreview({ obj }: { obj: LightObject | null }) {
 function LightItem({
   obj,
   selected,
+  solo,
   tool,
   transformMode,
   snap,
@@ -1224,10 +1239,11 @@ function LightItem({
 }: {
   obj: LightObject
   selected: boolean
+  solo: boolean
   tool: EditorTool
   transformMode: TransformMode
   snap: SnapSettings
-  onSelect: () => void
+  onSelect: (additive: boolean) => void
   onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
   onGestureStart: () => void
   onGestureEnd: () => void
@@ -1252,7 +1268,7 @@ function LightItem({
         onPointerDown={(event) => {
           event.stopPropagation()
           if (event.button !== 0 || gizmoOwnsPointer.current) return
-          onSelect()
+          onSelect(additiveClick(event))
         }}
       >
         <mesh>
@@ -1271,7 +1287,7 @@ function LightItem({
           </mesh>
         )}
       </group>
-      {selected && tool === 'select' && (
+      {solo && tool === 'select' && (
         <TransformGizmo
           target={ref}
           dragging={dragging}
@@ -1289,6 +1305,7 @@ function LightItem({
 const LightItemView = memo(LightItem, (prev, next) =>
   prev.obj === next.obj &&
   prev.selected === next.selected &&
+  prev.solo === next.solo &&
   prev.tool === next.tool &&
   prev.transformMode === next.transformMode &&
   prev.snap.move === next.snap.move &&
@@ -1458,15 +1475,23 @@ const _frameOffset = new THREE.Vector3()
 
 /** Pull the camera in so the selected object fills most of the view, keeping the current angle. */
 function frameObject(
-  object: THREE.Object3D,
+  object: THREE.Object3D | readonly THREE.Object3D[],
   camera: THREE.PerspectiveCamera,
   controls: { target: THREE.Vector3; update: () => void },
   viewport: { width: number; height: number },
 ) {
   const fill = 0.7
-  _frameBox.setFromObject(object)
+  const list = Array.isArray(object) ? object : [object]
+  _frameBox.makeEmpty()
+  const part = new THREE.Box3()
+  for (const item of list) {
+    part.setFromObject(item)
+    if (!part.isEmpty()) _frameBox.union(part)
+  }
   if (_frameBox.isEmpty()) {
-    object.getWorldPosition(_frameCenter)
+    _frameCenter.set(0, 0, 0)
+    for (const item of list) _frameCenter.add(item.getWorldPosition(_groupPoint))
+    if (list.length > 0) _frameCenter.multiplyScalar(1 / list.length)
     _frameSize.set(1, 1, 1)
   } else {
     _frameBox.getCenter(_frameCenter)
@@ -1546,7 +1571,144 @@ function syncHeld(held: HeldMesh) {
   }
 }
 
-function SelectionGhost({ selectedId }: { selectedId: string | null }) {
+function selectionRoots(scene: THREE.Scene, ids: readonly string[]) {
+  if (ids.length === 0) return []
+  const wanted = new Set(ids)
+  const roots: THREE.Object3D[] = []
+  scene.traverse((obj) => {
+    const id = obj.userData.focusId as string | undefined
+    if (id && wanted.has(id)) roots.push(obj)
+  })
+  return roots
+}
+
+function selectionCenter(roots: readonly THREE.Object3D[]) {
+  const box = new THREE.Box3()
+  const part = new THREE.Box3()
+  for (const root of roots) {
+    part.setFromObject(root)
+    if (!part.isEmpty()) box.union(part)
+  }
+  const center = new THREE.Vector3()
+  if (!box.isEmpty()) return box.getCenter(center)
+  for (const root of roots) center.add(root.getWorldPosition(_groupPoint))
+  if (roots.length > 0) center.multiplyScalar(1 / roots.length)
+  return center
+}
+
+const _groupPoint = new THREE.Vector3()
+const _groupDelta = new THREE.Matrix4()
+const _groupNext = new THREE.Matrix4()
+const _groupPos = new THREE.Vector3()
+const _groupQuat = new THREE.Quaternion()
+const _groupScale = new THREE.Vector3()
+const _groupEuler = new THREE.Euler(0, 0, 0, 'XYZ')
+
+function GroupTransform({
+  ids,
+  map,
+  mode,
+  snap,
+  onPatch,
+  onGestureStart,
+  onGestureEnd,
+}: {
+  ids: string[]
+  map: MapScene
+  mode: TransformMode
+  snap: SnapSettings
+  onPatch: (id: string, patch: Partial<SceneObject>) => void
+  onGestureStart: () => void
+  onGestureEnd: () => void
+}) {
+  const pivotRef = useRef<THREE.Group>(null)
+  const dragging = useRef(false)
+  const threeScene = useThree((s) => s.scene)
+  const saved = useRef<{ id: string; matrix: THREE.Matrix4; scalable: boolean }[]>([])
+  const initialInv = useRef(new THREE.Matrix4())
+  const idsRef = useRef(ids)
+  const mapRef = useRef(map)
+  idsRef.current = ids
+  mapRef.current = map
+  const poseKey = ids
+    .map((id) => {
+      const obj = map.objects.find((item) => item.id === id)
+      if (!obj || !('position' in obj)) return id
+      const scale = 'scale' in obj ? obj.scale.join(',') : ''
+      return `${id}:${obj.position.join(',')}:${obj.rotation.join(',')}:${scale}`
+    })
+    .join('|')
+
+  useLayoutEffect(() => {
+    if (dragging.current) return
+    const pivot = pivotRef.current
+    if (!pivot) return
+    const roots = selectionRoots(threeScene, ids)
+    if (roots.length === 0) return
+    pivot.position.copy(selectionCenter(roots))
+    pivot.rotation.set(0, 0, 0)
+    pivot.scale.set(1, 1, 1)
+    pivot.updateMatrix()
+  }, [ids, poseKey, threeScene])
+
+  function begin() {
+    const pivot = pivotRef.current
+    if (!pivot) return
+    const scalable = new Set(
+      mapRef.current.objects.filter((obj) => obj.kind === 'mesh').map((obj) => obj.id),
+    )
+    pivot.updateMatrix()
+    initialInv.current.copy(pivot.matrix).invert()
+    saved.current = selectionRoots(threeScene, idsRef.current).map((root) => {
+      root.updateWorldMatrix(true, false)
+      const id = root.userData.focusId as string
+      return { id, matrix: root.matrixWorld.clone(), scalable: scalable.has(id) }
+    })
+    onGestureStart()
+  }
+
+  function commit() {
+    const pivot = pivotRef.current
+    if (!pivot || saved.current.length === 0) return
+    pivot.updateMatrix()
+    _groupDelta.copy(pivot.matrix).multiply(initialInv.current)
+    for (const item of saved.current) {
+      _groupNext.copy(_groupDelta).multiply(item.matrix)
+      _groupNext.decompose(_groupPos, _groupQuat, _groupScale)
+      _groupEuler.setFromQuaternion(_groupQuat, 'XYZ')
+      const patch: Partial<SceneObject> = {
+        position: [round4(_groupPos.x), round4(_groupPos.y), round4(_groupPos.z)],
+        rotation: [round4(_groupEuler.x), round4(_groupEuler.y), round4(_groupEuler.z)],
+      }
+      if (item.scalable) {
+        ;(patch as Partial<MeshObject>).scale = [
+          round4(_groupScale.x),
+          round4(_groupScale.y),
+          round4(_groupScale.z),
+        ]
+      }
+      onPatch(item.id, patch)
+    }
+  }
+
+  return (
+    <>
+      <group ref={pivotRef} />
+      <TransformGizmo
+        target={pivotRef}
+        dragging={dragging}
+        mode={mode}
+        snap={snap}
+        space="world"
+        onCommit={commit}
+        onGestureStart={begin}
+        onGestureEnd={onGestureEnd}
+      />
+    </>
+  )
+}
+
+function SelectionGhost({ selectedIds }: { selectedIds: readonly string[] }) {
   const scene = useThree((s) => s.scene)
   const lines = useMemo(
     () =>
@@ -1584,25 +1746,20 @@ function SelectionGhost({ selectedId }: { selectedId: string | null }) {
     heldRef.current = []
   }
 
+  const idsKey = selectedIds.join('\0')
+
   useLayoutEffect(() => {
     clear()
-    if (!selectedId) return () => {}
-    let root: THREE.Object3D | null = null
-    scene.traverse((obj) => {
-      if (obj.userData.focusId === selectedId) root = obj
-    })
-    if (root) apply(collect(root))
+    const roots = selectionRoots(scene, selectedIds)
+    if (roots.length === 0) return () => {}
+    apply(roots.flatMap((root) => collect(root)))
     return clear
-  }, [lines, scene, selectedId])
+  }, [lines, scene, idsKey])
 
   useFrame(() => {
-    if (!selectedId) return
-    let root: THREE.Object3D | null = null
-    scene.traverse((obj) => {
-      if (obj.userData.focusId === selectedId) root = obj
-    })
-    if (!root) return
-    const meshes = collect(root)
+    const roots = selectionRoots(scene, selectedIds)
+    if (roots.length === 0) return
+    const meshes = roots.flatMap((root) => collect(root))
     const held = heldRef.current
     const same = meshes.length === held.length && meshes.every((mesh, index) => mesh === held[index].mesh)
     if (!same) {
@@ -1616,13 +1773,13 @@ function SelectionGhost({ selectedId }: { selectedId: string | null }) {
   return null
 }
 
-function FrameSelection({ selectedId }: { selectedId: string | null }) {
+function FrameSelection({ selectedIds }: { selectedIds: readonly string[] }) {
   const camera = useThree((s) => s.camera)
   const scene = useThree((s) => s.scene)
   const controls = useThree((s) => s.controls)
   const size = useThree((s) => s.size)
-  const selectedRef = useRef(selectedId)
-  selectedRef.current = selectedId
+  const selectedRef = useRef(selectedIds)
+  selectedRef.current = selectedIds
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -1636,16 +1793,13 @@ function FrameSelection({ selectedId }: { selectedId: string | null }) {
           target.tagName === 'SELECT' ||
           target.isContentEditable)
       if (typing) return
-      const id = selectedRef.current
-      if (!id) return
+      const ids = selectedRef.current
+      if (ids.length === 0) return
       const orbit = controls as { target?: THREE.Vector3; update?: () => void } | null
       if (!orbit?.target || !orbit.update) return
       if (!(camera instanceof THREE.PerspectiveCamera)) return
-      let found: THREE.Object3D | null = null
-      scene.traverse((obj) => {
-        if (obj.userData.focusId === id) found = obj
-      })
-      if (!found) return
+      const found = selectionRoots(scene, ids)
+      if (found.length === 0) return
       event.preventDefault()
       frameObject(found, camera, orbit as { target: THREE.Vector3; update: () => void }, size)
     }
@@ -2324,6 +2478,7 @@ function TrafficGhost({
 function TrafficLaneItem({
   obj,
   selected,
+  solo,
   tool,
   transformMode,
   snap,
@@ -2335,10 +2490,11 @@ function TrafficLaneItem({
 }: {
   obj: TrafficLaneObject
   selected: boolean
+  solo: boolean
   tool: EditorTool
   transformMode: TransformMode
   snap: SnapSettings
-  onSelect: () => void
+  onSelect: (additive: boolean) => void
   onCommit: (pos: [number, number, number], rot: [number, number, number]) => void
   onPatch: (patch: Partial<TrafficLaneObject>) => void
   onGestureStart: () => void
@@ -2349,12 +2505,12 @@ function TrafficLaneItem({
   const dragging = useRef(false)
   const pinDragging = useRef(false)
   const [pin, setPin] = useState<number | null>(null)
-  const editing = selected && tool === 'select'
+  const editing = solo && tool === 'select'
   const mode = transformMode === 'scale' ? 'translate' : transformMode
 
   useEffect(() => {
-    if (!selected) setPin(null)
-  }, [selected])
+    if (!solo) setPin(null)
+  }, [solo])
 
   useLayoutEffect(() => {
     const group = ref.current
@@ -2384,12 +2540,12 @@ function TrafficLaneItem({
     <>
       <group
         ref={ref}
-        userData={{ focusId: obj.id }}
+        userData={{ focusId: obj.id, selected }}
         onPointerDown={(event) => {
           event.stopPropagation()
           if (event.button !== 0 || gizmoOwnsPointer.current) return
           setPin(null)
-          onSelect()
+          onSelect(additiveClick(event))
         }}
       >
         <TrafficRibbon
@@ -2411,7 +2567,7 @@ function TrafficLaneItem({
                 event.stopPropagation()
                 if (event.button !== 0 || gizmoOwnsPointer.current) return
                 setPin(index)
-                onSelect()
+                onSelect(false)
               }}
             >
               <sphereGeometry args={[0.22, 16, 12]} />
@@ -2454,6 +2610,7 @@ function TrafficLaneItem({
 const TrafficLaneItemView = memo(TrafficLaneItem, (prev, next) =>
   prev.obj === next.obj &&
   prev.selected === next.selected &&
+  prev.solo === next.solo &&
   prev.tool === next.tool &&
   prev.transformMode === next.transformMode &&
   prev.snap.move === next.snap.move &&
@@ -2553,7 +2710,7 @@ function GeneratorLayer({
 function SceneContents(props: Props) {
   const {
     scene,
-    selectedId,
+    selectedIds,
     tool,
     transformMode,
     snap,
@@ -2594,7 +2751,11 @@ function SceneContents(props: Props) {
   const placingInteractive = isInteractivePiece(placePieceId)
   const placingLight = lightKindFromPiece(placePieceId)
   const activeLight =
-    scene.objects.find((obj): obj is LightObject => obj.id === selectedId && obj.kind === 'light') ?? null
+    selectedIds.length === 1
+      ? (scene.objects.find((obj): obj is LightObject => obj.id === selectedIds[0] && obj.kind === 'light') ??
+        null)
+      : null
+  const multi = selectedIds.length > 1
   const previewY = previewHit ? surfaceHeight(previewHit.point, previewHit.normal) : 0
   const previewRotation = placingInteractive
     ? ([0, placeYaw, 0] as [number, number, number])
@@ -2616,8 +2777,8 @@ function SceneContents(props: Props) {
         minDistance={0.25}
         maxDistance={2000}
       />
-      <FrameSelection selectedId={selectedId} />
-      <SelectionGhost selectedId={selectedId} />
+      <FrameSelection selectedIds={selectedIds} />
+      <SelectionGhost selectedIds={selectedIds} />
 
       <ambientLight intensity={0.22} />
       <hemisphereLight args={['#d5e2ee', '#3a332c', 0.28]} />
@@ -2633,7 +2794,8 @@ function SceneContents(props: Props) {
             <MeshItemView
               key={obj.id}
               obj={obj}
-              selected={obj.id === selectedId}
+              selected={selectedIds.includes(obj.id)}
+              solo={selectedIds.length === 1 && selectedIds[0] === obj.id}
               tool={tool}
               transformMode={transformMode}
               snap={snap}
@@ -2644,7 +2806,7 @@ function SceneContents(props: Props) {
                     ? (assetRevisions[obj.generator.assetFile] ?? 0)
                     : 0
               }
-              onSelect={() => onSelectRef.current(obj.id)}
+              onSelect={(additive) => onSelectRef.current(obj.id, additive)}
               onCommit={(pos, rot, scale) => {
                 onPatchRef.current(obj.id, { position: pos, rotation: rot, scale })
               }}
@@ -2660,11 +2822,12 @@ function SceneContents(props: Props) {
             <TrafficLaneItemView
               key={obj.id}
               obj={obj}
-              selected={obj.id === selectedId}
+              selected={selectedIds.includes(obj.id)}
+              solo={selectedIds.length === 1 && selectedIds[0] === obj.id}
               tool={tool}
               transformMode={transformMode}
               snap={snap}
-              onSelect={() => onSelectRef.current(obj.id)}
+              onSelect={(additive) => onSelectRef.current(obj.id, additive)}
               onCommit={(pos, rot) => {
                 onPatchRef.current(obj.id, { position: pos, rotation: rot })
               }}
@@ -2679,11 +2842,12 @@ function SceneContents(props: Props) {
             <LightItemView
               key={obj.id}
               obj={obj}
-              selected={obj.id === selectedId}
+              selected={selectedIds.includes(obj.id)}
+              solo={selectedIds.length === 1 && selectedIds[0] === obj.id}
               tool={tool}
               transformMode={transformMode}
               snap={snap}
-              onSelect={() => onSelectRef.current(obj.id)}
+              onSelect={(additive) => onSelectRef.current(obj.id, additive)}
               onCommit={(pos, rot) => {
                 onPatchRef.current(obj.id, { position: pos, rotation: rot })
               }}
@@ -2697,11 +2861,12 @@ function SceneContents(props: Props) {
             <TravelPointItemView
               key={obj.id}
               obj={obj}
-              selected={obj.id === selectedId}
+              selected={selectedIds.includes(obj.id)}
+              solo={selectedIds.length === 1 && selectedIds[0] === obj.id}
               tool={tool}
               transformMode={transformMode}
               snap={snap}
-              onSelect={() => onSelectRef.current(obj.id)}
+              onSelect={(additive) => onSelectRef.current(obj.id, additive)}
               onCommit={(pos, rot) => {
                 onPatchRef.current(obj.id, { position: pos, rotation: rot })
               }}
@@ -2715,11 +2880,12 @@ function SceneContents(props: Props) {
           <SpawnItemView
             key={obj.id}
             obj={obj}
-            selected={obj.id === selectedId}
+            selected={selectedIds.includes(obj.id)}
+            solo={selectedIds.length === 1 && selectedIds[0] === obj.id}
             tool={tool}
             transformMode={transformMode}
             snap={snap}
-            onSelect={() => onSelectRef.current(obj.id)}
+            onSelect={(additive) => onSelectRef.current(obj.id, additive)}
             onCommit={(pos, rot) => {
               onPatchRef.current(obj.id, { position: pos, rotation: rot })
             }}
@@ -2728,6 +2894,18 @@ function SceneContents(props: Props) {
           />
         )
       })}
+
+      {multi && tool === 'select' && (
+        <GroupTransform
+          ids={selectedIds}
+          map={scene}
+          mode={transformMode}
+          snap={snap}
+          onPatch={(id, patch) => onPatchRef.current(id, patch)}
+          onGestureStart={() => onStartRef.current()}
+          onGestureEnd={() => onEndRef.current()}
+        />
+      )}
 
       {placePieceId && previewHit && placingInteractive && (
         <group
