@@ -75,6 +75,17 @@ export interface PlanterGenerator {
   sideTops?: [number, number]
 }
 
+/** Stair flight along a drawn centreline. Width and height are one value for the whole run. */
+export interface StairsGenerator {
+  kind: 'stairs'
+  /** Centreline in local space. The flight climbs from the first point to the last. */
+  points: [number, number, number][]
+  width: number
+  /** Total rise of the flight. */
+  height: number
+  steps: number
+}
+
 export type MeshGenerator =
   | CurbGenerator
   | KitGenerator
@@ -82,6 +93,7 @@ export type MeshGenerator =
   | BankGenerator
   | RailGenerator
   | PlanterGenerator
+  | StairsGenerator
 
 /** Where a prop lamp sits. Only the placement comes from the blend. */
 export interface PropLamp {

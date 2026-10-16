@@ -23,11 +23,14 @@ import {
   CURB_HEIGHT_M,
   CURB_WIDTH_M,
   MIN_CURB_THICKNESS_M,
+  DEFAULT_STAIR_STEPS,
   MIN_PLANTER_SPAN_M,
   MIN_PLANTER_THICKNESS_M,
   MIN_PLATFORM_HEIGHT_M,
   PLANTER_HEIGHT_M,
   PLATFORM_HEIGHT_M,
+  STAIR_HEIGHT_M,
+  STAIR_WIDTH_M,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   buildCurbGeometry,
@@ -37,6 +40,10 @@ import {
   buildCurbWaxGeometry,
   buildPlanterGeometry,
   buildPlanterWaxGeometry,
+  buildStairsGeometry,
+  clampStairHeight,
+  clampStairWidth,
+  stairPinLayout,
   railBaseFromHit,
   railTopYs,
   buildPlatformGeometry,
@@ -431,19 +438,21 @@ function MeshItem({
   const dragging = useRef(false)
   const handleRef = useRef<THREE.Group>(null)
   const handleDragging = useRef(false)
-  const [handle, setHandle] = useState<{ index: number; end: 'bottom' | 'top' } | null>(null)
+  const [handle, setHandle] = useState<{ index: number; end: 'bottom' | 'top' | 'width' } | null>(null)
   const [pin, setPin] = useState<number | null>(null)
   const generator = obj.generator?.kind === 'curb' ? obj.generator : null
   const platform = obj.generator?.kind === 'platform' ? obj.generator : null
   const bank = obj.generator?.kind === 'bank' ? obj.generator : null
   const rail = obj.generator?.kind === 'rail' ? obj.generator : null
   const planter = obj.generator?.kind === 'planter' ? obj.generator : null
+  const stairs = obj.generator?.kind === 'stairs' ? obj.generator : null
   const kit = obj.generator?.kind === 'kit' ? obj.generator : null
   const editing = solo && tool === 'select' && generator != null
   const editingPlatform = solo && tool === 'select' && platform != null
   const editingBank = solo && tool === 'select' && bank != null
   const editingRail = solo && tool === 'select' && rail != null
   const editingPlanter = solo && tool === 'select' && planter != null
+  const editingStairs = solo && tool === 'select' && stairs != null
 
   useEffect(() => {
     if (!solo) {
@@ -498,13 +507,23 @@ function MeshItem({
 
   useLayoutEffect(() => {
     const g = handleRef.current
-    if (!g || handleDragging.current || !planter || !handle) return
+    if (!g || handleDragging.current || !planter || !handle || handle.end === 'width') return
     const layout = planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops)
     const corner = layout.points[handle.index]
     if (!corner) return
     const y = handle.end === 'bottom' ? corner[1] : layout.rims[handle.index]
     g.position.set(corner[0], y, corner[2])
   }, [planter, handle])
+
+  useLayoutEffect(() => {
+    const g = handleRef.current
+    if (!g || handleDragging.current || !stairs || !handle) return
+    const layout = stairPinLayout(stairs.points, stairs.width, stairs.height)
+    const pinLayout = layout[handle.index]
+    if (!pinLayout) return
+    const pos = handle.end === 'top' ? pinLayout.top : handle.end === 'width' ? pinLayout.width : pinLayout.base
+    g.position.set(pos[0], pos[1], pos[2])
+  }, [stairs, handle])
 
   function commitHeight() {
     if (!generator || !handle) return
@@ -581,7 +600,7 @@ function MeshItem({
   }
 
   function commitPlanter() {
-    if (!planter || !handle) return
+    if (!planter || !handle || handle.end === 'width') return
     const g = handleRef.current
     if (!g || !planter.corners[0] || !planter.corners[1]) return
     const layout = planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops)
@@ -644,6 +663,50 @@ function MeshItem({
     })
   }
 
+  function commitStairs() {
+    if (!stairs || !handle) return
+    const g = handleRef.current
+    const point = stairs.points[handle.index]
+    if (!g || !point) return
+    if (handle.end === 'top') {
+      const height = clampStairHeight(g.position.y - point[1])
+      const edge = stairPinLayout(stairs.points, stairs.width, height)[handle.index]?.top
+      if (edge) g.position.set(edge[0], edge[1], edge[2])
+      onPatch({ generator: { ...stairs, height: round4(height) } })
+      return
+    }
+    if (handle.end === 'width') {
+      const width = clampStairWidth(Math.hypot(g.position.x - point[0], g.position.z - point[2]))
+      const edge = stairPinLayout(stairs.points, width, stairs.height)[handle.index]?.width
+      if (edge) g.position.set(edge[0], point[1], edge[2])
+      onPatch({ generator: { ...stairs, width: round4(width) } })
+      return
+    }
+    const points = stairs.points.map((entry) => [entry[0], entry[1], entry[2]] as Vec3)
+    let x = g.position.x
+    let z = g.position.z
+    const keepApart = (anchor: Vec3) => {
+      const dx = x - anchor[0]
+      const dz = z - anchor[2]
+      if (Math.hypot(dx, dz) >= 0.05) return
+      const len = Math.hypot(dx, dz)
+      if (len < 1e-6) {
+        x = anchor[0] + 0.05
+        return
+      }
+      x = anchor[0] + (dx / len) * 0.05
+      z = anchor[2] + (dz / len) * 0.05
+    }
+    const previous = points[handle.index - 1]
+    const next = points[handle.index + 1]
+    if (previous) keepApart(previous)
+    if (next) keepApart(next)
+    const y = g.position.y
+    points[handle.index] = [round4(x), round4(y), round4(z)]
+    g.position.set(x, y, z)
+    onPatch({ generator: { ...stairs, points } })
+  }
+
   return (
     <>
       <group
@@ -665,7 +728,7 @@ function MeshItem({
             return false
           }
           const picked = e.intersections.find((hit) => hit.object.userData.curbHandle && mine(hit))?.object
-            .userData.curbHandle as { index: number; end: 'bottom' | 'top' } | undefined
+            .userData.curbHandle as { index: number; end: 'bottom' | 'top' | 'width' } | undefined
           const pickedPinData = e.intersections.find(
             (hit) =>
               mine(hit) && (hit.object.userData.platformPin != null || hit.object.userData.bankPin != null),
@@ -788,7 +851,7 @@ function MeshItem({
               sideTops={planter.sideTops}
               materials={obj.materials}
             />
-            {editingPlanter && (
+            {editingPlanter && planter && (
               <CurbEditPins
                 points={planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops).points}
                 height={PLANTER_HEIGHT_M}
@@ -798,6 +861,42 @@ function MeshItem({
               />
             )}
             {editingPlanter && handle && <group ref={handleRef} />}
+          </>
+        ) : stairs?.points ? (
+          <>
+            <StairsMesh
+              points={stairs.points}
+              width={stairs.width}
+              height={stairs.height}
+              steps={stairs.steps}
+              materials={obj.materials}
+            />
+            {editingStairs &&
+              stairPinLayout(stairs.points, stairs.width, stairs.height).map((pin, index) => (
+                <group key={index}>
+                  <StairPinRod from={pin.base} to={pin.width} />
+                  <StairPinRod from={pin.width} to={pin.top} />
+                  <CurbHandleSphere
+                    position={pin.base}
+                    color={handle?.index === index && handle.end === 'bottom' ? '#fff4d6' : '#ffb703'}
+                    handle={{ index, end: 'bottom' }}
+                    onPick={() => setHandle({ index, end: 'bottom' })}
+                  />
+                  <CurbHandleSphere
+                    position={pin.top}
+                    color={handle?.index === index && handle.end === 'top' ? '#fff4d6' : '#ff6b00'}
+                    handle={{ index, end: 'top' }}
+                    onPick={() => setHandle({ index, end: 'top' })}
+                  />
+                  <CurbHandleSphere
+                    position={pin.width}
+                    color={handle?.index === index && handle.end === 'width' ? '#fff4d6' : '#2ec4b6'}
+                    handle={{ index, end: 'width' }}
+                    onPick={() => setHandle({ index, end: 'width' })}
+                  />
+                </group>
+              ))}
+            {editingStairs && handle && <group ref={handleRef} />}
           </>
         ) : kit ? (
           <KitRun
@@ -876,7 +975,7 @@ function MeshItem({
           onGestureEnd={onGestureEnd}
         />
       )}
-      {editingPlanter && handle && (
+      {editingPlanter && handle && handle.end !== 'width' && (
         <TransformGizmo
           target={handleRef}
           dragging={handleDragging}
@@ -884,6 +983,18 @@ function MeshItem({
           space="world"
           snap={snap}
           onCommit={commitPlanter}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+      {editingStairs && handle && (
+        <TransformGizmo
+          target={handleRef}
+          dragging={handleDragging}
+          mode="translate"
+          space="world"
+          snap={snap}
+          onCommit={commitStairs}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
         />
@@ -1820,7 +1931,7 @@ function CurbEditPins({
   points: Vec3[]
   height: number
   tops?: number[]
-  active: { index: number; end: 'bottom' | 'top' } | null
+  active: { index: number; end: 'bottom' | 'top' | 'width' } | null
   onPick: (index: number, end: 'bottom' | 'top') => void
 }) {
   const topYs = curbTopYs(points, height, tops)
@@ -1862,7 +1973,7 @@ function CurbHandleSphere({
 }: {
   position: [number, number, number]
   color: string
-  handle: { index: number; end: 'bottom' | 'top' }
+  handle: { index: number; end: 'bottom' | 'top' | 'width' }
   onPick: () => void
 }) {
   return (
@@ -2307,6 +2418,63 @@ function PlanterGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
   return (
     <group position={origin} userData={{ placementGhost: true }}>
       <PlanterMesh corners={corners} tops={[PLANTER_HEIGHT_M, PLANTER_HEIGHT_M]} ghost />
+    </group>
+  )
+}
+
+function StairPinRod({ from, to }: { from: Vec3; to: Vec3 }) {
+  const start = new THREE.Vector3(...from)
+  const end = new THREE.Vector3(...to)
+  const span = end.clone().sub(start)
+  if (span.lengthSq() < 1e-8) return null
+  const length = span.length()
+  const mid = start.clone().add(end).multiplyScalar(0.5)
+  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), span.normalize())
+  return (
+    <mesh position={mid} quaternion={quat} raycast={() => {}} renderOrder={3}>
+      <cylinderGeometry args={[0.025, 0.025, length, 6]} />
+      <meshBasicMaterial color="#ff9f1c" toneMapped={false} depthTest={false} />
+    </mesh>
+  )
+}
+
+function StairsMesh({
+  points,
+  width,
+  height,
+  steps,
+  materials,
+  ghost,
+}: {
+  points: Vec3[]
+  width: number
+  height: number
+  steps: number
+  materials?: Record<string, string>
+  ghost?: boolean
+}) {
+  const geometry = useMemo(
+    () => buildStairsGeometry(points, width, height, steps),
+    [points, width, height, steps],
+  )
+  useEffect(() => () => geometry?.dispose(), [geometry])
+  if (!geometry) return null
+  return (
+    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+      <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
+    </mesh>
+  )
+}
+
+function StairsGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
+  const y = to.y < 0.02 ? 0 : to.y
+  const cursor: Vec3 = [to.x, y, to.z]
+  const last = pins[pins.length - 1]
+  if (curbSegmentTooShort(last, cursor)) return null
+  const preview = pins.length >= 2 ? [pins[pins.length - 2], last, cursor] : [last, cursor]
+  return (
+    <group userData={{ placementGhost: true }}>
+      <StairsMesh points={preview} width={STAIR_WIDTH_M} height={STAIR_HEIGHT_M} steps={DEFAULT_STAIR_STEPS} ghost />
     </group>
   )
 }
@@ -2953,7 +3121,10 @@ function SceneContents(props: Props) {
               ? railBaseFromHit([generatorPreview.x, generatorPreview.y, generatorPreview.z])
               : [
                   generatorPreview.x,
-                  (generator.kind === 'platform' || generator.kind === 'bank' || generator.kind === 'planter') && pins[0]
+                  (generator.kind === 'platform' ||
+                    generator.kind === 'bank' ||
+                    generator.kind === 'planter') &&
+                  pins[0]
                     ? pins[0][1]
                     : generatorPreview.y < 0.02
                       ? 0
@@ -2977,6 +3148,9 @@ function SceneContents(props: Props) {
       )}
       {generator?.kind === 'planter' && pins.length > 0 && generatorPreview && (
         <PlanterGhost pins={pins} to={generatorPreview} />
+      )}
+      {generator?.kind === 'stairs' && pins.length > 0 && generatorPreview && (
+        <StairsGhost pins={pins} to={generatorPreview} />
       )}
       {generator?.kind === 'traffic' && pins.length > 0 && generatorPreview && (
         <TrafficGhost pins={pins} to={generatorPreview} lane={generator.lane} />

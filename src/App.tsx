@@ -15,8 +15,12 @@ import { uid } from './lib/ids'
 import {
   CURB_HEIGHT_M,
   CURB_WIDTH_M,
+  DEFAULT_STAIR_STEPS,
   PLANTER_HEIGHT_M,
   PLATFORM_HEIGHT_M,
+  STAIR_HEIGHT_M,
+  STAIR_WIDTH_M,
+  clampStairSteps,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   bankFromWorld,
@@ -643,6 +647,13 @@ export default function App() {
     setActiveGenerator((current) => (current?.kind === 'planter' ? null : { kind: 'planter' }))
   }
 
+  function toggleStairs() {
+    setActivePiece(null)
+    setSelection([])
+    clearPins()
+    setActiveGenerator((current) => (current?.kind === 'stairs' ? null : { kind: 'stairs' }))
+  }
+
   function toggleTraffic(lane: TrafficLane) {
     setActivePiece(null)
     setSelection([])
@@ -994,6 +1005,70 @@ export default function App() {
     setPins([])
     history.remember(before)
     setStatus(`Added planter, ${width.toFixed(2)} × ${depth.toFixed(2)} m, ${PLANTER_HEIGHT_M} m tall`)
+    setError(null)
+  }
+
+  function clickStairs(point: THREE.Vector3) {
+    const y = point.y < 0.02 ? 0 : point.y
+    const nextPoint: [number, number, number] = [round4(point.x), round4(y), round4(point.z)]
+    const prevPins = history.pinsRef.current
+    const previous = prevPins.at(-1)
+    if (previous && curbSegmentTooShort(previous, nextPoint)) {
+      setStatus('That stair section is too short.')
+      return
+    }
+    const before = history.checkpoint()
+    const nextPins = [...prevPins, nextPoint]
+    history.pinsRef.current = nextPins
+    if (previous) {
+      const prev = history.sceneRef.current
+      const origin = curbOrigin(nextPins)
+      const local = curbLocalPoints(nextPins, origin)
+      const strokeId = history.strokeIdRef.current
+      const existing = prev.objects.find(
+        (obj): obj is MeshObject =>
+          obj.kind === 'mesh' && obj.id === strokeId && obj.generator?.kind === 'stairs',
+      )
+      const generator = {
+        kind: 'stairs' as const,
+        points: local,
+        width: existing?.generator?.kind === 'stairs' ? existing.generator.width : STAIR_WIDTH_M,
+        height: existing?.generator?.kind === 'stairs' ? existing.generator.height : STAIR_HEIGHT_M,
+        steps: existing?.generator?.kind === 'stairs' ? existing.generator.steps : DEFAULT_STAIR_STEPS,
+      }
+      if (existing) {
+        applyScene({
+          ...prev,
+          objects: prev.objects.map((obj) =>
+            obj.id === existing.id && obj.kind === 'mesh'
+              ? { ...obj, position: origin, rotation: [0, 0, 0], scale: [1, 1, 1], generator }
+              : obj,
+          ),
+        })
+        setStatus(`Extended stairs to ${curbRunLength(nextPins)} m`)
+      } else {
+        const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'stairs').length
+        const id = uid('mesh')
+        const obj: MeshObject = {
+          id,
+          kind: 'mesh',
+          libraryId: 'generator_stairs',
+          name: `Stairs_${count + 1}`,
+          position: origin,
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+          generator,
+          sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
+        }
+        history.strokeIdRef.current = id
+        applyScene({ ...prev, objects: [...prev.objects, obj] })
+        setStatus(`Added stairs, ${curbRunLength(nextPins)} m, ${DEFAULT_STAIR_STEPS} steps`)
+      }
+    } else {
+      setStatus('Pinned the stair start')
+    }
+    setPins(nextPins)
+    history.remember(before)
     setError(null)
   }
 
@@ -1467,7 +1542,7 @@ export default function App() {
           <h2>Library</h2>
           <p className="hint">
             {categoryPath[0] === 'generators'
-              ? 'Click Curbs or Rails to draw a run, Platforms for a flat pad, Banks for a pad with eight free corners, or Planters for a brick box with a granite rim. Escape leaves the tool.'
+              ? 'Click Curbs, Rails, or Stairs to draw a run. Platforms make a flat pad, Banks a pad with eight free corners, and Planters a brick box. Escape leaves the tool.'
               : categoryPath[0] === 'interactive'
                 ? 'Click a bus stop or a fast-travel point, then click the map. It stands on the ground. Right-click turns it 90°. Escape leaves the tool.'
                 : categoryPath[0] === 'traffic'
@@ -1628,6 +1703,22 @@ export default function App() {
                   <span>
                     <strong>Planters</strong>
                     <small>{activeGenerator?.kind === 'planter' ? 'Click two corners' : 'Click to draw'}</small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath[0] === 'generators' && (
+              <li>
+                <button
+                  type="button"
+                  className={activeGenerator?.kind === 'stairs' ? 'lib active' : 'lib'}
+                  aria-pressed={activeGenerator?.kind === 'stairs'}
+                  onClick={toggleStairs}
+                >
+                  <span className="swatch" style={{ background: '#b7b1a6' }} />
+                  <span>
+                    <strong>Stairs</strong>
+                    <small>{activeGenerator?.kind === 'stairs' ? 'Click the map to draw' : 'Click to draw'}</small>
                   </span>
                 </button>
               </li>
@@ -1923,6 +2014,8 @@ export default function App() {
                 setStatus('Drag any sphere to move that corner. Each of the eight corners moves on its own.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'planter') {
                 setStatus('Drag a sphere sideways to move that corner. Up and down sets that corner only.')
+              } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'stairs') {
+                setStatus('Drag a pin to bend the front edge. The steps run out to the side. A top pin sets the height of the whole flight. A side pin sets how far they run.')
               } else if (picked?.kind === 'mesh' && picked.lightRig) {
                 setStatus('X looks the lamp up and down, from -360 to 360 degrees. The housing stays put.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'kit') {
@@ -1959,6 +2052,7 @@ export default function App() {
               else if (activeGenerator?.kind === 'platform') clickPlatform(point)
               else if (activeGenerator?.kind === 'bank') clickBank(point)
               else if (activeGenerator?.kind === 'planter') clickPlanter(point)
+              else if (activeGenerator?.kind === 'stairs') clickStairs(point)
               else if (activeGenerator?.kind === 'rail') clickRail(point)
               else clickCurb(point)
             }}
@@ -1980,6 +2074,8 @@ export default function App() {
               <span>Click two opposite corners. The bank starts 0.5 m tall. Select it and drag any of the eight spheres. Escape leaves Banks.</span>
             ) : activeGenerator?.kind === 'planter' ? (
               <span>Click two opposite corners. The box is 0.55 m tall, with a brick wall, a granite rim, and grass inside. Escape leaves Planters.</span>
+            ) : activeGenerator?.kind === 'stairs' ? (
+              <span>Click the map to drop a pin. The next click starts the stairs, and another click adds a section. The steps run out to the side of the line. Escape leaves Stairs.</span>
             ) : activeGenerator?.kind === 'kit' ? (
               <span>
                 Click the map to drop a pin. The next clicks extend {activeGenerator.label} and turn the corner. Escape leaves the tool.
@@ -2091,6 +2187,8 @@ export default function App() {
                         ? 'BANK'
                         : selected.generator?.kind === 'planter'
                         ? 'PLANTER'
+                        : selected.generator?.kind === 'stairs'
+                          ? 'STAIRS'
                       : selected.generator?.kind === 'kit'
                         ? 'KIT'
                         : 'PLACEHOLDER MESH'}
@@ -2119,6 +2217,28 @@ export default function App() {
                 <p className="hint">
                   Drag a sphere sideways to move that corner. Drag it up or down to set that corner's rim or base. Each corner is independent.
                 </p>
+              )}
+              {selected.generator?.kind === 'stairs' && (
+                <>
+                  <p className="hint">
+                    Drag a pin to bend the front edge. The steps run out to the side. Drag any top pin and the whole flight changes height. Drag any side pin and the steps run further out.
+                  </p>
+                  <label>
+                    Stairs
+                    <input
+                      type="number"
+                      min={1}
+                      max={40}
+                      step={1}
+                      value={selected.generator.steps}
+                      onChange={(event) => {
+                        if (selected.generator?.kind !== 'stairs') return
+                        const steps = clampStairSteps(Number(event.target.value))
+                        patchObject(selected.id, { generator: { ...selected.generator, steps } })
+                      }}
+                    />
+                  </label>
+                </>
               )}
               {selected.generator?.kind === 'kit' && (
                 <p className="hint">
@@ -3040,6 +3160,11 @@ function duplicateObject(
                     sideTops: source.generator.sideTops
                       ? [source.generator.sideTops[0], source.generator.sideTops[1]]
                       : undefined,
+                  }
+              : source.generator.kind === 'stairs'
+                ? {
+                    ...source.generator,
+                    points: source.generator.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
                   }
             : {
                 ...source.generator,

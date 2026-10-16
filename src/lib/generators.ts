@@ -1170,6 +1170,247 @@ export function buildPlanterWaxGeometry(
   return geometry
 }
 
+/** Stair flight. The drawn path is the front edge. Steps run out to the side. */
+export const STAIR_WIDTH_M = 2
+export const STAIR_HEIGHT_M = 0.6
+export const DEFAULT_STAIR_STEPS = 4
+export const MIN_STAIR_STEPS = 1
+export const MAX_STAIR_STEPS = 40
+export const MIN_STAIR_WIDTH_M = 0.4
+export const MAX_STAIR_WIDTH_M = 12
+export const MIN_STAIR_HEIGHT_M = 0.15
+
+export function clampStairSteps(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_STAIR_STEPS
+  return Math.min(MAX_STAIR_STEPS, Math.max(MIN_STAIR_STEPS, Math.round(value)))
+}
+
+export function clampStairWidth(value: number) {
+  if (!Number.isFinite(value)) return STAIR_WIDTH_M
+  return Math.min(MAX_STAIR_WIDTH_M, Math.max(MIN_STAIR_WIDTH_M, value))
+}
+
+export function clampStairHeight(value: number) {
+  if (!Number.isFinite(value)) return STAIR_HEIGHT_M
+  return Math.max(MIN_STAIR_HEIGHT_M, value)
+}
+
+type StairEdge = {
+  origin: THREE.Vector3
+  outer: THREE.Vector3
+  floorY: number
+}
+
+/** One sample along the path. `outer` is a full step-run to the left of the path. */
+function stairEdges(points: Vec3[], depth: number): StairEdge[] | null {
+  if (points.length < 2) return null
+  const sections = curbSections(points, depth)
+  if (sections.length < 2) return null
+  let span = 0
+  const edges: StairEdge[] = []
+  for (let i = 0; i < sections.length; i += 1) {
+    const section = sections[i]
+    const origin = new THREE.Vector3(...points[section.pointIndex])
+    if (i > 0) {
+      span += Math.hypot(origin.x - edges[i - 1].origin.x, origin.z - edges[i - 1].origin.z)
+    }
+    edges.push({
+      origin,
+      outer: section.left.clone(),
+      floorY: points[section.pointIndex][1],
+    })
+  }
+  if (span < 0.05) return null
+  return edges
+}
+
+function stairPoint(edge: StairEdge, fraction: number, y: number) {
+  return new THREE.Vector3(
+    edge.origin.x + (edge.outer.x - edge.origin.x) * fraction,
+    y,
+    edge.origin.z + (edge.outer.z - edge.origin.z) * fraction,
+  )
+}
+
+function towardPath(edge: StairEdge) {
+  const dir = new THREE.Vector3(edge.origin.x - edge.outer.x, 0, edge.origin.z - edge.outer.z)
+  if (dir.lengthSq() < 1e-8) return new THREE.Vector3(0, 0, 1)
+  return dir.normalize()
+}
+
+/** Where the edit pins sit. The side pin is the far edge of the flight, a full run off the path. */
+export function stairPinLayout(points: Vec3[], width: number, height: number) {
+  if (!points || points.length < 2) return []
+  const depth = clampStairWidth(width)
+  const rise = clampStairHeight(height)
+  const dirs = points.slice(1).map((point, index) => horizontalDir(points[index], point))
+  return points.map((point, index) => {
+    const left = leftOf(dirs[Math.min(index, dirs.length - 1)]).multiplyScalar(depth)
+    return {
+      base: point,
+      top: [point[0] + left.x, point[1] + rise, point[2] + left.z] as Vec3,
+      width: [point[0] + left.x, point[1], point[2] + left.z] as Vec3,
+    }
+  })
+}
+
+/**
+ * Closed concrete stair. The path is the front edge, and every step is the same
+ * depth out to the side. The rise is a straight line from that edge up by `height`.
+ */
+export function buildStairsGeometry(
+  points: Vec3[],
+  width = STAIR_WIDTH_M,
+  height = STAIR_HEIGHT_M,
+  stepCount = DEFAULT_STAIR_STEPS,
+) {
+  if (!points || points.length < 2) return null
+  const steps = clampStairSteps(stepCount)
+  const depth = clampStairWidth(width)
+  const rise = clampStairHeight(height)
+  const edges = stairEdges(points, depth)
+  if (!edges) return null
+  const startY = points[0][1]
+  const mesh = freshMesh()
+  const tile = STONE_TILE_M
+  const up = new THREE.Vector3(0, 1, 0)
+  const down = new THREE.Vector3(0, -1, 0)
+  const face = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    d: THREE.Vector3,
+    ua: [number, number],
+    ub: [number, number],
+    uc: [number, number],
+    ud: [number, number],
+    outward: THREE.Vector3,
+  ) => {
+    quadMesh(mesh, a, b, c, d, ua, ub, uc, ud, outward)
+  }
+  const groundUv = (v: THREE.Vector3): [number, number] => [v.x / tile, v.z / tile]
+  const combine = (a: THREE.Vector3, b: THREE.Vector3) => {
+    const sum = a.clone().add(b)
+    if (sum.lengthSq() < 1e-8) return a
+    return sum.normalize()
+  }
+
+  for (let i = 0; i < steps; i += 1) {
+    const f0 = i / steps
+    const f1 = (i + 1) / steps
+    const y0 = startY + (rise * i) / steps
+    const y1 = startY + (rise * (i + 1)) / steps
+
+    for (let j = 0; j < edges.length - 1; j += 1) {
+      const a = edges[j]
+      const b = edges[j + 1]
+      const floorA = Math.min(a.floorY, y1 - 0.02)
+      const floorB = Math.min(b.floorY, y1 - 0.02)
+      const riserA0 = stairPoint(a, f0, y0)
+      const riserB0 = stairPoint(b, f0, y0)
+      const riserA1 = stairPoint(a, f0, y1)
+      const riserB1 = stairPoint(b, f0, y1)
+      face(
+        riserB0,
+        riserA0,
+        riserA1,
+        riserB1,
+        groundUv(riserB0),
+        groundUv(riserA0),
+        groundUv(riserA1),
+        groundUv(riserB1),
+        combine(towardPath(a), towardPath(b)),
+      )
+      const treadA0 = stairPoint(a, f0, y1)
+      const treadB0 = stairPoint(b, f0, y1)
+      const treadA1 = stairPoint(a, f1, y1)
+      const treadB1 = stairPoint(b, f1, y1)
+      face(
+        treadA0,
+        treadB0,
+        treadB1,
+        treadA1,
+        groundUv(treadA0),
+        groundUv(treadB0),
+        groundUv(treadB1),
+        groundUv(treadA1),
+        up,
+      )
+      const botA0 = stairPoint(a, f0, floorA)
+      const botB0 = stairPoint(b, f0, floorB)
+      const botA1 = stairPoint(a, f1, floorA)
+      const botB1 = stairPoint(b, f1, floorB)
+      face(
+        botA0,
+        botA1,
+        botB1,
+        botB0,
+        groundUv(botA0),
+        groundUv(botA1),
+        groundUv(botB1),
+        groundUv(botB0),
+        down,
+      )
+
+      if (j === 0) {
+        const out = new THREE.Vector3(a.origin.x - b.origin.x, 0, a.origin.z - b.origin.z)
+        if (out.lengthSq() < 1e-8) out.set(-1, 0, 0)
+        else out.normalize()
+        const u0 = f0 * depth / tile
+        const u1 = f1 * depth / tile
+        face(
+          stairPoint(a, f0, floorA),
+          stairPoint(a, f0, y1),
+          stairPoint(a, f1, y1),
+          stairPoint(a, f1, floorA),
+          [u0, floorA / tile],
+          [u0, y1 / tile],
+          [u1, y1 / tile],
+          [u1, floorA / tile],
+          out,
+        )
+      }
+      if (j === edges.length - 2) {
+        const out = new THREE.Vector3(b.origin.x - a.origin.x, 0, b.origin.z - a.origin.z)
+        if (out.lengthSq() < 1e-8) out.set(1, 0, 0)
+        else out.normalize()
+        const u0 = f0 * depth / tile
+        const u1 = f1 * depth / tile
+        face(
+          stairPoint(b, f0, floorB),
+          stairPoint(b, f1, floorB),
+          stairPoint(b, f1, y1),
+          stairPoint(b, f0, y1),
+          [u0, floorB / tile],
+          [u1, floorB / tile],
+          [u1, y1 / tile],
+          [u0, y1 / tile],
+          out,
+        )
+      }
+      if (i === steps - 1) {
+        const lowA = stairPoint(a, 1, floorA)
+        const lowB = stairPoint(b, 1, floorB)
+        const highA = stairPoint(a, 1, y1)
+        const highB = stairPoint(b, 1, y1)
+        face(
+          lowA,
+          highA,
+          highB,
+          lowB,
+          groundUv(lowA),
+          groundUv(highA),
+          groundUv(highB),
+          groundUv(lowB),
+          combine(towardPath(a).negate(), towardPath(b).negate()),
+        )
+      }
+    }
+  }
+
+  return finishMesh(mesh)
+}
+
 /** Round rail along a centreline. Eight flat faces, one of them on top when the run is level. */
 export const RAIL_RADIUS_M = 0.05
 /** Vertical post under each pin. Thinner than the rail it holds up. */

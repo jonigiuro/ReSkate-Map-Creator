@@ -4,6 +4,7 @@ import type {
   KitGenerator,
   MeshGenerator,
   PlanterGenerator,
+  StairsGenerator,
   PlatformGenerator,
   RailGenerator,
   GrindObject,
@@ -31,6 +32,7 @@ import {
   TRAFFIC_WIDTH_M,
 } from './traffic'
 import { defaultLightTimes, LIGHT_TIMES, parsePropLight } from './lights'
+import { clampStairHeight, clampStairSteps, clampStairWidth } from './generators'
 import { STOP_NAME_MAX } from './travelPoints'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
@@ -132,6 +134,22 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
       sideTops: pair(raw.sideTops),
     }
     return planter
+  }
+  if (raw.kind === 'stairs') {
+    const points = parsePoints(raw.points)
+    if (!points) return undefined
+    const width = raw.width
+    const height = raw.height
+    if (typeof width !== 'number' || typeof height !== 'number') return undefined
+    if (![width, height].every((n) => Number.isFinite(n) && n > 0)) return undefined
+    const stairs: StairsGenerator = {
+      kind: 'stairs',
+      points,
+      width: clampStairWidth(width),
+      height: clampStairHeight(height),
+      steps: clampStairSteps(typeof raw.steps === 'number' ? raw.steps : Number.NaN),
+    }
+    return stairs
   }
   if (raw.kind !== 'curb') return undefined
   const points = parsePoints(raw.points)
