@@ -32,6 +32,7 @@ import {
 import type { DrawGenerator } from './lib/kitLayout'
 import { getPiece } from './lib/library'
 import { usePreviewMaterials } from './lib/previewMaterials'
+import { preloadSceneModels, sceneModelFiles } from './lib/preloadModels'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
 import { SURFACE_SOUNDS } from './lib/surfaceSounds'
 import {
@@ -142,6 +143,7 @@ export default function App() {
   const [snapScaleSize, setSnapScaleSize] = useState('1.1')
   const [snapRotateSize, setSnapRotateSize] = useState('45')
   const [exporting, setExporting] = useState(false)
+  const [sceneLoad, setSceneLoad] = useState<{ done: number; total: number } | null>(null)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [optimizeExport, setOptimizeExport] = useState(true)
   const [chunkSize, setChunkSize] = useState('20')
@@ -221,6 +223,8 @@ export default function App() {
   exportDialogRef.current = exportDialogOpen
   const exportingRef = useRef(false)
   exportingRef.current = exporting
+  const openingMapRef = useRef(false)
+  const assetRevisionsRef = useRef<Record<string, number>>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
   const saveSceneRef = useRef<(saveAs: boolean) => void>(() => {})
   const openSceneRef = useRef<() => void>(() => {})
@@ -326,7 +330,7 @@ export default function App() {
   deleteSelectedRef.current = deleteSelected
 
   function mirrorHorizontal() {
-    if (exportingRef.current || exportDialogRef.current) return
+    if (exportingRef.current || exportDialogRef.current || openingMapRef.current) return
     if (activePiece) {
       if (isInteractivePiece(activePiece)) {
         setStatus('Turn it with right-click. The arrow is the facing.')
@@ -356,7 +360,7 @@ export default function App() {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (exportingRef.current) {
+      if (exportingRef.current || openingMapRef.current) {
         event.preventDefault()
         return
       }
@@ -465,7 +469,7 @@ export default function App() {
     const desktop = window.reskateDesktop
     if (!desktop?.onHistoryCommand) return
     return desktop.onHistoryCommand((key) => {
-      if (exportingRef.current || exportDialogRef.current) return
+      if (exportingRef.current || exportDialogRef.current || openingMapRef.current) return
       if (key === 'y') redoRef.current()
       else undoRef.current()
     })
@@ -1178,13 +1182,35 @@ export default function App() {
     setStatus('Downloaded the scene JSON')
   }
 
-  function loadSceneData(data: unknown, path: string | null) {
+  async function loadSceneData(data: unknown, path: string | null) {
+    if (openingMapRef.current) return
+    let next: MapScene
     try {
-      const next = parseSceneFile(data)
-      adoptScene(next, path)
-      setStatus(path ? `Opened ${sceneFileName(path)}` : 'Opened scene')
+      next = parseSceneFile(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      return
+    }
+    const files = sceneModelFiles(next)
+    const opened = path ? `Opened ${sceneFileName(path)}` : 'Opened scene'
+    if (files.length === 0) {
+      adoptScene(next, path)
+      setStatus(opened)
+      return
+    }
+    openingMapRef.current = true
+    flushSync(() => setSceneLoad({ done: 0, total: files.length }))
+    try {
+      await afterPaint()
+      await preloadSceneModels(files, (file) => assetRevisionsRef.current[file] ?? 0, (done) => {
+        setSceneLoad({ done, total: files.length })
+      })
+      adoptScene(next, path)
+      await afterPaint()
+      setStatus(opened)
+    } finally {
+      openingMapRef.current = false
+      setSceneLoad(null)
     }
   }
 
@@ -1250,6 +1276,7 @@ export default function App() {
     ...catalog.pieces.map((piece) => [piece.assetFile, piece.revision] as const),
     ...(catalog.kits ?? []).map((kit) => [kit.assetFile, kit.revision] as const),
   ])
+  assetRevisionsRef.current = assetRevisions
   const active = catalog.pieces.find((piece) => piece.id === activePiece)
   const heldAssetFile = active?.assetFile && isLightsFolderAsset(active.assetFile) ? active.assetFile : null
   useEffect(() => {
@@ -1304,9 +1331,9 @@ export default function App() {
   const browsingCatalog = !(BUILTIN_LIBRARY_ROOTS as readonly string[]).includes(categoryPath[0] ?? '')
 
   return (
-    <div className="app" aria-busy={exporting}>
+    <div className="app" aria-busy={exporting || sceneLoad !== null}>
       <MirrorHotkey onMirror={() => mirrorRef.current()} />
-      <div className="app-shell" inert={exporting}>
+      <div className="app-shell" inert={exporting || sceneLoad !== null}>
       <header className="topbar">
         <div className="brand-block">
           <div className="file-row">
@@ -2532,6 +2559,7 @@ export default function App() {
       </div>
       </div>
       {exporting && <ExportBusy />}
+      {sceneLoad && <SceneLoadBusy done={sceneLoad.done} total={sceneLoad.total} />}
       {exportDialogOpen && (
         <ExportDialog
           optimize={optimizeExport}
@@ -2545,6 +2573,28 @@ export default function App() {
           }}
         />
       )}
+    </div>
+  )
+}
+
+function afterPaint() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve())
+    })
+  })
+}
+
+function SceneLoadBusy({ done, total }: { done: number; total: number }) {
+  return (
+    <div className="export-busy" role="status" aria-live="polite" aria-busy="true">
+      <div className="export-busy-card">
+        <span className="export-spinner" aria-hidden="true" />
+        <strong>Opening map</strong>
+        <p className="hint">
+          Loading models, {done} of {total}. The editor stays locked until they are ready.
+        </p>
+      </div>
     </div>
   )
 }
