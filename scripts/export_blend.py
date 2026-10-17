@@ -699,11 +699,25 @@ CURB_WAX_BANDS = ((0.062, 0.215), (0.328, 0.479))
 PLANTER_WAX_BANDS = ((0.062, 0.215), (0.328, 0.479), (0.551, 0.682), (0.773, 0.938))
 METAL_RAIL_PACKED = 2976
 METAL_RAIL_ID = "material_2976"
+CONCRETE_SOUND_ID = "material_0096"
 
 
 def stamp_metal_rail(mat):
     """Surface sound. 2976 is Metal Rail, the id the game already uses for metal rails."""
     return stamp_surface_sound(mat, METAL_RAIL_ID)
+
+
+def concrete_sound_material(source, cache_name):
+    """A copy whose original contact sound is concrete. Leaves the shared source alone."""
+    if source is None:
+        return source
+    packed = SURFACE_SOUND_PACKED.get(CONCRETE_SOUND_ID)
+    cached = bpy.data.materials.get(cache_name)
+    if cached is not None and int(cached.get("sk8_collision_material_packed") or -1) == packed:
+        return cached
+    copy = source.copy()
+    copy.name = cache_name
+    return stamp_surface_sound(copy, CONCRETE_SOUND_ID)
 
 
 def stamp_surface_sound(mat, identifier):
@@ -2177,6 +2191,96 @@ def _planter_rings(points, rims):
     return None
 
 
+def _planter_edge_layout(span, band, brick_lead, brick_tail, rise):
+    """Flat run at each end, as long as the curb is wide, then one straight connection."""
+    lead = band
+    tail = band
+    min_slope = min(0.02, span * 0.25) if rise > 0.004 else 0.0
+    if lead + tail > span - min_slope:
+        room = max(0.0, span - min_slope)
+        scale = room / (lead + tail) if lead + tail > 1e-8 else 0.0
+        lead *= scale
+        tail *= scale
+    raw = sorted(
+        min(span, max(0.0, value))
+        for value in (0.0, brick_lead, lead, span - tail, span - brick_tail, span)
+    )
+    stations = []
+    for value in raw:
+        if not stations or value - stations[-1] > 1e-4:
+            stations.append(value)
+    return {
+        "span": span,
+        "lead": lead,
+        "tail": tail,
+        "brick_lead": brick_lead,
+        "brick_tail": brick_tail,
+        "stations": stations,
+    }
+
+
+def _planter_profile_y(distance, y0, y1, layout):
+    if distance <= layout["lead"] + 1e-6:
+        return y0
+    if distance >= layout["span"] - layout["tail"] - 1e-6:
+        return y1
+    run = layout["span"] - layout["lead"] - layout["tail"]
+    if run < 1e-5:
+        return y0
+    return y0 + (y1 - y0) * ((distance - layout["lead"]) / run)
+
+
+def _planter_point_at(start, end, distance, span, y):
+    t = distance / span if span > 1e-6 else 0.0
+    return (
+        start["x"] + (end["x"] - start["x"]) * t,
+        y,
+        start["z"] + (end["z"] - start["z"]) * t,
+    )
+
+
+def _planter_edge_distance(origin, end, point):
+    span = math.hypot(end["x"] - origin["x"], end["z"] - origin["z"]) or 1.0
+    dirx = (end["x"] - origin["x"]) / span
+    dirz = (end["z"] - origin["z"]) / span
+    return (point["x"] - origin["x"]) * dirx + (point["z"] - origin["z"]) * dirz
+
+
+def _planter_on_ring(brick_start, brick_end, outer_start, outer_end, distance, y):
+    sa = _planter_edge_distance(outer_start, outer_end, brick_start)
+    sb = _planter_edge_distance(outer_start, outer_end, brick_end)
+    t = 0.0 if abs(sb - sa) < 1e-6 else (distance - sa) / (sb - sa)
+    u = min(1.0, max(0.0, t))
+    if u <= 1e-5:
+        return 0.0, (brick_start["x"], y, brick_start["z"])
+    if u >= 1.0 - 1e-5:
+        return 1.0, (brick_end["x"], y, brick_end["z"])
+    return u, (
+        brick_start["x"] + (brick_end["x"] - brick_start["x"]) * u,
+        y,
+        brick_start["z"] + (brick_end["z"] - brick_start["z"]) * u,
+    )
+
+
+def _planter_quad_planar(a, b, c, d):
+    def sub(p, q):
+        return (p[0] - q[0], p[1] - q[1], p[2] - q[2])
+
+    def cross(p, q):
+        return (p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0])
+
+    def dot(p, q):
+        return p[0] * q[0] + p[1] * q[1] + p[2] * q[2]
+
+    n0 = cross(sub(b, a), sub(c, a))
+    n1 = cross(sub(c, a), sub(d, a))
+    l0 = math.sqrt(dot(n0, n0))
+    l1 = math.sqrt(dot(n1, n1))
+    if l0 < 1e-8 or l1 < 1e-8:
+        return True
+    return dot(n0, n1) / (l0 * l1) > math.cos(math.radians(0.5))
+
+
 def make_planter_mesh(name, points, rims, project_root, materials=None):
     """Brick wall, granite rim, and grass, following an outline. Each corner has its own base and rim."""
     rings = _planter_rings(points, rims)
@@ -2203,34 +2307,6 @@ def make_planter_mesh(name, points, rims, project_root, materials=None):
     def vertex(corner, y):
         return (corner["x"], y, corner["z"])
 
-    def wall(slot, ring, y_low, y_high, face_outward, tile):
-        along = 0.0
-        count = len(ring)
-        for index, start in enumerate(ring):
-            end = ring[(index + 1) % count]
-            span = math.hypot(end["x"] - start["x"], end["z"] - start["z"])
-            if span < 1e-5:
-                continue
-            outward = _left_of(_horiz_dir((start["x"], 0.0, start["z"]), (end["x"], 0.0, end["z"])))
-            if not face_outward:
-                outward = (-outward[0], 0.0, -outward[2])
-            low_a, low_b = y_low(start), y_low(end)
-            high_a, high_b = y_high(start), y_high(end)
-            u0, u1 = along / tile, (along + span) / tile
-            along += span
-            quad(
-                slot,
-                vertex(start, low_a),
-                vertex(end, low_b),
-                vertex(end, high_b),
-                vertex(start, high_a),
-                (u0, low_a / tile),
-                (u1, low_b / tile),
-                (u1, high_b / tile),
-                (u0, high_a / tile),
-                outward,
-            )
-
     def cap(slot, ring, y_at, outward, tile):
         flat = [(corner["x"], 0.0, corner["z"]) for corner in ring]
         for i0, i1, i2 in _platform_triangles(flat):
@@ -2255,96 +2331,198 @@ def make_planter_mesh(name, points, rims, project_root, materials=None):
         scale = -1.0 if face_up else 1.0
         return _unit((scale * slope * dirx, 1.0 if face_up else -1.0, scale * slope * dirz))
 
-    def blend_normal(a, b):
-        summed = (a[0] + b[0], a[1] + b[1], a[2] + b[2])
-        if summed[0] * summed[0] + summed[1] * summed[1] + summed[2] * summed[2] < 1e-8:
-            return a
-        return _unit(summed)
-
-    def slope_strip(slot, outer_a, outer_b, inner_a, inner_b, y0, y1, face_up, tile, start_n, end_n, side_n):
-        span = math.hypot(outer_b["x"] - outer_a["x"], outer_b["z"] - outer_a["z"])
-        if span < 1e-5:
-            return
-        rise = abs(y1 - y0)
-
-        def ang(a, b):
-            return math.acos(max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])))
-
-        slanted = rise > 0.004 or ang(start_n, side_n) > 0.02 or ang(end_n, side_n) > 0.02
-        segments = min(80, max(2, math.ceil(span / 0.08))) if slanted else 1
-        outward = up if face_up else down
-
-        def at(a, b, t, y):
-            return (a["x"] + (b["x"] - a["x"]) * t, y, a["z"] + (b["z"] - a["z"]) * t)
-
-        def normal_at(t):
-            if t <= 0.0:
-                return start_n
-            if t >= 1.0:
-                return end_n
-            return side_n
-
-        for step in range(segments):
-            t0 = step / segments
-            t1 = (step + 1) / segments
-            h0 = y0 + (y1 - y0) * t0
-            h1 = y0 + (y1 - y0) * t1
-            a = at(outer_a, outer_b, t0, h0)
-            b = at(outer_a, outer_b, t1, h1)
-            c = at(inner_a, inner_b, t1, h1)
-            d = at(inner_a, inner_b, t0, h0)
-            n0, n1 = normal_at(t0), normal_at(t1)
-            add(slot, a, b, c, (a[0] / tile, a[2] / tile), (b[0] / tile, b[2] / tile), (c[0] / tile, c[2] / tile), outward, (n0, n1, n1))
-            add(slot, a, c, d, (a[0] / tile, a[2] / tile), (c[0] / tile, c[2] / tile), (d[0] / tile, d[2] / tile), outward, (n0, n1, n0))
-
     outer = rings["outer"]
     brick_ring = rings["brick"]
     inner = rings["inner"]
     count = len(outer)
-    # Outer granite face stays a straight trapezoid between the corner heights.
-    wall(1, outer, lambda corner: corner["brick"], lambda corner: corner["rim"], True, STONE_TILE_M)
-    wall(0, brick_ring, lambda corner: corner["base"], lambda corner: corner["brick"], True, BRICK_TILE_M)
-    wall(1, inner, lambda corner: corner["brick"], lambda corner: corner["rim"], False, STONE_TILE_M)
-    rim_normals = [
-        slope_normal(outer[index], outer[(index + 1) % count], outer[index]["rim"], outer[(index + 1) % count]["rim"], True)
-        for index in range(count)
-    ]
-    brick_normals = [
-        slope_normal(outer[index], outer[(index + 1) % count], outer[index]["brick"], outer[(index + 1) % count]["brick"], False)
-        for index in range(count)
-    ]
+    band = rings["overhang"] + rings["wall"]
+    layouts = []
+    for index, corner in enumerate(outer):
+        end = outer[(index + 1) % count]
+        span = math.hypot(end["x"] - corner["x"], end["z"] - corner["z"])
+        brick_lead = min(span, max(0.0, _planter_edge_distance(corner, end, brick_ring[index])))
+        brick_tail = min(span, max(0.0, span - _planter_edge_distance(corner, end, brick_ring[(index + 1) % count])))
+        layouts.append(
+            _planter_edge_layout(span, band, brick_lead, brick_tail, abs(end["rim"] - corner["rim"]))
+        )
+
+    def top_uv(point):
+        return (point[0] / STONE_TILE_M, point[2] / STONE_TILE_M)
+
+    def fan_to(chain, hub, outward, tile):
+        for step in range(len(chain) - 1):
+            a = chain[step]
+            b = chain[step + 1]
+            add(1, a, b, hub, (a[0] / tile, a[2] / tile), (b[0] / tile, b[2] / tile), (hub[0] / tile, hub[2] / tile), outward)
+
+    for index in range(count):
+        prev = (index - 1) % count
+        incoming = layouts[prev]
+        outgoing = layouts[index]
+        prev_start = outer[prev]
+        prev_end = outer[index]
+        next_end = outer[(index + 1) % count]
+        rim = outer[index]["rim"]
+        brick_y = outer[index]["brick"]
+        chain = []
+        for distance in incoming["stations"]:
+            if incoming["span"] - distance > incoming["tail"] + 1e-4:
+                continue
+            if abs(distance - incoming["span"]) < 1e-4:
+                continue
+            chain.append(_planter_point_at(prev_start, prev_end, distance, incoming["span"], rim))
+        for distance in outgoing["stations"]:
+            if distance > outgoing["lead"] + 1e-4:
+                continue
+            chain.append(_planter_point_at(outer[index], next_end, distance, outgoing["span"], rim))
+        fan_to(chain, vertex(inner[index], rim), up, STONE_TILE_M)
+        under_chain = []
+        for distance in incoming["stations"]:
+            if incoming["span"] - distance > incoming["brick_tail"] + 1e-4:
+                continue
+            if abs(distance - incoming["span"]) < 1e-4:
+                continue
+            under_chain.append(_planter_point_at(prev_start, prev_end, distance, incoming["span"], brick_y))
+        for distance in outgoing["stations"]:
+            if distance > outgoing["brick_lead"] + 1e-4:
+                continue
+            under_chain.append(_planter_point_at(outer[index], next_end, distance, outgoing["span"], brick_y))
+        fan_to(under_chain, vertex(brick_ring[index], brick_y), down, STONE_TILE_M)
+
+    along = 0.0
     for index, start in enumerate(outer):
         nxt = (index + 1) % count
-        prev = (index - 1) % count
         end = outer[nxt]
-        slope_strip(
-            1,
-            start,
-            end,
-            inner[index],
-            inner[nxt],
-            start["rim"],
-            end["rim"],
-            True,
-            STONE_TILE_M,
-            blend_normal(rim_normals[prev], rim_normals[index]),
-            blend_normal(rim_normals[index], rim_normals[nxt]),
-            rim_normals[index],
-        )
-        slope_strip(
-            1,
-            start,
-            end,
-            brick_ring[index],
-            brick_ring[nxt],
-            start["brick"],
-            end["brick"],
-            False,
-            STONE_TILE_M,
-            blend_normal(brick_normals[prev], brick_normals[index]),
-            blend_normal(brick_normals[index], brick_normals[nxt]),
-            brick_normals[index],
-        )
+        layout = layouts[index]
+        if layout["span"] < 1e-5:
+            continue
+        outward = _left_of(_horiz_dir((start["x"], 0.0, start["z"]), (end["x"], 0.0, end["z"])))
+        brick_start = brick_ring[index]
+        brick_end = brick_ring[nxt]
+        brick_out = _left_of(_horiz_dir((brick_start["x"], 0.0, brick_start["z"]), (brick_end["x"], 0.0, brick_end["z"])))
+        slope_start = layout["lead"]
+        slope_end = layout["span"] - layout["tail"]
+        rim0, rim1 = start["rim"], end["rim"]
+        brick0, brick1 = start["brick"], end["brick"]
+
+        def emit_wall(s0, s1, layout=layout, start=start, end=end, outward=outward):
+            y0 = _planter_profile_y(s0, brick0, brick1, layout)
+            y1 = _planter_profile_y(s1, brick0, brick1, layout)
+            h0 = _planter_profile_y(s0, rim0, rim1, layout)
+            h1 = _planter_profile_y(s1, rim0, rim1, layout)
+            u0 = (along + s0) / STONE_TILE_M
+            u1 = (along + s1) / STONE_TILE_M
+            quad(
+                1,
+                _planter_point_at(start, end, s0, layout["span"], y0),
+                _planter_point_at(start, end, s1, layout["span"], y1),
+                _planter_point_at(start, end, s1, layout["span"], h1),
+                _planter_point_at(start, end, s0, layout["span"], h0),
+                (u0, y0 / STONE_TILE_M),
+                (u1, y1 / STONE_TILE_M),
+                (u1, h1 / STONE_TILE_M),
+                (u0, h0 / STONE_TILE_M),
+                outward,
+            )
+
+        for station in range(len(layout["stations"]) - 1):
+            s0 = layout["stations"][station]
+            s1 = layout["stations"][station + 1]
+            slope_pair = abs(s0 - slope_start) < 1e-3 and abs(s1 - slope_end) < 1e-3 and s1 - s0 > 1e-4
+            if not slope_pair:
+                emit_wall(s0, s1)
+            on_brick = s0 >= layout["brick_lead"] - 1e-4 and s1 <= layout["span"] - layout["brick_tail"] + 1e-4
+            if not on_brick or slope_pair:
+                continue
+            low0 = _planter_profile_y(s0, brick0, brick1, layout)
+            low1 = _planter_profile_y(s1, brick0, brick1, layout)
+            outer0 = _planter_point_at(start, end, s0, layout["span"], low0)
+            outer1 = _planter_point_at(start, end, s1, layout["span"], low1)
+            _u1, inner1 = _planter_on_ring(brick_start, brick_end, start, end, s1, low1)
+            u0, inner0 = _planter_on_ring(brick_start, brick_end, start, end, s0, low0)
+            quad(1, outer0, outer1, inner1, inner0, top_uv(outer0), top_uv(outer1), top_uv(inner1), top_uv(inner0), down)
+            base0 = brick_start["base"] + (brick_end["base"] - brick_start["base"]) * u0
+            base1 = brick_start["base"] + (brick_end["base"] - brick_start["base"]) * _u1
+            bu0 = (along + s0) / BRICK_TILE_M
+            bu1 = (along + s1) / BRICK_TILE_M
+            quad(
+                0,
+                (inner0[0], base0, inner0[2]),
+                (inner1[0], base1, inner1[2]),
+                (inner1[0], low1, inner1[2]),
+                (inner0[0], low0, inner0[2]),
+                (bu0, base0 / BRICK_TILE_M),
+                (bu1, base1 / BRICK_TILE_M),
+                (bu1, low1 / BRICK_TILE_M),
+                (bu0, low0 / BRICK_TILE_M),
+                brick_out,
+            )
+
+        if slope_end - slope_start > 1e-4:
+            a = _planter_point_at(start, end, slope_start, layout["span"], rim0)
+            b = _planter_point_at(start, end, slope_end, layout["span"], rim1)
+            c = vertex(inner[nxt], rim1)
+            d = vertex(inner[index], rim0)
+            run = slope_end - slope_start
+            segments = 1 if _planter_quad_planar(a, b, c, d) else min(40, max(2, math.ceil(run / 0.08)))
+            side_n = slope_normal({"x": a[0], "z": a[2]}, {"x": b[0], "z": b[2]}, rim0, rim1, True)
+            under_n = (-side_n[0], -side_n[1], -side_n[2])
+            inner_out = _left_of(_horiz_dir((inner[index]["x"], 0.0, inner[index]["z"]), (inner[nxt]["x"], 0.0, inner[nxt]["z"])))
+            inner_out = (-inner_out[0], 0.0, -inner_out[2])
+            inner_len = math.hypot(inner[nxt]["x"] - inner[index]["x"], inner[nxt]["z"] - inner[index]["z"]) or 1.0
+            for step in range(segments):
+                u0 = step / segments
+                u1 = (step + 1) / segments
+                s0 = slope_start + run * u0
+                s1 = slope_start + run * u1
+                h0 = rim0 + (rim1 - rim0) * u0
+                h1 = rim0 + (rim1 - rim0) * u1
+                low0 = brick0 + (brick1 - brick0) * u0
+                low1 = brick0 + (brick1 - brick0) * u1
+                emit_wall(s0, s1)
+                oa = _planter_point_at(start, end, s0, layout["span"], h0)
+                ob = _planter_point_at(start, end, s1, layout["span"], h1)
+                ia = _planter_point_at(inner[index], inner[nxt], u0 * inner_len, inner_len, h0)
+                ib = _planter_point_at(inner[index], inner[nxt], u1 * inner_len, inner_len, h1)
+                add(1, oa, ob, ib, top_uv(oa), top_uv(ob), top_uv(ib), up, (side_n, side_n, side_n))
+                add(1, oa, ib, ia, top_uv(oa), top_uv(ib), top_uv(ia), up, (side_n, side_n, side_n))
+                ua = _planter_point_at(start, end, s0, layout["span"], low0)
+                ub = _planter_point_at(start, end, s1, layout["span"], low1)
+                _bu, ba = _planter_on_ring(brick_start, brick_end, start, end, s0, low0)
+                brick_u, bb = _planter_on_ring(brick_start, brick_end, start, end, s1, low1)
+                add(1, ua, bb, ub, top_uv(ua), top_uv(bb), top_uv(ub), down, (under_n, under_n, under_n))
+                add(1, ua, ba, bb, top_uv(ua), top_uv(ba), top_uv(bb), down, (under_n, under_n, under_n))
+                base_a = brick_start["base"] + (brick_end["base"] - brick_start["base"]) * _bu
+                base_b = brick_start["base"] + (brick_end["base"] - brick_start["base"]) * brick_u
+                bu0 = (along + s0) / BRICK_TILE_M
+                bu1 = (along + s1) / BRICK_TILE_M
+                quad(
+                    0,
+                    (ba[0], base_a, ba[2]),
+                    (bb[0], base_b, bb[2]),
+                    (bb[0], low1, bb[2]),
+                    (ba[0], low0, ba[2]),
+                    (bu0, base_a / BRICK_TILE_M),
+                    (bu1, base_b / BRICK_TILE_M),
+                    (bu1, low1 / BRICK_TILE_M),
+                    (bu0, low0 / BRICK_TILE_M),
+                    brick_out,
+                )
+                iu0 = (along + s0) / STONE_TILE_M
+                iu1 = (along + s1) / STONE_TILE_M
+                quad(
+                    1,
+                    (ia[0], low0, ia[2]),
+                    (ib[0], low1, ib[2]),
+                    ib,
+                    ia,
+                    (iu0, low0 / STONE_TILE_M),
+                    (iu1, low1 / STONE_TILE_M),
+                    (iu1, h1 / STONE_TILE_M),
+                    (iu0, h0 / STONE_TILE_M),
+                    inner_out,
+                )
+        along += layout["span"]
     cap(0, brick_ring, lambda corner: corner["base"], down, BRICK_TILE_M)
     cap(2, inner, lambda corner: corner["brick"], up, STONE_TILE_M)
 
@@ -2387,25 +2565,32 @@ def make_planter_wax_mesh(name, points, rims, project_root):
         lift = CURB_WAX_LIFT_M + (index % len(PLANTER_WAX_BANDS)) * 0.0004
         outward = _left_of(_horiz_dir((start["x"], 0.0, start["z"]), (end["x"], 0.0, end["z"])))
         inward = (-outward[0], 0.0, -outward[2])
+        curb = rings["overhang"] + rings["wall"]
+        brick_lead = min(span, max(0.0, _planter_edge_distance(start, end, rings["brick"][index])))
+        brick_tail = min(span, max(0.0, span - _planter_edge_distance(start, end, rings["brick"][(index + 1) % count])))
+        layout = _planter_edge_layout(span, curb, brick_lead, brick_tail, abs(end["rim"] - start["rim"]))
 
-        def lip(corner, outward=outward, inward=inward, lift=lift):
-            drop = min(reach, max(0.02, corner["rim"] - corner["base"] - 0.01))
-            outside = (
-                corner["x"] + outward[0] * CURB_WAX_LIFT_M,
-                corner["rim"] + lift,
-                corner["z"] + outward[2] * CURB_WAX_LIFT_M,
-            )
-            inside = (corner["x"] + inward[0] * reach, corner["rim"] + lift, corner["z"] + inward[2] * reach)
+        def lip(distance, outward=outward, inward=inward, lift=lift, layout=layout, start=start, end=end, span=span):
+            y = _planter_profile_y(distance, start["rim"], end["rim"], layout)
+            base = start["base"] + (end["base"] - start["base"]) * (distance / span if span > 1e-6 else 0.0)
+            drop = min(reach, max(0.02, y - base - 0.01))
+            at = _planter_point_at(start, end, distance, span, y + lift)
+            outside = (at[0] + outward[0] * CURB_WAX_LIFT_M, at[1], at[2] + outward[2] * CURB_WAX_LIFT_M)
+            inside = (at[0] + inward[0] * reach, at[1], at[2] + inward[2] * reach)
             fallen = (outside[0], outside[1] - drop, outside[2])
             return outside, inside, fallen
 
-        a = lip(start)
-        b = lip(end)
-        u1 = span / tile
-        _add_tri(verts, faces, uvs, a[0], a[1], b[1], (0.0, band[0]), (0.0, band[1]), (u1, band[1]), (0.0, 1.0, 0.0))
-        _add_tri(verts, faces, uvs, a[0], b[1], b[0], (0.0, band[0]), (u1, band[1]), (u1, band[0]), (0.0, 1.0, 0.0))
-        _add_tri(verts, faces, uvs, a[0], b[0], b[2], (0.0, band[0]), (u1, band[0]), (u1, band[1]), outward)
-        _add_tri(verts, faces, uvs, a[0], b[2], a[2], (0.0, band[0]), (u1, band[1]), (0.0, band[1]), outward)
+        for station in range(len(layout["stations"]) - 1):
+            s0 = layout["stations"][station]
+            s1 = layout["stations"][station + 1]
+            a = lip(s0)
+            b = lip(s1)
+            u0 = s0 / tile
+            u1 = s1 / tile
+            _add_tri(verts, faces, uvs, a[0], a[1], b[1], (u0, band[0]), (u0, band[1]), (u1, band[1]), (0.0, 1.0, 0.0))
+            _add_tri(verts, faces, uvs, a[0], b[1], b[0], (u0, band[0]), (u1, band[1]), (u1, band[0]), (0.0, 1.0, 0.0))
+            _add_tri(verts, faces, uvs, a[0], b[0], b[2], (u0, band[0]), (u1, band[0]), (u1, band[1]), outward)
+            _add_tri(verts, faces, uvs, a[0], b[2], a[2], (u0, band[0]), (u1, band[1]), (u0, band[1]), outward)
     if not faces:
         return None
     obj = _link_mesh(
@@ -4929,7 +5114,7 @@ def build(scene):
                         overrides,
                         sounds,
                         "striped_concrete",
-                        lambda: striped_concrete_material(project_root),
+                        lambda: concrete_sound_material(striped_concrete_material(project_root), "stairs_steps"),
                     ),
                     closed=gen.get("closed") is True,
                     reversed=gen.get("reversed") is True,
@@ -4939,7 +5124,7 @@ def build(scene):
                         overrides,
                         sounds,
                         "concrete",
-                        lambda: concrete_material(project_root),
+                        lambda: concrete_sound_material(concrete_material(project_root), "stairs_tread"),
                     ),
                 )
                 if obj is None:

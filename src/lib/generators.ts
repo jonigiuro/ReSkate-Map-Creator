@@ -1206,44 +1206,6 @@ function planterVertex(corner: PlanterCorner, y: number) {
   return new THREE.Vector3(corner.x, y, corner.z)
 }
 
-function addPlanterWall(
-  mesh: MeshArrays,
-  ring: PlanterCorner[],
-  yLow: (corner: PlanterCorner) => number,
-  yHigh: (corner: PlanterCorner) => number,
-  faceOutward: boolean,
-  tile: number,
-) {
-  let along = 0
-  for (let index = 0; index < ring.length; index += 1) {
-    const a = ring[index]
-    const b = ring[(index + 1) % ring.length]
-    const span = Math.hypot(b.x - a.x, b.z - a.z)
-    if (span < 1e-5) continue
-    const outward = leftOf(horizontalDir([a.x, 0, a.z], [b.x, 0, b.z]))
-    if (!faceOutward) outward.negate()
-    const u0 = along / tile
-    const u1 = (along + span) / tile
-    along += span
-    const lowA = yLow(a)
-    const lowB = yLow(b)
-    const highA = yHigh(a)
-    const highB = yHigh(b)
-    quadMesh(
-      mesh,
-      planterVertex(a, lowA),
-      planterVertex(b, lowB),
-      planterVertex(b, highB),
-      planterVertex(a, highA),
-      [u0, lowA / tile],
-      [u1, lowB / tile],
-      [u1, highB / tile],
-      [u0, highA / tile],
-      outward,
-    )
-  }
-}
-
 function addPlanterCap(
   mesh: MeshArrays,
   ring: PlanterCorner[],
@@ -1283,111 +1245,318 @@ function planterSlopeNormal(start: PlanterCorner, end: PlanterCorner, y0: number
   return new THREE.Vector3(scale * slope * dirx, up ? 1 : -1, scale * slope * dirz).normalize()
 }
 
-function blendPlanterNormal(a: THREE.Vector3, b: THREE.Vector3) {
-  const sum = a.clone().add(b)
-  if (sum.lengthSq() < 1e-8) return a.clone()
-  return sum.normalize()
+type PlanterEdgeLayout = { span: number; lead: number; tail: number; stations: number[] }
+
+/** Flat square at each end, as long as the curb is wide, then one straight run between them. */
+function planterEdgeLayout(span: number, band: number, brickLead: number, brickTail: number, rise: number): PlanterEdgeLayout {
+  let lead = band
+  let tail = band
+  const minSlope = rise > 0.004 ? Math.min(0.02, span * 0.25) : 0
+  if (lead + tail > span - minSlope) {
+    const room = Math.max(0, span - minSlope)
+    const scale = lead + tail > 1e-8 ? room / (lead + tail) : 0
+    lead *= scale
+    tail *= scale
+  }
+  const raw = [0, brickLead, lead, span - tail, span - brickTail, span]
+    .map((value) => Math.min(span, Math.max(0, value)))
+    .sort((a, b) => a - b)
+  const stations: number[] = []
+  for (const value of raw) {
+    if (stations.length === 0 || value - stations[stations.length - 1] > 1e-4) stations.push(value)
+  }
+  return { span, lead, tail, stations }
 }
 
-/**
- * Top of one curb. Height runs straight from one corner to the next and stays level
- * across the block. The block is split along its length so that surface stays smooth,
- * and the corner normal is shared with the next side so the turn doesn't step.
- */
-function addPlanterSlope(
-  mesh: MeshArrays,
-  outerA: PlanterCorner,
-  outerB: PlanterCorner,
-  innerA: PlanterCorner,
-  innerB: PlanterCorner,
-  y0: number,
-  y1: number,
-  up: boolean,
-  tile: number,
-  startNormal: THREE.Vector3,
-  endNormal: THREE.Vector3,
-  sideNormal: THREE.Vector3,
+function planterProfileY(distance: number, y0: number, y1: number, layout: PlanterEdgeLayout) {
+  if (distance <= layout.lead + 1e-6) return y0
+  if (distance >= layout.span - layout.tail - 1e-6) return y1
+  const run = layout.span - layout.lead - layout.tail
+  if (run < 1e-5) return y0
+  return y0 + (y1 - y0) * ((distance - layout.lead) / run)
+}
+
+function planterPointAt(start: PlanterCorner, end: PlanterCorner, distance: number, span: number, y: number) {
+  const t = span > 1e-6 ? distance / span : 0
+  return new THREE.Vector3(start.x + (end.x - start.x) * t, y, start.z + (end.z - start.z) * t)
+}
+
+/** Where `point` sits along the outer edge, in metres from `origin`. */
+function planterEdgeDistance(origin: PlanterCorner, end: PlanterCorner, point: PlanterCorner) {
+  const span = Math.hypot(end.x - origin.x, end.z - origin.z) || 1
+  const dirx = (end.x - origin.x) / span
+  const dirz = (end.z - origin.z) / span
+  return (point.x - origin.x) * dirx + (point.z - origin.z) * dirz
+}
+
+function planterOnRing(
+  brickStart: PlanterCorner,
+  brickEnd: PlanterCorner,
+  outerStart: PlanterCorner,
+  outerEnd: PlanterCorner,
+  distance: number,
+  y: number,
 ) {
-  const span = Math.hypot(outerB.x - outerA.x, outerB.z - outerA.z)
-  if (span < 1e-5) return
-  const rise = Math.abs(y1 - y0)
-  const slanted =
-    rise > 0.004 || startNormal.angleTo(sideNormal) > 0.02 || endNormal.angleTo(sideNormal) > 0.02
-  const segments = slanted ? Math.min(80, Math.max(2, Math.ceil(span / 0.08))) : 1
-  const outward = up ? UP : new THREE.Vector3(0, -1, 0)
-  const at = (from: PlanterCorner, to: PlanterCorner, t: number, y: number) =>
-    new THREE.Vector3(from.x + (to.x - from.x) * t, y, from.z + (to.z - from.z) * t)
-  const uv = (point: THREE.Vector3): [number, number] => [point.x / tile, point.z / tile]
-  const normalAt = (t: number) => (t <= 0 ? startNormal : t >= 1 ? endNormal : sideNormal)
-  for (let step = 0; step < segments; step += 1) {
-    const t0 = step / segments
-    const t1 = (step + 1) / segments
-    const h0 = y0 + (y1 - y0) * t0
-    const h1 = y0 + (y1 - y0) * t1
-    const a = at(outerA, outerB, t0, h0)
-    const b = at(outerA, outerB, t1, h1)
-    const c = at(innerA, innerB, t1, h1)
-    const d = at(innerA, innerB, t0, h0)
-    const n0 = normalAt(t0)
-    const n1 = normalAt(t1)
-    addTri(mesh.positions, mesh.normals, mesh.uvs, mesh.tangents, a, b, c, uv(a), uv(b), uv(c), outward, [n0, n1, n1])
-    addTri(mesh.positions, mesh.normals, mesh.uvs, mesh.tangents, a, c, d, uv(a), uv(c), uv(d), outward, [n0, n1, n0])
+  const sa = planterEdgeDistance(outerStart, outerEnd, brickStart)
+  const sb = planterEdgeDistance(outerStart, outerEnd, brickEnd)
+  const t = Math.abs(sb - sa) < 1e-6 ? 0 : (distance - sa) / (sb - sa)
+  const u = Math.min(1, Math.max(0, t))
+  if (u <= 1e-5) return { u: 0, point: new THREE.Vector3(brickStart.x, y, brickStart.z) }
+  if (u >= 1 - 1e-5) return { u: 1, point: new THREE.Vector3(brickEnd.x, y, brickEnd.z) }
+  return {
+    u,
+    point: new THREE.Vector3(
+      brickStart.x + (brickEnd.x - brickStart.x) * u,
+      y,
+      brickStart.z + (brickEnd.z - brickStart.z) * u,
+    ),
   }
 }
 
+function planterQuadPlanar(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3) {
+  const n0 = b.clone().sub(a).cross(c.clone().sub(a))
+  const n1 = c.clone().sub(a).cross(d.clone().sub(a))
+  if (n0.lengthSq() < 1e-12 || n1.lengthSq() < 1e-12) return true
+  return n0.normalize().dot(n1.normalize()) > Math.cos((0.5 * Math.PI) / 180)
+}
+
 /**
- * Brick, granite, and grass along the outline. A slanted curb keeps each corner's height,
- * so neighboring sides meet on the corner instead of stepping or folding across the block.
+ * Brick, granite, and grass along the outline. Each corner of the curb is a flat square
+ * the width of the curb. The side between two squares is one straight slope.
  */
 function addSlopedPlanter(brickMesh: MeshArrays, granite: MeshArrays, grass: MeshArrays, rings: PlanterRings) {
   const { outer, brick, inner } = rings
   const count = outer.length
+  const band = rings.overhang + rings.wall
   const down = new THREE.Vector3(0, -1, 0)
-  addPlanterWall(brickMesh, brick, (corner) => corner.base, (corner) => corner.brick, true, BRICK_TILE_M)
-  addPlanterWall(granite, inner, (corner) => corner.brick, (corner) => corner.rim, false, STONE_TILE_M)
+  const topUv = (point: THREE.Vector3): [number, number] => [point.x / STONE_TILE_M, point.z / STONE_TILE_M]
+  const layouts = outer.map((start, index) => {
+    const end = outer[(index + 1) % count]
+    const span = Math.hypot(end.x - start.x, end.z - start.z)
+    const brickLead = Math.min(span, Math.max(0, planterEdgeDistance(start, end, brick[index])))
+    const brickTail = Math.min(span, Math.max(0, span - planterEdgeDistance(start, end, brick[(index + 1) % count])))
+    return {
+      ...planterEdgeLayout(span, band, brickLead, brickTail, Math.abs(end.rim - start.rim)),
+      brickLead,
+      brickTail,
+    }
+  })
 
-  const rimNormals = outer.map((corner, index) => {
-    const next = outer[(index + 1) % count]
-    return planterSlopeNormal(corner, next, corner.rim, next.rim, true)
-  })
-  const brickNormals = outer.map((corner, index) => {
-    const next = outer[(index + 1) % count]
-    return planterSlopeNormal(corner, next, corner.brick, next.brick, false)
-  })
+  const fanTo = (
+    mesh: MeshArrays,
+    chain: THREE.Vector3[],
+    hub: THREE.Vector3,
+    outward: THREE.Vector3,
+    tile: number,
+  ) => {
+    for (let index = 0; index < chain.length - 1; index += 1) {
+      const a = chain[index]
+      const b = chain[index + 1]
+      addTri(
+        mesh.positions,
+        mesh.normals,
+        mesh.uvs,
+        mesh.tangents,
+        a,
+        b,
+        hub,
+        [a.x / tile, a.z / tile],
+        [b.x / tile, b.z / tile],
+        [hub.x / tile, hub.z / tile],
+        outward,
+      )
+    }
+  }
 
   for (let index = 0; index < count; index += 1) {
-    const next = (index + 1) % count
     const prev = (index - 1 + count) % count
+    const incoming = layouts[prev]
+    const outgoing = layouts[index]
+    const prevStart = outer[prev]
+    const prevEnd = outer[index]
+    const nextEnd = outer[(index + 1) % count]
+    const rim = outer[index].rim
+    const brickY = outer[index].brick
+    const toward = incoming.stations.filter((distance) => incoming.span - distance <= incoming.tail + 1e-4)
+    const away = outgoing.stations.filter((distance) => distance <= outgoing.lead + 1e-4)
+    const chain: THREE.Vector3[] = []
+    for (const distance of toward) {
+      if (Math.abs(distance - incoming.span) < 1e-4) continue
+      chain.push(planterPointAt(prevStart, prevEnd, distance, incoming.span, rim))
+    }
+    for (const distance of away) chain.push(planterPointAt(outer[index], nextEnd, distance, outgoing.span, rim))
+    fanTo(granite, chain, planterVertex(inner[index], rim), UP, STONE_TILE_M)
+
+    const underToward = incoming.stations.filter((distance) => incoming.span - distance <= incoming.brickTail + 1e-4)
+    const underAway = outgoing.stations.filter((distance) => distance <= outgoing.brickLead + 1e-4)
+    const underChain: THREE.Vector3[] = []
+    for (const distance of underToward) {
+      if (Math.abs(distance - incoming.span) < 1e-4) continue
+      underChain.push(planterPointAt(prevStart, prevEnd, distance, incoming.span, brickY))
+    }
+    for (const distance of underAway) {
+      underChain.push(planterPointAt(outer[index], nextEnd, distance, outgoing.span, brickY))
+    }
+    fanTo(granite, underChain, planterVertex(brick[index], brickY), down, STONE_TILE_M)
+  }
+
+  let along = 0
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count
     const start = outer[index]
     const end = outer[next]
-    addPlanterSlope(
-      granite,
-      start,
-      end,
-      inner[index],
-      inner[next],
-      start.rim,
-      end.rim,
-      true,
-      STONE_TILE_M,
-      blendPlanterNormal(rimNormals[prev], rimNormals[index]),
-      blendPlanterNormal(rimNormals[index], rimNormals[next]),
-      rimNormals[index],
-    )
-    addPlanterSlope(
-      granite,
-      start,
-      end,
-      brick[index],
-      brick[next],
-      start.brick,
-      end.brick,
-      false,
-      STONE_TILE_M,
-      blendPlanterNormal(brickNormals[prev], brickNormals[index]),
-      blendPlanterNormal(brickNormals[index], brickNormals[next]),
-      brickNormals[index],
-    )
+    const layout = layouts[index]
+    if (layout.span < 1e-5) continue
+    const outward = leftOf(horizontalDir([start.x, 0, start.z], [end.x, 0, end.z]))
+    const brickStart = brick[index]
+    const brickEnd = brick[next]
+    const brickOut = leftOf(horizontalDir([brickStart.x, 0, brickStart.z], [brickEnd.x, 0, brickEnd.z]))
+    const slopeStart = layout.lead
+    const slopeEnd = layout.span - layout.tail
+    const rim0 = start.rim
+    const rim1 = end.rim
+    const brick0 = start.brick
+    const brick1 = end.brick
+
+    const emitWall = (s0: number, s1: number) => {
+      const y0 = planterProfileY(s0, brick0, brick1, layout)
+      const y1 = planterProfileY(s1, brick0, brick1, layout)
+      const h0 = planterProfileY(s0, rim0, rim1, layout)
+      const h1 = planterProfileY(s1, rim0, rim1, layout)
+      const u0 = (along + s0) / STONE_TILE_M
+      const u1 = (along + s1) / STONE_TILE_M
+      quadMesh(
+        granite,
+        planterPointAt(start, end, s0, layout.span, y0),
+        planterPointAt(start, end, s1, layout.span, y1),
+        planterPointAt(start, end, s1, layout.span, h1),
+        planterPointAt(start, end, s0, layout.span, h0),
+        [u0, y0 / STONE_TILE_M],
+        [u1, y1 / STONE_TILE_M],
+        [u1, h1 / STONE_TILE_M],
+        [u0, h0 / STONE_TILE_M],
+        outward,
+      )
+    }
+
+    for (let station = 0; station < layout.stations.length - 1; station += 1) {
+      const s0 = layout.stations[station]
+      const s1 = layout.stations[station + 1]
+      const slopePair = Math.abs(s0 - slopeStart) < 1e-3 && Math.abs(s1 - slopeEnd) < 1e-3 && s1 - s0 > 1e-4
+      if (!slopePair) emitWall(s0, s1)
+      const onBrick = s0 >= layout.brickLead - 1e-4 && s1 <= layout.span - layout.brickTail + 1e-4
+      if (!onBrick || slopePair) continue
+      const low0 = planterProfileY(s0, brick0, brick1, layout)
+      const low1 = planterProfileY(s1, brick0, brick1, layout)
+      const outer0 = planterPointAt(start, end, s0, layout.span, low0)
+      const outer1 = planterPointAt(start, end, s1, layout.span, low1)
+      const inner1 = planterOnRing(brickStart, brickEnd, start, end, s1, low1)
+      const inner0 = planterOnRing(brickStart, brickEnd, start, end, s0, low0)
+      quadMesh(
+        granite,
+        outer0,
+        outer1,
+        inner1.point,
+        inner0.point,
+        topUv(outer0),
+        topUv(outer1),
+        topUv(inner1.point),
+        topUv(inner0.point),
+        down,
+      )
+      const base0 = brickStart.base + (brickEnd.base - brickStart.base) * inner0.u
+      const base1 = brickStart.base + (brickEnd.base - brickStart.base) * inner1.u
+      const bu0 = (along + s0) / BRICK_TILE_M
+      const bu1 = (along + s1) / BRICK_TILE_M
+      quadMesh(
+        brickMesh,
+        new THREE.Vector3(inner0.point.x, base0, inner0.point.z),
+        new THREE.Vector3(inner1.point.x, base1, inner1.point.z),
+        new THREE.Vector3(inner1.point.x, low1, inner1.point.z),
+        new THREE.Vector3(inner0.point.x, low0, inner0.point.z),
+        [bu0, base0 / BRICK_TILE_M],
+        [bu1, base1 / BRICK_TILE_M],
+        [bu1, low1 / BRICK_TILE_M],
+        [bu0, low0 / BRICK_TILE_M],
+        brickOut,
+      )
+    }
+
+    if (slopeEnd - slopeStart > 1e-4) {
+      const a = planterPointAt(start, end, slopeStart, layout.span, rim0)
+      const b = planterPointAt(start, end, slopeEnd, layout.span, rim1)
+      const c = planterVertex(inner[next], rim1)
+      const d = planterVertex(inner[index], rim0)
+      const run = slopeEnd - slopeStart
+      const segments = planterQuadPlanar(a, b, c, d) ? 1 : Math.min(40, Math.max(2, Math.ceil(run / 0.08)))
+      const sideNormal = planterSlopeNormal(
+        { x: a.x, z: a.z, base: 0, rim: rim0, brick: brick0 },
+        { x: b.x, z: b.z, base: 0, rim: rim1, brick: brick1 },
+        rim0,
+        rim1,
+        true,
+      )
+      const underNormal = sideNormal.clone().negate()
+      const innerOut = leftOf(
+        horizontalDir([inner[index].x, 0, inner[index].z], [inner[next].x, 0, inner[next].z]),
+      ).negate()
+      for (let step = 0; step < segments; step += 1) {
+        const u0 = step / segments
+        const u1 = (step + 1) / segments
+        const s0 = slopeStart + run * u0
+        const s1 = slopeStart + run * u1
+        const h0 = rim0 + (rim1 - rim0) * u0
+        const h1 = rim0 + (rim1 - rim0) * u1
+        const low0 = brick0 + (brick1 - brick0) * u0
+        const low1 = brick0 + (brick1 - brick0) * u1
+        emitWall(s0, s1)
+        const oa = planterPointAt(start, end, s0, layout.span, h0)
+        const ob = planterPointAt(start, end, s1, layout.span, h1)
+        const ib = planterPointAt(inner[index], inner[next], u1 * Math.hypot(inner[next].x - inner[index].x, inner[next].z - inner[index].z), Math.hypot(inner[next].x - inner[index].x, inner[next].z - inner[index].z) || 1, h1)
+        const ia = planterPointAt(inner[index], inner[next], u0 * Math.hypot(inner[next].x - inner[index].x, inner[next].z - inner[index].z), Math.hypot(inner[next].x - inner[index].x, inner[next].z - inner[index].z) || 1, h0)
+        addTri(granite.positions, granite.normals, granite.uvs, granite.tangents, oa, ob, ib, topUv(oa), topUv(ob), topUv(ib), UP, [sideNormal, sideNormal, sideNormal])
+        addTri(granite.positions, granite.normals, granite.uvs, granite.tangents, oa, ib, ia, topUv(oa), topUv(ib), topUv(ia), UP, [sideNormal, sideNormal, sideNormal])
+        const ua = planterPointAt(start, end, s0, layout.span, low0)
+        const ub = planterPointAt(start, end, s1, layout.span, low1)
+        const bb = planterOnRing(brickStart, brickEnd, start, end, s1, low1).point
+        const ba = planterOnRing(brickStart, brickEnd, start, end, s0, low0).point
+        addTri(granite.positions, granite.normals, granite.uvs, granite.tangents, ua, bb, ub, topUv(ua), topUv(bb), topUv(ub), down, [underNormal, underNormal, underNormal])
+        addTri(granite.positions, granite.normals, granite.uvs, granite.tangents, ua, ba, bb, topUv(ua), topUv(ba), topUv(bb), down, [underNormal, underNormal, underNormal])
+        const brickA = planterOnRing(brickStart, brickEnd, start, end, s0, low0)
+        const brickB = planterOnRing(brickStart, brickEnd, start, end, s1, low1)
+        const baseA = brickStart.base + (brickEnd.base - brickStart.base) * brickA.u
+        const baseB = brickStart.base + (brickEnd.base - brickStart.base) * brickB.u
+        const bu0 = (along + s0) / BRICK_TILE_M
+        const bu1 = (along + s1) / BRICK_TILE_M
+        quadMesh(
+          brickMesh,
+          new THREE.Vector3(brickA.point.x, baseA, brickA.point.z),
+          new THREE.Vector3(brickB.point.x, baseB, brickB.point.z),
+          new THREE.Vector3(brickB.point.x, low1, brickB.point.z),
+          new THREE.Vector3(brickA.point.x, low0, brickA.point.z),
+          [bu0, baseA / BRICK_TILE_M],
+          [bu1, baseB / BRICK_TILE_M],
+          [bu1, low1 / BRICK_TILE_M],
+          [bu0, low0 / BRICK_TILE_M],
+          brickOut,
+        )
+        const iu0 = (along + s0) / STONE_TILE_M
+        const iu1 = (along + s1) / STONE_TILE_M
+        quadMesh(
+          granite,
+          new THREE.Vector3(ia.x, low0, ia.z),
+          new THREE.Vector3(ib.x, low1, ib.z),
+          ib,
+          ia,
+          [iu0, low0 / STONE_TILE_M],
+          [iu1, low1 / STONE_TILE_M],
+          [iu1, h1 / STONE_TILE_M],
+          [iu0, h0 / STONE_TILE_M],
+          innerOut,
+        )
+      }
+    }
+    along += layout.span
   }
 
   addPlanterCap(brickMesh, brick, (corner) => corner.base, down, BRICK_TILE_M)
@@ -1400,7 +1569,6 @@ export function buildPlanterGeometry(points: Vec3[], rims?: number[]) {
   const brick = freshMesh()
   const granite = freshMesh()
   const grass = freshMesh()
-  addPlanterWall(granite, rings.outer, (corner) => corner.brick, (corner) => corner.rim, true, STONE_TILE_M)
   addSlopedPlanter(brick, granite, grass, rings)
 
   const brickGeometry = finishMesh(brick)
@@ -1440,7 +1608,8 @@ export function buildPlanterWaxGeometry(points: Vec3[], rims?: number[]) {
     outward: THREE.Vector3,
   ) => addTri(positions, normals, uvs, tangents, a, b, c, ua, ub, uc, outward)
 
-  const { outer } = rings
+    const { outer } = rings
+  const curb = rings.overhang + rings.wall
   for (let index = 0; index < outer.length; index += 1) {
     const start = outer[index]
     const end = outer[(index + 1) % outer.length]
@@ -1448,34 +1617,44 @@ export function buildPlanterWaxGeometry(points: Vec3[], rims?: number[]) {
     const band = PLANTER_WAX_BANDS[index % PLANTER_WAX_BANDS.length]
     const bandSpan = band[1] - band[0]
     const reach = reachLimit
+    const brickLead = Math.min(span, Math.max(0, planterEdgeDistance(start, end, rings.brick[index])))
+    const brickTail = Math.min(
+      span,
+      Math.max(0, span - planterEdgeDistance(start, end, rings.brick[(index + 1) % outer.length])),
+    )
+    const layout = planterEdgeLayout(span, curb, brickLead, brickTail, Math.abs(end.rim - start.rim))
     if (span < 1e-4 || reach < 0.02 || bandSpan < 1e-4) continue
     const tile = (reach / bandSpan) * CURB_WAX_ALONG_SCALE
     const lift = CURB_WAX_LIFT_M + (index % PLANTER_WAX_BANDS.length) * 0.0004
     const outward = leftOf(horizontalDir([start.x, 0, start.z], [end.x, 0, end.z]))
     const inward = outward.clone().negate()
-    const lip = (corner: PlanterCorner) => {
-      const drop = Math.min(reach, Math.max(0.02, corner.rim - corner.base - 0.01))
-      const outside = new THREE.Vector3(corner.x, corner.rim + lift, corner.z).addScaledVector(outward, CURB_WAX_LIFT_M)
-      const inside = new THREE.Vector3(
-        corner.x + inward.x * reach,
-        corner.rim + lift,
-        corner.z + inward.z * reach,
-      )
+    const lip = (distance: number) => {
+      const y = planterProfileY(distance, start.rim, end.rim, layout)
+      const base = start.base + (end.base - start.base) * (span > 1e-6 ? distance / span : 0)
+      const drop = Math.min(reach, Math.max(0.02, y - base - 0.01))
+      const at = planterPointAt(start, end, distance, span, y + lift)
+      const outside = at.clone().addScaledVector(outward, CURB_WAX_LIFT_M)
+      const inside = new THREE.Vector3(at.x + inward.x * reach, at.y, at.z + inward.z * reach)
       const down = outside.clone()
       down.y -= drop
       return { outside, inside, down }
     }
-    const a = lip(start)
-    const b = lip(end)
-    const u1 = span / tile
-    const outer0: [number, number] = [0, band[0]]
-    const inner0: [number, number] = [0, band[1]]
-    const outer1: [number, number] = [u1, band[0]]
-    const inner1: [number, number] = [u1, band[1]]
-    tri(a.outside, a.inside, b.inside, outer0, inner0, inner1, UP)
-    tri(a.outside, b.inside, b.outside, outer0, inner1, outer1, UP)
-    tri(a.outside, b.outside, b.down, outer0, outer1, inner1, outward)
-    tri(a.outside, b.down, a.down, outer0, inner1, inner0, outward)
+    for (let station = 0; station < layout.stations.length - 1; station += 1) {
+      const s0 = layout.stations[station]
+      const s1 = layout.stations[station + 1]
+      const a = lip(s0)
+      const b = lip(s1)
+      const u0 = s0 / tile
+      const u1 = s1 / tile
+      const outer0: [number, number] = [u0, band[0]]
+      const inner0: [number, number] = [u0, band[1]]
+      const outer1: [number, number] = [u1, band[0]]
+      const inner1: [number, number] = [u1, band[1]]
+      tri(a.outside, a.inside, b.inside, outer0, inner0, inner1, UP)
+      tri(a.outside, b.inside, b.outside, outer0, inner1, outer1, UP)
+      tri(a.outside, b.outside, b.down, outer0, outer1, inner1, outward)
+      tri(a.outside, b.down, a.down, outer0, inner1, inner0, outward)
+    }
   }
 
   if (positions.length === 0) return null
