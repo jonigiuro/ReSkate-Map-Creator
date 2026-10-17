@@ -24,7 +24,6 @@ import {
   CURB_WIDTH_M,
   MIN_CURB_THICKNESS_M,
   DEFAULT_STAIR_STEPS,
-  MIN_PLANTER_SPAN_M,
   MIN_PLANTER_THICKNESS_M,
   MIN_PLATFORM_HEIGHT_M,
   PLANTER_HEIGHT_M,
@@ -34,8 +33,9 @@ import {
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   buildCurbGeometry,
-  bankFromWorld,
+  bankFrame,
   buildBankGeometry,
+  buildBankRunGeometry,
   buildCurbLipGeometry,
   buildCurbWaxGeometry,
   buildPlanterGeometry,
@@ -49,12 +49,12 @@ import {
   buildPlatformGeometry,
   buildRailGeometry,
   buildRailWaxGeometry,
+  curbLocalPoints,
+  curbOrigin,
   curbSegmentTooShort,
   curbTopYs,
-  planterFootprintTooSmall,
-  planterLayout,
-  platformFootprintTooSmall,
-  platformFromWorld,
+  planterOutlineFits,
+  planterRimYs,
   platformOutlineTooSmall,
   type Vec3,
 } from '../lib/generators'
@@ -543,11 +543,22 @@ function MeshItem({
 
   useLayoutEffect(() => {
     const g = handleRef.current
-    if (!g || handleDragging.current || !bank || pin == null) return
+    if (!g || handleDragging.current || !bank?.vertices || bank.points || pin == null) return
     const point = bank.vertices[pin]
     if (!point) return
     g.position.set(point[0], point[1], point[2])
   }, [bank, pin])
+
+  useLayoutEffect(() => {
+    const g = handleRef.current
+    if (!g || handleDragging.current || !bank?.points || !bank.tops || !bank.outers || !handle) return
+    const foot = bank.points[handle.index]
+    const top = bank.tops[handle.index]
+    const outer = bank.outers[handle.index]
+    const point = handle.end === 'top' ? top : handle.end === 'width' ? outer : foot
+    if (!point) return
+    g.position.set(point[0], point[1], point[2])
+  }, [bank, handle])
 
   useLayoutEffect(() => {
     const g = handleRef.current
@@ -562,11 +573,10 @@ function MeshItem({
   useLayoutEffect(() => {
     const g = handleRef.current
     if (!g || handleDragging.current || !planter || !handle || handle.end === 'width') return
-    const layout = planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops)
-    const corner = layout.points[handle.index]
-    if (!corner) return
-    const y = handle.end === 'bottom' ? corner[1] : layout.rims[handle.index]
-    g.position.set(corner[0], y, corner[2])
+    const point = planter.points[handle.index]
+    if (!point) return
+    const y = handle.end === 'bottom' ? point[1] : planterRimYs(planter.points, planter.rims)[handle.index]
+    g.position.set(point[0], y, point[2])
   }, [planter, handle])
 
   useLayoutEffect(() => {
@@ -636,7 +646,7 @@ function MeshItem({
   }
 
   function commitBank() {
-    if (!bank || pin == null) return
+    if (!bank?.vertices || pin == null) return
     const g = handleRef.current
     if (!g || !bank.vertices[pin]) return
     const vertices = bank.vertices.map((point, index) =>
@@ -645,6 +655,72 @@ function MeshItem({
         : ([point[0], point[1], point[2]] as Vec3),
     ) as typeof bank.vertices
     onPatch({ generator: { ...bank, vertices } })
+  }
+
+  function commitBankCorner() {
+    if (!bank?.points || !bank.tops || !bank.outers || !handle) return
+    const g = handleRef.current
+    const foot = bank.points[handle.index]
+    const top = bank.tops[handle.index]
+    const outer = bank.outers[handle.index]
+    if (!g || !foot || !top || !outer) return
+    const points = bank.points.map((point) => [point[0], point[1], point[2]] as Vec3)
+    const tops = bank.tops.map((point) => [point[0], point[1], point[2]] as Vec3)
+    const outers = bank.outers.map((point) => [point[0], point[1], point[2]] as Vec3)
+    if (handle.end === 'top') {
+      tops[handle.index] = [round4(g.position.x), round4(g.position.y), round4(g.position.z)]
+      onPatch({ generator: { ...bank, points, tops, outers } })
+      return
+    }
+    if (handle.end === 'width') {
+      let x = g.position.x
+      let z = g.position.z
+      const dx = x - foot[0]
+      const dz = z - foot[2]
+      const len = Math.hypot(dx, dz)
+      if (len < 0.05) {
+        if (len < 1e-6) {
+          x = foot[0] + 0.05
+          z = foot[2]
+        } else {
+          x = foot[0] + (dx / len) * 0.05
+          z = foot[2] + (dz / len) * 0.05
+        }
+      }
+      outers[handle.index] = [round4(x), round4(g.position.y), round4(z)]
+      g.position.set(x, g.position.y, z)
+      onPatch({ generator: { ...bank, points, tops, outers } })
+      return
+    }
+    let x = g.position.x
+    let z = g.position.z
+    const keepApart = (anchor: Vec3) => {
+      const dx = x - anchor[0]
+      const dz = z - anchor[2]
+      if (Math.hypot(dx, dz) >= 0.05) return
+      const len = Math.hypot(dx, dz)
+      if (len < 1e-6) {
+        x = anchor[0] + 0.05
+        return
+      }
+      x = anchor[0] + (dx / len) * 0.05
+      z = anchor[2] + (dz / len) * 0.05
+    }
+    const count = points.length
+    const closed = bank.closed === true && count >= 3
+    const previous = points[handle.index === 0 ? (closed ? count - 1 : -1) : handle.index - 1]
+    const next = points[handle.index === count - 1 ? (closed ? 0 : -1) : handle.index + 1]
+    if (previous) keepApart(previous)
+    if (next && next !== previous) keepApart(next)
+    const y = g.position.y
+    const dx = x - foot[0]
+    const dy = y - foot[1]
+    const dz = z - foot[2]
+    points[handle.index] = [round4(x), round4(y), round4(z)]
+    tops[handle.index] = [round4(top[0] + dx), round4(top[1] + dy), round4(top[2] + dz)]
+    outers[handle.index] = [round4(outer[0] + dx), round4(outer[1] + dy), round4(outer[2] + dz)]
+    g.position.set(x, y, z)
+    onPatch({ generator: { ...bank, points, tops, outers } })
   }
 
   function commitRail() {
@@ -670,64 +746,49 @@ function MeshItem({
   function commitPlanter() {
     if (!planter || !handle || handle.end === 'width') return
     const g = handleRef.current
-    if (!g || !planter.corners[0] || !planter.corners[1]) return
-    const layout = planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops)
+    const point = planter.points[handle.index]
+    if (!g || !point) return
+    const rims = planterRimYs(planter.points, planter.rims)
+    const points = planter.points.map((entry) => [entry[0], entry[1], entry[2]] as Vec3)
+    const count = points.length
     let x = g.position.x
     let z = g.position.z
+    const keepApart = (anchor: Vec3) => {
+      const dx = x - anchor[0]
+      const dz = z - anchor[2]
+      const span = Math.hypot(dx, dz)
+      if (span >= 0.05) return
+      if (span < 1e-6) {
+        x = anchor[0] + 0.05
+        return
+      }
+      x = anchor[0] + (dx / span) * 0.05
+      z = anchor[2] + (dz / span) * 0.05
+    }
+    keepApart(points[(handle.index - 1 + count) % count])
+    keepApart(points[(handle.index + 1) % count])
+    points[handle.index][0] = round4(x)
+    points[handle.index][2] = round4(z)
     let y = g.position.y
-    const corners: [Vec3, Vec3] = [
-      [planter.corners[0][0], layout.points[0][1], planter.corners[0][2]],
-      [planter.corners[1][0], layout.points[2][1], planter.corners[1][2]],
-    ]
-    const tops: [number, number] = [layout.rims[0], layout.rims[2]]
-    const sideBases: [number, number] = [layout.points[1][1], layout.points[3][1]]
-    const sideTops: [number, number] = [layout.rims[1], layout.rims[3]]
-    const apart = (value: number, anchor: number) =>
-      Math.abs(value - anchor) < MIN_PLANTER_SPAN_M
-        ? anchor + (value >= anchor ? MIN_PLANTER_SPAN_M : -MIN_PLANTER_SPAN_M)
-        : value
-    if (handle.index === 0 || handle.index === 2) {
-      const pin = handle.index === 0 ? 0 : 1
-      const otherPin = pin === 0 ? 1 : 0
-      x = apart(x, corners[otherPin][0])
-      z = apart(z, corners[otherPin][2])
-      corners[pin][0] = round4(x)
-      corners[pin][2] = round4(z)
-      if (handle.end === 'bottom') {
-        y = Math.min(y, tops[pin] - MIN_PLANTER_THICKNESS_M)
-        corners[pin][1] = round4(y)
-      } else {
-        y = Math.max(y, corners[pin][1] + MIN_PLANTER_THICKNESS_M)
-        tops[pin] = round4(y)
-      }
-    } else if (handle.index === 1) {
-      x = apart(x, corners[0][0])
-      z = apart(z, corners[1][2])
-      corners[1][0] = round4(x)
-      corners[0][2] = round4(z)
-      if (handle.end === 'bottom') {
-        y = Math.min(y, sideTops[0] - MIN_PLANTER_THICKNESS_M)
-        sideBases[0] = round4(y)
-      } else {
-        y = Math.max(y, sideBases[0] + MIN_PLANTER_THICKNESS_M)
-        sideTops[0] = round4(y)
-      }
+    if (handle.end === 'bottom') {
+      y = Math.min(y, rims[handle.index] - MIN_PLANTER_THICKNESS_M)
+      points[handle.index][1] = round4(y)
     } else {
-      x = apart(x, corners[1][0])
-      z = apart(z, corners[0][2])
-      corners[0][0] = round4(x)
-      corners[1][2] = round4(z)
-      if (handle.end === 'bottom') {
-        y = Math.min(y, sideTops[1] - MIN_PLANTER_THICKNESS_M)
-        sideBases[1] = round4(y)
-      } else {
-        y = Math.max(y, sideBases[1] + MIN_PLANTER_THICKNESS_M)
-        sideTops[1] = round4(y)
-      }
+      y = Math.max(y, points[handle.index][1] + MIN_PLANTER_THICKNESS_M)
+      rims[handle.index] = round4(y)
+    }
+    if (!planterOutlineFits(points, rims)) {
+      x = point[0]
+      z = point[2]
+      points[handle.index][0] = point[0]
+      points[handle.index][1] = point[1]
+      points[handle.index][2] = point[2]
+      y = handle.end === 'bottom' ? point[1] : planterRimYs(planter.points, planter.rims)[handle.index]
+      if (handle.end === 'top') rims[handle.index] = y
     }
     g.position.set(x, y, z)
     onPatch({
-      generator: { ...planter, corners, tops, sideBases, sideTops },
+      generator: { ...planter, points, rims },
     })
   }
 
@@ -869,7 +930,43 @@ function MeshItem({
               ))}
             {editingPlatform && pin != null && <group ref={handleRef} />}
           </>
-        ) : bank ? (
+        ) : bank?.points && bank.tops && bank.outers ? (
+          <>
+            <BankRunMesh
+              points={bank.points}
+              tops={bank.tops}
+              outers={bank.outers}
+              closed={bank.closed === true}
+              materials={obj.materials}
+            />
+            {editingBank &&
+              bank.points.map((foot, index) => (
+                <group key={index}>
+                  <StairPinRod from={foot} to={bank.tops![index]} />
+                  <StairPinRod from={foot} to={bank.outers![index]} />
+                  <CurbHandleSphere
+                    position={foot}
+                    color={handle?.index === index && handle.end === 'bottom' ? '#fff4d6' : '#ffb703'}
+                    handle={{ index, end: 'bottom' }}
+                    onPick={() => setHandle({ index, end: 'bottom' })}
+                  />
+                  <CurbHandleSphere
+                    position={bank.tops![index]}
+                    color={handle?.index === index && handle.end === 'top' ? '#fff4d6' : '#ff6b00'}
+                    handle={{ index, end: 'top' }}
+                    onPick={() => setHandle({ index, end: 'top' })}
+                  />
+                  <CurbHandleSphere
+                    position={bank.outers![index]}
+                    color={handle?.index === index && handle.end === 'width' ? '#fff4d6' : '#2ec4b6'}
+                    handle={{ index, end: 'width' }}
+                    onPick={() => setHandle({ index, end: 'width' })}
+                  />
+                </group>
+              ))}
+            {editingBank && handle && <group ref={handleRef} />}
+          </>
+        ) : bank?.vertices ? (
           <>
             <BankMesh vertices={bank.vertices} materials={obj.materials} />
             {editingBank &&
@@ -912,18 +1009,12 @@ function MeshItem({
           </>
         ) : planter ? (
           <>
-            <PlanterMesh
-              corners={planter.corners}
-              tops={planter.tops}
-              sideBases={planter.sideBases}
-              sideTops={planter.sideTops}
-              materials={obj.materials}
-            />
+            <PlanterMesh points={planter.points} rims={planter.rims} materials={obj.materials} />
             {editingPlanter && planter && (
               <CurbEditPins
-                points={planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops).points}
+                points={planter.points}
                 height={PLANTER_HEIGHT_M}
-                tops={planterLayout(planter.corners, planter.tops, planter.sideBases, planter.sideTops).rims}
+                tops={planter.rims}
                 active={handle}
                 onPick={(index, end) => setHandle({ index, end })}
               />
@@ -1025,7 +1116,7 @@ function MeshItem({
           onGestureEnd={onGestureEnd}
         />
       )}
-      {editingBank && pin != null && (
+      {editingBank && bank?.vertices && !bank.points && pin != null && (
         <TransformGizmo
           target={handleRef}
           dragging={handleDragging}
@@ -1035,6 +1126,20 @@ function MeshItem({
           vertices
           vertexExclude={ref}
           onCommit={commitBank}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+      {editingBank && bank?.points && handle && (
+        <TransformGizmo
+          target={handleRef}
+          dragging={handleDragging}
+          mode="translate"
+          space="world"
+          snap={snap}
+          vertices
+          vertexExclude={ref}
+          onCommit={commitBankCorner}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
         />
@@ -2112,14 +2217,14 @@ const GALVANIZED_MAPS = [
   galvanizedMap('standard galvanized steel, ideal for structures_Metallic.jpg'),
 ] as const
 
-useTexture.preload([
-  BRICK_MAP,
-  ...GRASS_MAPS,
-  ...CONCRETE_MAPS,
-  ...STRIPED_CONCRETE_MAPS,
-  ...GALVANIZED_MAPS,
-  ...WAX_MAPS,
-])
+// Each material asks for its own list. A single combined preload does not fill those caches,
+// so the first stroke would still suspend.
+useTexture.preload(BRICK_MAP)
+useTexture.preload([...GRASS_MAPS])
+useTexture.preload([...CONCRETE_MAPS])
+useTexture.preload([...STRIPED_CONCRETE_MAPS])
+useTexture.preload([...GALVANIZED_MAPS])
+useTexture.preload([...WAX_MAPS])
 
 function SlotMaterial({
   setId,
@@ -2268,7 +2373,7 @@ function CurbRibbon({
   useEffect(() => () => wax?.dispose(), [wax])
   if (!parts) return null
   return (
-    <>
+    <Suspense fallback={null}>
       {parts.body && (
         <mesh geometry={parts.body} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.brick} ghost={ghost} fallback="brick" />
@@ -2289,7 +2394,7 @@ function CurbRibbon({
           <WaxMaterial ghost={ghost} />
         </mesh>
       )}
-    </>
+    </Suspense>
   )
 }
 
@@ -2331,9 +2436,11 @@ function PlatformMesh({
   useEffect(() => () => geometry?.dispose(), [geometry])
   if (!geometry) return null
   return (
-    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-      <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
-    </mesh>
+    <Suspense fallback={null}>
+      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
+      </mesh>
+    </Suspense>
   )
 }
 
@@ -2372,20 +2479,57 @@ function BankMesh({
   useEffect(() => () => geometry?.dispose(), [geometry])
   if (!geometry) return null
   return (
-    <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-      <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
-    </mesh>
+    <Suspense fallback={null}>
+      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
+      </mesh>
+    </Suspense>
+  )
+}
+
+function BankRunMesh({
+  points,
+  tops,
+  outers,
+  closed,
+  materials,
+  ghost,
+}: {
+  points: Vec3[]
+  tops: Vec3[]
+  outers: Vec3[]
+  closed?: boolean
+  materials?: Record<string, string>
+  ghost?: boolean
+}) {
+  const geometry = useMemo(
+    () => buildBankRunGeometry(points, tops, outers, closed === true),
+    [points, tops, outers, closed],
+  )
+  useEffect(() => () => geometry?.dispose(), [geometry])
+  if (!geometry) return null
+  return (
+    <Suspense fallback={null}>
+      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
+      </mesh>
+    </Suspense>
   )
 }
 
 function BankGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
-  const first = pins[0]
-  const second: Vec3 = [to.x, first[1], to.z]
-  if (platformFootprintTooSmall(first, second)) return null
-  const { origin, vertices } = bankFromWorld(first, second)
+  const y = to.y < 0.02 ? 0 : to.y
+  const cursor: Vec3 = [to.x, y, to.z]
+  const last = pins[pins.length - 1]
+  if (curbSegmentTooShort(last, cursor)) return null
+  const preview = pins.length >= 2 ? [pins[pins.length - 2], last, cursor] : [last, cursor]
+  const origin = curbOrigin(preview)
+  const local = curbLocalPoints(preview, origin)
+  const frame = bankFrame(local, STAIR_WIDTH_M, STAIR_HEIGHT_M)
+  if (!frame) return null
   return (
     <group position={origin} userData={{ placementGhost: true }}>
-      <BankMesh vertices={vertices} ghost />
+      <BankRunMesh points={local} tops={frame.tops} outers={frame.outers} ghost />
     </group>
   )
 }
@@ -2441,28 +2585,18 @@ function GrassMaterial({ ghost }: { ghost?: boolean }) {
 }
 
 function PlanterMesh({
-  corners,
-  tops,
-  sideBases,
-  sideTops,
+  points,
+  rims,
   materials,
   ghost,
 }: {
-  corners: [Vec3, Vec3]
-  tops?: [number, number]
-  sideBases?: [number, number]
-  sideTops?: [number, number]
+  points: Vec3[]
+  rims?: number[]
   materials?: Record<string, string>
   ghost?: boolean
 }) {
-  const parts = useMemo(
-    () => buildPlanterGeometry(corners, tops, sideBases, sideTops),
-    [corners, sideBases, sideTops, tops],
-  )
-  const wax = useMemo(
-    () => buildPlanterWaxGeometry(corners, tops, sideBases, sideTops),
-    [corners, sideBases, sideTops, tops],
-  )
+  const parts = useMemo(() => buildPlanterGeometry(points, rims), [points, rims])
+  const wax = useMemo(() => buildPlanterWaxGeometry(points, rims), [points, rims])
   useEffect(
     () => () => {
       parts?.brick.dispose()
@@ -2474,33 +2608,36 @@ function PlanterMesh({
   useEffect(() => () => wax?.dispose(), [wax])
   if (!parts) return null
   return (
-    <group>
-      <mesh geometry={parts.brick} castShadow={!ghost} receiveShadow={!ghost}>
-        <SlotMaterial setId={materials?.brick} ghost={ghost} fallback="brick" />
-      </mesh>
-      <mesh geometry={parts.granite} castShadow={!ghost} receiveShadow={!ghost}>
-        <SlotMaterial setId={materials?.granite} ghost={ghost} fallback="concrete" />
-      </mesh>
-      <mesh geometry={parts.grass} receiveShadow={!ghost}>
-        <SlotMaterial setId={materials?.grass} ghost={ghost} fallback="grass" />
-      </mesh>
-      {wax && (
-        <mesh geometry={wax} castShadow={false} receiveShadow={false} renderOrder={1} userData={{ waxDecal: true }}>
-          <WaxMaterial ghost={ghost} />
+    <Suspense fallback={null}>
+      <group>
+        <mesh geometry={parts.brick} castShadow={!ghost} receiveShadow={!ghost}>
+          <SlotMaterial setId={materials?.brick} ghost={ghost} fallback="brick" />
         </mesh>
-      )}
-    </group>
+        <mesh geometry={parts.granite} castShadow={!ghost} receiveShadow={!ghost}>
+          <SlotMaterial setId={materials?.granite} ghost={ghost} fallback="concrete" />
+        </mesh>
+        <mesh geometry={parts.grass} receiveShadow={!ghost}>
+          <SlotMaterial setId={materials?.grass} ghost={ghost} fallback="grass" />
+        </mesh>
+        {wax && (
+          <mesh geometry={wax} castShadow={false} receiveShadow={false} renderOrder={1} userData={{ waxDecal: true }}>
+            <WaxMaterial ghost={ghost} />
+          </mesh>
+        )}
+      </group>
+    </Suspense>
   )
 }
 
 function PlanterGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
   const first = pins[0]
-  const second: Vec3 = [to.x, first[1], to.z]
-  if (planterFootprintTooSmall(first, second)) return null
-  const { origin, corners } = platformFromWorld(first, second)
+  const cursor: Vec3 = [to.x, first[1], to.z]
+  if (curbSegmentTooShort(pins[pins.length - 1], cursor)) return null
+  const preview = [...pins, cursor]
+  if (!planterOutlineFits(preview)) return null
   return (
-    <group position={origin} userData={{ placementGhost: true }}>
-      <PlanterMesh corners={corners} tops={[PLANTER_HEIGHT_M, PLANTER_HEIGHT_M]} ghost />
+    <group position={[0, first[1], 0]} userData={{ placementGhost: true }}>
+      <PlanterMesh points={preview.map((point) => [point[0], 0, point[2]])} ghost />
     </group>
   )
 }
@@ -2553,14 +2690,14 @@ function StairsMesh({
   )
   if (!parts) return null
   return (
-    <>
+    <Suspense fallback={null}>
       <mesh geometry={parts.body} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
       </mesh>
       <mesh geometry={parts.tread} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.concrete} ghost={ghost} fallback="concrete" />
       </mesh>
-    </>
+    </Suspense>
   )
 }
 
@@ -2626,16 +2763,18 @@ function RailMesh({
   useEffect(() => () => wax?.dispose(), [wax])
   if (!geometry) return null
   return (
-    <group>
-      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
-        <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
-      </mesh>
-      {wax && (
-        <mesh geometry={wax} castShadow={false} receiveShadow={false} renderOrder={1} userData={{ waxDecal: true }}>
-          <WaxMaterial ghost={ghost} />
+    <Suspense fallback={null}>
+      <group>
+        <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+          <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
         </mesh>
-      )}
-    </group>
+        {wax && (
+          <mesh geometry={wax} castShadow={false} receiveShadow={false} renderOrder={1} userData={{ waxDecal: true }}>
+            <WaxMaterial ghost={ghost} />
+          </mesh>
+        )}
+      </group>
+    </Suspense>
   )
 }
 
@@ -3258,9 +3397,7 @@ function SceneContents(props: Props) {
               ? railBaseFromHit([generatorPreview.x, generatorPreview.y, generatorPreview.z])
               : [
                   generatorPreview.x,
-                  (generator.kind === 'platform' ||
-                    generator.kind === 'bank' ||
-                    generator.kind === 'planter') &&
+                  (generator.kind === 'platform' || generator.kind === 'planter') &&
                   pins[0]
                     ? pins[0][1]
                     : generatorPreview.y < 0.02
@@ -3436,6 +3573,7 @@ export function Viewport(props: Props) {
         <EditHandlePriority />
         <Skybox />
         <fog attach="fog" args={['#c9dadf', 180, 1100]} />
+        {/* Generator pieces suspend on their own textures. This boundary must not be the one that catches them, or the whole scene hides until the image arrives. */}
         <Suspense fallback={null}>
           <SceneContents {...props} />
         </Suspense>

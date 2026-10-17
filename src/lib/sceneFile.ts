@@ -32,7 +32,7 @@ import {
   TRAFFIC_WIDTH_M,
 } from './traffic'
 import { defaultLightTimes, LIGHT_TIMES, parsePropLight } from './lights'
-import { clampStairHeight, clampStairSteps, clampStairWidth } from './generators'
+import { clampStairHeight, clampStairSteps, clampStairWidth, planterOutlineFromLegacy } from './generators'
 import { STOP_NAME_MAX } from './travelPoints'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
@@ -95,11 +95,34 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
     return platform
   }
   if (raw.kind === 'bank') {
-    const points = parsePoints(raw.vertices)
-    if (!points || points.length !== 8) return undefined
+    const points = parsePoints(raw.points)
+    const tops = parsePoints(raw.tops)
+    const outers = parsePoints(raw.outers)
+    if (
+      points &&
+      points.length >= 2 &&
+      tops &&
+      outers &&
+      tops.length === points.length &&
+      outers.length === points.length
+    ) {
+      const bank: BankGenerator = {
+        kind: 'bank',
+        points,
+        tops,
+        outers,
+        closed: raw.closed === true,
+        reversed: raw.reversed === true,
+      }
+      if (typeof raw.width === 'number' && Number.isFinite(raw.width) && raw.width > 0) bank.width = raw.width
+      if (typeof raw.height === 'number' && Number.isFinite(raw.height) && raw.height > 0) bank.height = raw.height
+      return bank
+    }
+    const legacy = parsePoints(raw.vertices)
+    if (!legacy || legacy.length !== 8) return undefined
     const bank: BankGenerator = {
       kind: 'bank',
-      vertices: [points[0], points[1], points[2], points[3], points[4], points[5], points[6], points[7]],
+      vertices: [legacy[0], legacy[1], legacy[2], legacy[3], legacy[4], legacy[5], legacy[6], legacy[7]],
     }
     return bank
   }
@@ -120,33 +143,30 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
     return rail
   }
   if (raw.kind === 'planter') {
-    const points = parsePoints(raw.corners)
-    if (!points || points.length !== 2) return undefined
-    let tops: [number, number] | undefined
-    if (
-      Array.isArray(raw.tops) &&
-      raw.tops.length === 2 &&
-      raw.tops.every((value) => typeof value === 'number' && Number.isFinite(value))
-    ) {
-      tops = [raw.tops[0], raw.tops[1]]
-    }
-    const pair = (rawValue: unknown): [number, number] | undefined => {
-      if (
-        Array.isArray(rawValue) &&
-        rawValue.length === 2 &&
-        rawValue.every((value) => typeof value === 'number' && Number.isFinite(value))
-      ) {
-        return [rawValue[0], rawValue[1]]
+    const listed = parsePoints(raw.points)
+    const numbers = (value: unknown, count: number) =>
+      Array.isArray(value) &&
+      value.length === count &&
+      value.every((item) => typeof item === 'number' && Number.isFinite(item))
+    if (listed && listed.length >= 3) {
+      const planter: PlanterGenerator = {
+        kind: 'planter',
+        points: listed,
+        rims: numbers(raw.rims, listed.length) ? (raw.rims as number[]) : undefined,
       }
-      return undefined
+      return planter
     }
-    const planter: PlanterGenerator = {
-      kind: 'planter',
-      corners: [points[0], points[1]],
-      tops,
-      sideBases: pair(raw.sideBases),
-      sideTops: pair(raw.sideTops),
-    }
+    const legacy = parsePoints(raw.corners)
+    if (!legacy || legacy.length !== 2) return undefined
+    const pair = (value: unknown): [number, number] | undefined =>
+      numbers(value, 2) && Array.isArray(value) ? [value[0] as number, value[1] as number] : undefined
+    const outline = planterOutlineFromLegacy(
+      [legacy[0], legacy[1]],
+      pair(raw.tops),
+      pair(raw.sideBases),
+      pair(raw.sideTops),
+    )
+    const planter: PlanterGenerator = { kind: 'planter', points: outline.points, rims: outline.rims }
     return planter
   }
   if (raw.kind === 'stairs') {

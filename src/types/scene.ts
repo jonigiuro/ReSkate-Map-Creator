@@ -39,10 +39,29 @@ export interface PlatformGenerator {
   height: number
 }
 
-/** Pad whose eight corners move independently. 0–3 are the base loop, 4–7 the top loop. */
+/**
+ * Slope along a drawn path, the same idea as stairs.
+ * The path is the foot of the tall side. Each foot, top, and outer corner moves on its own.
+ * Older pads keep `vertices`: 0–3 are the base loop, 4–7 the top loop.
+ */
 export interface BankGenerator {
   kind: 'bank'
-  vertices: [
+  /** Foot of the tall side, in local space. */
+  points?: [number, number, number][]
+  /** Top of the tall side at each point. One entry per point. */
+  tops?: [number, number, number][]
+  /** Outer edge at each point, where the slope meets the floor. One entry per point. */
+  outers?: [number, number, number][]
+  /** Run used for a new corner, until that corner is moved. */
+  width?: number
+  /** Rise used for a new corner, until that corner is moved. */
+  height?: number
+  /** Join the last pin back to the first. */
+  closed?: boolean
+  /** Slope runs out to the other side of the pin line. */
+  reversed?: boolean
+  /** Legacy rectangular pad. */
+  vertices?: [
     [number, number, number],
     [number, number, number],
     [number, number, number],
@@ -63,16 +82,13 @@ export interface RailGenerator {
   radius: number
 }
 
-/** Axis-aligned planter. Corners are two opposite footprint corners. Each corner's Y is its brick base. */
+/** Planter drawn as an outline. Each point's Y is that corner's brick base. */
 export interface PlanterGenerator {
   kind: 'planter'
-  corners: [[number, number, number], [number, number, number]]
-  /** Granite rim at the two clicked corners, local Y. */
-  tops?: [number, number]
-  /** Brick base at (corner1.x, corner0.z) and (corner0.x, corner1.z). */
-  sideBases?: [number, number]
-  /** Granite rim at those same two corners. */
-  sideTops?: [number, number]
+  /** Outer granite footprint, in local space. */
+  points: [number, number, number][]
+  /** Granite rim at each point, local Y. One entry per point. */
+  rims?: number[]
 }
 
 /** Stair flight along a drawn centreline. Width and height are one value for the whole run. */

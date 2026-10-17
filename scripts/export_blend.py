@@ -1887,6 +1887,140 @@ def make_bank_mesh(name, vertices, color, material=None):
     return _link_mesh(name, verts, faces, color, material=material, tile=1.0)
 
 
+def _bank_outer_points(points, depth, closed=False, reversed=False):
+    """One low corner per path point, on the same side as a stair run."""
+    count = len(points)
+    if count < 2:
+        return None
+    loop = bool(closed) and count >= 3
+    side = -1.0 if reversed else 1.0
+    span = 0.0
+    for index in range(1, count):
+        span += math.hypot(float(points[index][0]) - float(points[index - 1][0]), float(points[index][2]) - float(points[index - 1][2]))
+    if loop:
+        span += math.hypot(float(points[0][0]) - float(points[count - 1][0]), float(points[0][2]) - float(points[count - 1][2]))
+    if span < 0.05:
+        return None
+    outers = []
+    for index in range(count):
+        if not loop and (index == 0 or index == count - 1):
+            along = _horiz_dir(points[0], points[1]) if index == 0 else _horiz_dir(points[count - 2], points[count - 1])
+            offset = _vscale(_left_of(along), depth * side)
+        else:
+            prev = (index - 1) % count
+            nxt = (index + 1) % count
+            incoming = _left_of(_horiz_dir(points[prev], points[index]))
+            outgoing = _left_of(_horiz_dir(points[index], points[nxt]))
+            miter = _vnorm(_vadd(incoming, outgoing))
+            if miter is None:
+                offset = _vscale(incoming, depth * side)
+            else:
+                denom = _vdot(miter, incoming)
+                offset = _vscale(incoming, depth * side) if denom < 0.25 else _vscale(miter, min(depth / denom, depth * 4.0) * side)
+        point = points[index]
+        outers.append((float(point[0]) + offset[0], float(point[1]), float(point[2]) + offset[2]))
+    return outers
+
+
+def _bank_frame(points, width, height, closed=False, reversed=False):
+    depth = max(0.4, min(12.0, float(width)))
+    rise = max(0.15, float(height))
+    outers = _bank_outer_points(points, depth, closed, reversed)
+    if outers is None:
+        return None
+    top_y = float(points[0][1]) + rise
+    tops = []
+    for point in points:
+        tops.append((float(point[0]), max(top_y, float(point[1]) + 0.02), float(point[2])))
+    return tops, outers
+
+
+def _bank_source(gen):
+    points = gen.get("points")
+    if not isinstance(points, (list, tuple)) or len(points) < 2:
+        return None
+    closed = bool(gen.get("closed"))
+    reversed_side = bool(gen.get("reversed"))
+    width = gen.get("width") if isinstance(gen.get("width"), (int, float)) else 2.0
+    height = gen.get("height") if isinstance(gen.get("height"), (int, float)) else 0.6
+    tops = gen.get("tops")
+    outers = gen.get("outers")
+    if (
+        isinstance(tops, (list, tuple))
+        and isinstance(outers, (list, tuple))
+        and len(tops) == len(points)
+        and len(outers) == len(points)
+    ):
+        return points, tops, outers, closed
+    frame = _bank_frame(points, width, height, closed, reversed_side)
+    if frame is None:
+        return None
+    return points, frame[0], frame[1], closed
+
+
+def _point3(point):
+    return (float(point[0]), float(point[1]), float(point[2]))
+
+
+def _bank_uv(point, normal):
+    ax, ay, az = abs(normal[0]), abs(normal[1]), abs(normal[2])
+    x, y, z = point
+    if ay >= ax and ay >= az:
+        return (x, z)
+    if ax >= az:
+        return (z, y)
+    return (x, y)
+
+
+def make_bank_run_mesh(name, points, tops, outers, color, material=None, closed=False):
+    """Solid slope. The path is the foot of the tall side. Each outer corner is the low edge."""
+    if len(points) < 2 or len(tops) != len(points) or len(outers) != len(points):
+        return None
+    loop = bool(closed) and len(points) >= 3
+    segments = len(points) if loop else len(points) - 1
+    verts = []
+    faces = []
+    uvs = []
+    loop_normals = []
+
+    def add_quad(a, b, c, d, outward):
+        outward = _vnorm(outward) or (0.0, 1.0, 0.0)
+        _add_tri(verts, faces, uvs, a, b, c, _bank_uv(a, outward), _bank_uv(b, outward), _bank_uv(c, outward), outward, loop_normals)
+        _add_tri(verts, faces, uvs, a, c, d, _bank_uv(a, outward), _bank_uv(c, outward), _bank_uv(d, outward), outward, loop_normals)
+
+    def add_cap(a, b, c, outward):
+        outward = _vnorm(outward) or (0.0, 0.0, 1.0)
+        _add_tri(verts, faces, uvs, a, b, c, _bank_uv(a, outward), _bank_uv(b, outward), _bank_uv(c, outward), outward, loop_normals)
+
+    for index in range(segments):
+        nxt = (index + 1) % len(points)
+        foot_a, foot_b = _point3(points[index]), _point3(points[nxt])
+        top_a, top_b = _point3(tops[index]), _point3(tops[nxt])
+        outer_a, outer_b = _point3(outers[index]), _point3(outers[nxt])
+        slope = _vcross(_vsub(top_b, top_a), _vsub(outer_a, top_a))
+        if slope[1] < 0:
+            slope = (-slope[0], -slope[1], -slope[2])
+        if _vdot(slope, slope) < 1e-12:
+            slope = (0.0, 1.0, 0.0)
+        add_quad(top_a, top_b, outer_b, outer_a, slope)
+        away = (
+            (foot_a[0] + foot_b[0]) * 0.5 - (outer_a[0] + outer_b[0]) * 0.5,
+            0.0,
+            (foot_a[2] + foot_b[2]) * 0.5 - (outer_a[2] + outer_b[2]) * 0.5,
+        )
+        if _vdot(away, away) < 1e-8:
+            away = (0.0, 0.0, 1.0)
+        add_quad(foot_a, foot_b, top_b, top_a, away)
+        add_quad(foot_a, outer_a, outer_b, foot_b, (0.0, -1.0, 0.0))
+    if not loop:
+        last = len(points) - 1
+        add_cap(_point3(points[0]), _point3(tops[0]), _point3(outers[0]), _horiz_dir(points[1], points[0]))
+        add_cap(_point3(points[last]), _point3(outers[last]), _point3(tops[last]), _horiz_dir(points[last - 1], points[last]))
+    if not faces:
+        return None
+    return _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs, loop_normals=loop_normals)
+
+
 PLANTER_HEIGHT_M = 0.55
 PLANTER_CAP_M = 0.14
 PLANTER_WALL_M = 0.34
@@ -1912,83 +2046,142 @@ def _planter_insets(span_x, span_z):
     return overhang, wall
 
 
-def _planter_fields(corners, tops, side_bases=None, side_tops=None):
-    x0, y0, z0 = corners[0]
-    x1, y1, z1 = corners[1]
-    minx, maxx = min(float(x0), float(x1)), max(float(x0), float(x1))
-    minz, maxz = min(float(z0), float(z1)), max(float(z0), float(z1))
-    if maxx - minx < 1e-4 or maxz - minz < 1e-4:
-        return None
-    listed = list(tops) if isinstance(tops, (list, tuple)) and len(tops) == 2 else None
-    rims = []
-    bases_in = [float(y0), float(y1)]
-    for index in range(2):
-        base = bases_in[index]
-        top = float(listed[index]) if listed else base + PLANTER_HEIGHT_M
-        rims.append(max(top, base + MIN_PLANTER_THICKNESS_M))
+def _planter_rim_ys(points, rims):
+    listed = list(rims) if isinstance(rims, (list, tuple)) else None
+    heights = []
+    for index, point in enumerate(points):
+        base = float(point[1])
+        top = float(listed[index]) if listed is not None and index < len(listed) else base + PLANTER_HEIGHT_M
+        heights.append(max(top, base + MIN_PLANTER_THICKNESS_M))
+    return heights
 
-    span_x, span_z = maxx - minx, maxz - minz
+
+def _planter_signed_area(corners):
+    area = 0.0
+    count = len(corners)
+    for index, corner in enumerate(corners):
+        nxt = corners[(index + 1) % count]
+        area += corner["x"] * nxt["z"] - nxt["x"] * corner["z"]
+    return area / 2.0
+
+
+def _planter_legacy_outline(corners, tops, side_bases, side_tops):
+    """Two opposite corners, plus the old side pins, become four outline corners."""
+    x0, y0, z0 = (float(v) for v in corners[0])
+    x1, y1, z1 = (float(v) for v in corners[1])
+    rims = _planter_rim_ys(((x0, y0, z0), (x1, y1, z1)), tops)
+    span_x, span_z = abs(x1 - x0), abs(z1 - z0)
     slope_along_x = span_x >= span_z
     fallback_a = 1 if slope_along_x else 0
     fallback_b = 0 if slope_along_x else 1
+    bases = (y0, y1)
     has_bases = isinstance(side_bases, (list, tuple)) and len(side_bases) == 2
     has_tops = isinstance(side_tops, (list, tuple)) and len(side_tops) == 2
-    base_a = float(side_bases[0]) if has_bases else bases_in[fallback_a]
-    base_b = float(side_bases[1]) if has_bases else bases_in[fallback_b]
+    base_a = float(side_bases[0]) if has_bases else bases[fallback_a]
+    base_b = float(side_bases[1]) if has_bases else bases[fallback_b]
     rim_a = max(float(side_tops[0]) if has_tops else rims[fallback_a], base_a + MIN_PLANTER_THICKNESS_M)
     rim_b = max(float(side_tops[1]) if has_tops else rims[fallback_b], base_b + MIN_PLANTER_THICKNESS_M)
-    heights = (
-        (bases_in[0], rims[0]),
-        (base_a, rim_a),
-        (bases_in[1], rims[1]),
-        (base_b, rim_b),
+    points = (
+        (x0, y0, z0),
+        (x1, base_a, z0),
+        (x1, y1, z1),
+        (x0, base_b, z1),
     )
-    rise = min(pair[1] - pair[0] for pair in heights)
+    return points, (rims[0], rim_a, rims[1], rim_b)
+
+
+def _planter_source(gen):
+    points = gen.get("points")
+    if isinstance(points, (list, tuple)) and len(points) >= 3:
+        return points, gen.get("rims")
+    corners = gen.get("corners")
+    if isinstance(corners, (list, tuple)) and len(corners) == 2:
+        return _planter_legacy_outline(corners, gen.get("tops"), gen.get("sideBases"), gen.get("sideTops"))
+    return None, None
+
+
+def _planter_outer(points, rims):
+    flat = [(float(point[0]), 0.0, float(point[2])) for point in points]
+    if len(flat) < 3 or abs(_platform_signed_area(flat)) < 0.001:
+        return None
+    heights = _planter_rim_ys(points, rims)
+    ring = [
+        {"x": float(point[0]), "z": float(point[2]), "base": float(point[1]), "rim": heights[index], "brick": heights[index]}
+        for index, point in enumerate(points)
+    ]
+    if _planter_signed_area(ring) < 0:
+        ring.reverse()
+    rise = min(corner["rim"] - corner["base"] for corner in ring)
     cap = 0.03 if rise < 0.06 else min(PLANTER_CAP_M, rise * 0.45)
-    overhang, wall = _planter_insets(span_x, span_z)
-    dx = float(x1) - float(x0)
-    dz = float(z1) - float(z0)
-
-    def sample(kind, x, z):
-        index = 0 if kind == "base" else 1
-        h0, h_a, h1, h_b = (heights[i][index] for i in range(4))
-        u = 0.0 if abs(dx) < 1e-8 else (x - float(x0)) / dx
-        v = 0.0 if abs(dz) < 1e-8 else (z - float(z0)) / dz
-        along0 = h0 * (1.0 - u) + h_a * u
-        along1 = h_b * (1.0 - u) + h1 * u
-        return along0 * (1.0 - v) + along1 * v
-
-    return {
-        "minx": minx,
-        "maxx": maxx,
-        "minz": minz,
-        "maxz": maxz,
-        "overhang": overhang,
-        "wall": wall,
-        "base": lambda x, z: sample("base", x, z),
-        "rim": lambda x, z: sample("rim", x, z),
-        "brick": lambda x, z: sample("rim", x, z) - cap,
-    }
+    for corner in ring:
+        corner["brick"] = corner["rim"] - cap
+    return ring
 
 
-def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_tops=None, materials=None):
-    """Brick box, granite rim that overhangs it, grass set down to the underside of the rim."""
-    if not corners or len(corners) < 2:
+def _inset_planter_ring(corners, distance):
+    count = len(corners)
+    moved = []
+    for index, corner in enumerate(corners):
+        prev = corners[(index - 1) % count]
+        nxt = corners[(index + 1) % count]
+
+        def inward(start, end):
+            left = _left_of(_horiz_dir((start["x"], 0.0, start["z"]), (end["x"], 0.0, end["z"])))
+            return (-left[0], -left[2])
+
+        incoming = inward(prev, corner)
+        outgoing = inward(corner, nxt)
+        total_x = incoming[0] + outgoing[0]
+        total_z = incoming[1] + outgoing[1]
+        length = math.hypot(total_x, total_z)
+        if length < 1e-8:
+            moved.append({**corner, "x": corner["x"] + outgoing[0] * distance, "z": corner["z"] + outgoing[1] * distance})
+            continue
+        miter = (total_x / length, total_z / length)
+        denom = max(miter[0] * outgoing[0] + miter[1] * outgoing[1], 0.25)
+        scale = min(distance / denom, distance * 4.0)
+        moved.append({**corner, "x": corner["x"] + miter[0] * scale, "z": corner["z"] + miter[1] * scale})
+    return moved
+
+
+def _planter_full_span(corners):
+    area = _planter_signed_area(corners)
+    perimeter = 0.0
+    count = len(corners)
+    for index, corner in enumerate(corners):
+        nxt = corners[(index + 1) % count]
+        perimeter += math.hypot(nxt["x"] - corner["x"], nxt["z"] - corner["z"])
+    if perimeter <= 1e-6:
+        return 0.0
+    return (4.0 * area) / perimeter
+
+
+def _planter_rings(points, rims):
+    outer = _planter_outer(points, rims)
+    if outer is None:
         return None
-    fields = _planter_fields(corners, tops, side_bases, side_tops)
-    if fields is None:
-        return None
-    minx, maxx = fields["minx"], fields["maxx"]
-    minz, maxz = fields["minz"], fields["maxz"]
-    overhang, wall = fields["overhang"], fields["wall"]
-    base_at, rim_at, brick_at = fields["base"], fields["rim"], fields["brick"]
-    ox0, ox1 = minx + overhang, maxx - overhang
-    oz0, oz1 = minz + overhang, maxz - overhang
-    ix0, ix1 = ox0 + wall, ox1 - wall
-    iz0, iz1 = oz0 + wall, oz1 - wall
-    if ix1 - ix0 < 0.02 or iz1 - iz0 < 0.02:
-        return None
+    span = _planter_full_span(outer)
+    overhang, wall = _planter_insets(span, span)
+    outer_area = _planter_signed_area(outer)
+    for _attempt in range(8):
+        brick = _inset_planter_ring(outer, overhang)
+        inner = _inset_planter_ring(outer, overhang + wall)
+        brick_area = _planter_signed_area(brick)
+        inner_area = _planter_signed_area(inner)
+        if brick_area > 0.01 and inner_area > 0.01 and inner_area < brick_area and brick_area < outer_area + 1e-3:
+            return {"overhang": overhang, "wall": wall, "outer": outer, "brick": brick, "inner": inner}
+        overhang *= 0.65
+        wall *= 0.65
+        if overhang + wall < 0.04:
+            break
+    return None
 
+
+def make_planter_mesh(name, points, rims, project_root, materials=None):
+    """Brick wall, granite rim, and grass, following an outline. Each corner has its own base and rim."""
+    rings = _planter_rings(points, rims)
+    if rings is None:
+        return None
     verts = []
     faces = []
     uvs = []
@@ -2006,84 +2199,79 @@ def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_t
         add(slot, a, b, c, ua, ub, uc, outward)
         add(slot, a, c, d, ua, uc, ud, outward)
 
-    def side(slot, x0, z0, x1, z1, y_low, y_high, outward, tile, u0=0.0):
-        span = math.hypot(x1 - x0, z1 - z0)
-        if span < 1e-5:
-            return
-        a = (x0, y_low(x0, z0), z0)
-        b = (x1, y_low(x1, z1), z1)
-        c = (x1, y_high(x1, z1), z1)
-        d = (x0, y_high(x0, z0), z0)
-        u1 = u0 + span / tile
-        quad(
-            slot,
-            a, b, c, d,
-            (u0, a[1] / tile),
-            (u1, b[1] / tile),
-            (u1, c[1] / tile),
-            (u0, d[1] / tile),
-            outward,
-        )
+    def vertex(corner, y):
+        return (corner["x"], y, corner["z"])
 
-    def flat(slot, x0, z0, x1, z1, y_at, outward, tile):
-        a = (x0, y_at(x0, z0), z0)
-        b = (x1, y_at(x1, z0), z0)
-        c = (x1, y_at(x1, z1), z1)
-        d = (x0, y_at(x0, z1), z1)
-        quad(
-            slot,
-            a, b, c, d,
-            (x0 / tile, z0 / tile),
-            (x1 / tile, z0 / tile),
-            (x1 / tile, z1 / tile),
-            (x0 / tile, z1 / tile),
-            outward,
-        )
-
-    # One grid for the cap, the brick, and the grass. Lips only grind when the
-    # top and the wall share the edge. A full-width north/south strip used to
-    # own the corners, so the east/west lip was three short edges sitting on
-    # one long wall edge and the game never treated it as a ledge.
-    xs = [minx, ox0, ix0, ix1, ox1, maxx]
-    zs = [minz, oz0, iz0, iz1, oz1, maxz]
-
-    def cells(slot, y_at, outward, tile, keep):
-        for i in range(len(xs) - 1):
-            for j in range(len(zs) - 1):
-                if keep(i, j):
-                    flat(slot, xs[i], zs[j], xs[i + 1], zs[j + 1], y_at, outward, tile)
-
-    def wall_along_x(slot, z, y_low, y_high, outward, tile, i0, i1):
-        for i in range(i0, i1):
-            side(
-                slot, xs[i], z, xs[i + 1], z, y_low, y_high, outward, tile,
-                abs(xs[i] - xs[i0]) / tile,
+    def wall(slot, ring, y_low, y_high, face_outward, tile):
+        along = 0.0
+        count = len(ring)
+        for index, start in enumerate(ring):
+            end = ring[(index + 1) % count]
+            span = math.hypot(end["x"] - start["x"], end["z"] - start["z"])
+            if span < 1e-5:
+                continue
+            outward = _left_of(_horiz_dir((start["x"], 0.0, start["z"]), (end["x"], 0.0, end["z"])))
+            if not face_outward:
+                outward = (-outward[0], 0.0, -outward[2])
+            low_a, low_b = y_low(start), y_low(end)
+            high_a, high_b = y_high(start), y_high(end)
+            u0, u1 = along / tile, (along + span) / tile
+            along += span
+            quad(
+                slot,
+                vertex(start, low_a),
+                vertex(end, low_b),
+                vertex(end, high_b),
+                vertex(start, high_a),
+                (u0, low_a / tile),
+                (u1, low_b / tile),
+                (u1, high_b / tile),
+                (u0, high_a / tile),
+                outward,
             )
 
-    def wall_along_z(slot, x, y_low, y_high, outward, tile, j0, j1):
-        for j in range(j0, j1):
-            side(
-                slot, x, zs[j], x, zs[j + 1], y_low, y_high, outward, tile,
-                abs(zs[j] - zs[j0]) / tile,
+    def band(slot, outside, inside, y_at, outward, tile):
+        count = len(outside)
+        for index in range(count):
+            a = outside[index]
+            b = outside[(index + 1) % count]
+            c = inside[(index + 1) % len(inside)]
+            d = inside[index]
+            quad(
+                slot,
+                vertex(a, y_at(a)),
+                vertex(b, y_at(b)),
+                vertex(c, y_at(c)),
+                vertex(d, y_at(d)),
+                (a["x"] / tile, a["z"] / tile),
+                (b["x"] / tile, b["z"] / tile),
+                (c["x"] / tile, c["z"] / tile),
+                (d["x"] / tile, d["z"] / tile),
+                outward,
             )
 
-    wall_along_x(0, oz0, base_at, brick_at, (0.0, 0.0, -1.0), BRICK_TILE_M, 1, 4)
-    wall_along_x(0, oz1, base_at, brick_at, (0.0, 0.0, 1.0), BRICK_TILE_M, 1, 4)
-    wall_along_z(0, ox0, base_at, brick_at, (-1.0, 0.0, 0.0), BRICK_TILE_M, 1, 4)
-    wall_along_z(0, ox1, base_at, brick_at, (1.0, 0.0, 0.0), BRICK_TILE_M, 1, 4)
-    cells(0, base_at, down, BRICK_TILE_M, lambda i, j: 1 <= i <= 3 and 1 <= j <= 3)
+    def cap(slot, ring, y_at, outward, tile):
+        flat = [(corner["x"], 0.0, corner["z"]) for corner in ring]
+        for i0, i1, i2 in _platform_triangles(flat):
+            a, b, c = ring[i0], ring[i1], ring[i2]
+            add(
+                slot,
+                vertex(a, y_at(a)),
+                vertex(b, y_at(b)),
+                vertex(c, y_at(c)),
+                (a["x"] / tile, a["z"] / tile),
+                (b["x"] / tile, b["z"] / tile),
+                (c["x"] / tile, c["z"] / tile),
+                outward,
+            )
 
-    wall_along_x(1, minz, brick_at, rim_at, (0.0, 0.0, -1.0), STONE_TILE_M, 0, 5)
-    wall_along_x(1, maxz, brick_at, rim_at, (0.0, 0.0, 1.0), STONE_TILE_M, 0, 5)
-    wall_along_z(1, minx, brick_at, rim_at, (-1.0, 0.0, 0.0), STONE_TILE_M, 0, 5)
-    wall_along_z(1, maxx, brick_at, rim_at, (1.0, 0.0, 0.0), STONE_TILE_M, 0, 5)
-    side(1, ix1, iz1, ix1, iz0, brick_at, rim_at, (-1.0, 0.0, 0.0), STONE_TILE_M)
-    side(1, ix0, iz0, ix0, iz1, brick_at, rim_at, (1.0, 0.0, 0.0), STONE_TILE_M)
-    side(1, ix1, iz1, ix0, iz1, brick_at, rim_at, (0.0, 0.0, -1.0), STONE_TILE_M)
-    side(1, ix0, iz0, ix1, iz0, brick_at, rim_at, (0.0, 0.0, 1.0), STONE_TILE_M)
-    cells(1, rim_at, up, STONE_TILE_M, lambda i, j: not (i == 2 and j == 2))
-    cells(1, brick_at, down, STONE_TILE_M, lambda i, j: not (1 <= i <= 3 and 1 <= j <= 3))
-    flat(2, ix0, iz0, ix1, iz1, brick_at, up, STONE_TILE_M)
+    wall(0, rings["brick"], lambda corner: corner["base"], lambda corner: corner["brick"], True, BRICK_TILE_M)
+    cap(0, rings["brick"], lambda corner: corner["base"], down, BRICK_TILE_M)
+    wall(1, rings["outer"], lambda corner: corner["brick"], lambda corner: corner["rim"], True, STONE_TILE_M)
+    wall(1, rings["inner"], lambda corner: corner["brick"], lambda corner: corner["rim"], False, STONE_TILE_M)
+    band(1, rings["outer"], rings["inner"], lambda corner: corner["rim"], up, STONE_TILE_M)
+    band(1, rings["outer"], rings["brick"], lambda corner: corner["brick"], down, STONE_TILE_M)
+    cap(2, rings["inner"], lambda corner: corner["brick"], up, STONE_TILE_M)
 
     if not faces:
         return None
@@ -2092,14 +2280,7 @@ def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_t
         granite_material(project_root),
         grass_material(project_root),
     )
-    obj = _link_mesh(
-        name,
-        verts,
-        faces,
-        (0.72, 0.38, 0.28),
-        material=mats[0],
-        loop_uvs=uvs,
-    )
+    obj = _link_mesh(name, verts, faces, (0.72, 0.38, 0.28), material=mats[0], loop_uvs=uvs)
     mesh = obj.data
     mesh.materials.clear()
     for mat in mats:
@@ -2109,52 +2290,47 @@ def make_planter_mesh(name, corners, tops, project_root, side_bases=None, side_t
     return obj
 
 
-def make_planter_wax_mesh(name, corners, tops, project_root, side_bases=None, side_tops=None):
-    """Wax decal on the four outer lips. Separate object, so collision can stay off."""
-    fields = _planter_fields(corners, tops, side_bases, side_tops)
-    if fields is None:
+def make_planter_wax_mesh(name, points, rims, project_root):
+    """Wax decal on the outer lip. Separate object, so collision can stay off."""
+    rings = _planter_rings(points, rims)
+    if rings is None:
         return None
-    minx, maxx = fields["minx"], fields["maxx"]
-    minz, maxz = fields["minz"], fields["maxz"]
-    overhang, wall = fields["overhang"], fields["wall"]
-    base_at, rim_at = fields["base"], fields["rim"]
+    reach = min(CURB_WAX_WIDTH_M, rings["overhang"] + rings["wall"] - 0.02)
+    outer = rings["outer"]
     verts = []
     faces = []
     uvs = []
-
-    def add_edge(x0, z0, x1, z1, inward, band, lift_extra):
-        span = math.hypot(x1 - x0, z1 - z0)
-        cross = (maxz - minz) if abs(inward[2]) > 0.5 else (maxx - minx)
-        reach = min(CURB_WAX_WIDTH_M, overhang + wall - 0.02, cross * 0.45)
+    count = len(outer)
+    for index, start in enumerate(outer):
+        end = outer[(index + 1) % count]
+        span = math.hypot(end["x"] - start["x"], end["z"] - start["z"])
+        band = PLANTER_WAX_BANDS[index % len(PLANTER_WAX_BANDS)]
         band_span = band[1] - band[0]
         if span < 1e-4 or reach < 0.02 or band_span < 1e-4:
-            return
+            continue
         tile = (reach / band_span) * CURB_WAX_ALONG_SCALE
-        lift = CURB_WAX_LIFT_M + lift_extra
-        outward = (-inward[0], 0.0, -inward[2])
+        lift = CURB_WAX_LIFT_M + (index % len(PLANTER_WAX_BANDS)) * 0.0004
+        outward = _left_of(_horiz_dir((start["x"], 0.0, start["z"]), (end["x"], 0.0, end["z"])))
+        inward = (-outward[0], 0.0, -outward[2])
 
-        def end(x, z):
-            rim = rim_at(x, z)
-            drop = min(reach, max(0.02, rim - base_at(x, z) - 0.01))
-            outer = (x + outward[0] * CURB_WAX_LIFT_M, rim + lift, z + outward[2] * CURB_WAX_LIFT_M)
-            inner_x = x + inward[0] * reach
-            inner_z = z + inward[2] * reach
-            inner = (inner_x, rim_at(inner_x, inner_z) + lift, inner_z)
-            down = (outer[0], outer[1] - drop, outer[2])
-            return outer, inner, down
+        def lip(corner, outward=outward, inward=inward, lift=lift):
+            drop = min(reach, max(0.02, corner["rim"] - corner["base"] - 0.01))
+            outside = (
+                corner["x"] + outward[0] * CURB_WAX_LIFT_M,
+                corner["rim"] + lift,
+                corner["z"] + outward[2] * CURB_WAX_LIFT_M,
+            )
+            inside = (corner["x"] + inward[0] * reach, corner["rim"] + lift, corner["z"] + inward[2] * reach)
+            fallen = (outside[0], outside[1] - drop, outside[2])
+            return outside, inside, fallen
 
-        a = end(x0, z0)
-        b = end(x1, z1)
+        a = lip(start)
+        b = lip(end)
         u1 = span / tile
         _add_tri(verts, faces, uvs, a[0], a[1], b[1], (0.0, band[0]), (0.0, band[1]), (u1, band[1]), (0.0, 1.0, 0.0))
         _add_tri(verts, faces, uvs, a[0], b[1], b[0], (0.0, band[0]), (u1, band[1]), (u1, band[0]), (0.0, 1.0, 0.0))
         _add_tri(verts, faces, uvs, a[0], b[0], b[2], (0.0, band[0]), (u1, band[0]), (u1, band[1]), outward)
         _add_tri(verts, faces, uvs, a[0], b[2], a[2], (0.0, band[0]), (u1, band[1]), (0.0, band[1]), outward)
-
-    add_edge(minx, minz, maxx, minz, (0.0, 0.0, 1.0), PLANTER_WAX_BANDS[0], 0.0)
-    add_edge(minx, maxz, maxx, maxz, (0.0, 0.0, -1.0), PLANTER_WAX_BANDS[1], 0.0004)
-    add_edge(minx, minz, minx, maxz, (1.0, 0.0, 0.0), PLANTER_WAX_BANDS[2], 0.0008)
-    add_edge(maxx, minz, maxx, maxz, (-1.0, 0.0, 0.0), PLANTER_WAX_BANDS[3], 0.0012)
     if not faces:
         return None
     obj = _link_mesh(
@@ -2168,8 +2344,6 @@ def make_planter_wax_mesh(name, corners, tops, project_root, side_bases=None, si
     if hasattr(obj, "visible_shadow"):
         obj.visible_shadow = False
     return obj
-
-
 STAIR_WIDTH_M = 2.0
 STAIR_HEIGHT_M = 0.6
 STAIR_TREAD_M = 0.03
@@ -4538,23 +4712,24 @@ def build(scene):
                 continue
 
             if gen.get("kind") == "bank":
-                vertices = gen.get("vertices") or []
-                if len(vertices) != 8:
-                    print(f"Skipping bank {name}: needs eight corners")
-                    continue
-                obj = make_bank_mesh(
-                    name,
-                    vertices,
-                    (0.55, 0.58, 0.62),
-                    slot_material(
-                        project_root,
-                        texture_sets,
-                        overrides,
-                        sounds,
-                        "striped_concrete",
-                        lambda: striped_concrete_material(project_root),
-                    ),
+                concrete = slot_material(
+                    project_root,
+                    texture_sets,
+                    overrides,
+                    sounds,
+                    "striped_concrete",
+                    lambda: striped_concrete_material(project_root),
                 )
+                sourced = _bank_source(gen)
+                if sourced:
+                    points, tops, outers, closed = sourced
+                    obj = make_bank_run_mesh(name, points, tops, outers, (0.55, 0.58, 0.62), concrete, closed)
+                else:
+                    vertices = gen.get("vertices") or []
+                    if len(vertices) != 8:
+                        print(f"Skipping bank {name}: needs a run or eight corners")
+                        continue
+                    obj = make_bank_mesh(name, vertices, (0.55, 0.58, 0.62), concrete)
                 if obj is None:
                     print(f"Skipping bank {name}: could not build the mesh")
                     continue
@@ -4578,17 +4753,15 @@ def build(scene):
                 continue
 
             if gen.get("kind") == "planter":
-                corners = gen.get("corners") or []
-                if len(corners) < 2:
-                    print(f"Skipping planter {name}: needs two corners")
+                points, rims = _planter_source(gen)
+                if not points:
+                    print(f"Skipping planter {name}: needs an outline")
                     continue
                 obj = make_planter_mesh(
                     name,
-                    corners,
-                    gen.get("tops"),
+                    points,
+                    rims,
                     project_root,
-                    gen.get("sideBases"),
-                    gen.get("sideTops"),
                     (
                         slot_material(
                             project_root,
@@ -4638,11 +4811,9 @@ def build(scene):
                 link_only(obj, colls["Map"])
                 wax = make_planter_wax_mesh(
                     f"{name} wax",
-                    corners,
-                    gen.get("tops"),
+                    points,
+                    rims,
                     project_root,
-                    gen.get("sideBases"),
-                    gen.get("sideTops"),
                 )
                 if wax is not None:
                     wax.name = f"{name} wax"

@@ -23,15 +23,15 @@ import {
   clampStairSteps,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
-  bankFromWorld,
+  bankFrame,
+  bankLayoutMatches,
   curbLocalPoints,
   railBaseFromHit,
   curbOrigin,
   curbRunLength,
   curbSegmentTooShort,
-  planterFootprintTooSmall,
-  platformFootprintTooSmall,
-  platformFromWorld,
+  planterOutlineFits,
+  planterRimYs,
   platformOutlineTooSmall,
 } from './lib/generators'
 import type { DrawGenerator } from './lib/kitLayout'
@@ -955,94 +955,174 @@ export default function App() {
   }
 
   function clickBank(point: THREE.Vector3) {
-    const groundY = point.y < 0.02 ? 0 : point.y
+    const y = point.y < 0.02 ? 0 : point.y
+    const nextPoint: [number, number, number] = [round4(point.x), round4(y), round4(point.z)]
     const prevPins = history.pinsRef.current
+    const previous = prevPins.at(-1)
+    if (previous && curbSegmentTooShort(previous, nextPoint)) {
+      setStatus('That bank section is too short.')
+      return
+    }
     const before = history.checkpoint()
-    if (prevPins.length === 0) {
-      const next: [number, number, number] = [round4(point.x), round4(groundY), round4(point.z)]
-      history.pinsRef.current = [next]
-      setPins([next])
-      history.remember(before)
-      setStatus('Pinned the first corner')
-      setError(null)
-      return
+    const nextPins = [...prevPins, nextPoint]
+    history.pinsRef.current = nextPins
+    if (previous) {
+      const prev = history.sceneRef.current
+      const origin = curbOrigin(nextPins)
+      const local = curbLocalPoints(nextPins, origin)
+      const strokeId = history.strokeIdRef.current
+      const existing = prev.objects.find(
+        (obj): obj is MeshObject =>
+          obj.kind === 'mesh' && obj.id === strokeId && obj.generator?.kind === 'bank',
+      )
+      const previousBank = existing?.generator?.kind === 'bank' ? existing.generator : null
+      const width = previousBank?.width ?? STAIR_WIDTH_M
+      const height = previousBank?.height ?? STAIR_HEIGHT_M
+      const closed = previousBank?.closed === true
+      const reversed = previousBank?.reversed === true
+      const frame = bankFrame(local, width, height, closed, reversed)
+      if (!frame) {
+        setPins(nextPins)
+        history.remember(before)
+        setStatus('That bank is too small.')
+        setError(null)
+        return
+      }
+      let tops = frame.tops
+      let outers = frame.outers
+      if (previousBank?.points && previousBank.tops && previousBank.outers && existing) {
+        const oldOrigin = existing.position
+        const toNew = (corner: [number, number, number]): [number, number, number] => [
+          round4(corner[0] + oldOrigin[0] - origin[0]),
+          round4(corner[1] + oldOrigin[1] - origin[1]),
+          round4(corner[2] + oldOrigin[2] - origin[2]),
+        ]
+        const oldPoints = previousBank.points.map(toNew)
+        const oldTops = previousBank.tops.map(toNew)
+        const oldOuters = previousBank.outers.map(toNew)
+        const shaped =
+          oldPoints.length + 1 === local.length &&
+          !bankLayoutMatches(oldPoints, oldTops, oldOuters, width, height, closed, reversed)
+        if (shaped) {
+          tops = [...oldTops, frame.tops[frame.tops.length - 1]]
+          outers = [...oldOuters, frame.outers[frame.outers.length - 1]]
+        }
+      }
+      const generator = {
+        kind: 'bank' as const,
+        points: local,
+        tops,
+        outers,
+        width,
+        height,
+        closed,
+        reversed,
+      }
+      if (existing) {
+        applyScene({
+          ...prev,
+          objects: prev.objects.map((obj) =>
+            obj.id === existing.id && obj.kind === 'mesh'
+              ? { ...obj, position: origin, rotation: [0, 0, 0], scale: [1, 1, 1], generator }
+              : obj,
+          ),
+        })
+        setStatus(`Extended the bank to ${curbRunLength(nextPins)} m`)
+      } else {
+        const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'bank').length
+        const id = uid('mesh')
+        const obj: MeshObject = {
+          id,
+          kind: 'mesh',
+          libraryId: 'generator_bank',
+          name: `Bank_${count + 1}`,
+          position: origin,
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+          generator,
+          sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
+        }
+        history.strokeIdRef.current = id
+        applyScene({ ...prev, objects: [...prev.objects, obj] })
+        setStatus(`Added bank, ${curbRunLength(nextPins)} m, ${height.toFixed(2)} m tall`)
+      }
+    } else {
+      setStatus('Pinned the bank start')
     }
-    const first = prevPins[0]
-    const second: [number, number, number] = [round4(point.x), first[1], round4(point.z)]
-    if (platformFootprintTooSmall(first, second)) {
-      setStatus('That bank is too small.')
-      return
-    }
-    const { origin, vertices } = bankFromWorld(first, second)
-    const prev = history.sceneRef.current
-    const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'bank').length
-    const width = Math.abs(second[0] - first[0])
-    const depth = Math.abs(second[2] - first[2])
-    const obj: MeshObject = {
-      id: uid('mesh'),
-      kind: 'mesh',
-      libraryId: 'generator_bank',
-      name: `Bank_${count + 1}`,
-      position: origin,
-      rotation: [0, 0, 0],
-      scale: [1, 1, 1],
-      generator: { kind: 'bank', vertices },
-      sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
-    }
-    history.pinsRef.current = []
-    history.strokeIdRef.current = null
-    applyScene({ ...prev, objects: [...prev.objects, obj] })
-    setPins([])
+    setPins(nextPins)
     history.remember(before)
-    setStatus(`Added bank, ${width.toFixed(2)} × ${depth.toFixed(2)} m, ${PLATFORM_HEIGHT_M} m tall`)
     setError(null)
   }
 
   function clickPlanter(point: THREE.Vector3) {
-    const groundY = point.y < 0.02 ? 0 : point.y
     const prevPins = history.pinsRef.current
+    const baseY = prevPins.length > 0 ? prevPins[0][1] : point.y < 0.02 ? 0 : point.y
+    const nextPoint: [number, number, number] = [round4(point.x), round4(baseY), round4(point.z)]
+    const previous = prevPins.at(-1)
+    if (previous && curbSegmentTooShort(previous, nextPoint)) {
+      setStatus('That corner is too close to the last one.')
+      return
+    }
     const before = history.checkpoint()
-    if (prevPins.length === 0) {
-      const next: [number, number, number] = [round4(point.x), round4(groundY), round4(point.z)]
-      history.pinsRef.current = [next]
-      setPins([next])
+    const nextPins = [...prevPins, nextPoint]
+    history.pinsRef.current = nextPins
+    if (platformOutlineTooSmall(nextPins) || !planterOutlineFits(nextPins)) {
+      setPins(nextPins)
       history.remember(before)
-      setStatus('Pinned the first corner')
+      setStatus(
+        nextPins.length < 3
+          ? nextPins.length === 1
+            ? 'Pinned the first corner'
+            : 'Pinned a corner'
+          : 'That planter is too small.',
+      )
       setError(null)
       return
     }
-    const first = prevPins[0]
-    const second: [number, number, number] = [round4(point.x), first[1], round4(point.z)]
-    if (planterFootprintTooSmall(first, second)) {
-      setStatus('That planter is too small.')
-      return
-    }
-    const { origin, corners } = platformFromWorld(first, second)
     const prev = history.sceneRef.current
-    const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'planter').length
-    const width = Math.abs(second[0] - first[0])
-    const depth = Math.abs(second[2] - first[2])
-    const obj: MeshObject = {
-      id: uid('mesh'),
-      kind: 'mesh',
-      libraryId: 'generator_planter',
-      name: `Planter_${count + 1}`,
-      position: origin,
-      rotation: [0, 0, 0],
-      scale: [1, 1, 1],
-      generator: {
-        kind: 'planter',
-        corners,
-        tops: [PLANTER_HEIGHT_M, PLANTER_HEIGHT_M],
-      },
-      sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
+    const origin = curbOrigin(nextPins)
+    const local = curbLocalPoints(nextPins, origin)
+    const strokeId = history.strokeIdRef.current
+    const existing = prev.objects.find(
+      (obj): obj is MeshObject =>
+        obj.kind === 'mesh' && obj.id === strokeId && obj.generator?.kind === 'planter',
+    )
+    const previousRims =
+      existing?.generator?.kind === 'planter' ? planterRimYs(existing.generator.points, existing.generator.rims) : null
+    const rims = local.map((entry, index) =>
+      previousRims && index < previousRims.length ? previousRims[index] : entry[1] + PLANTER_HEIGHT_M,
+    )
+    const generator = { kind: 'planter' as const, points: local, rims }
+    if (existing) {
+      applyScene({
+        ...prev,
+        objects: prev.objects.map((obj) =>
+          obj.id === existing.id && obj.kind === 'mesh'
+            ? { ...obj, position: origin, rotation: [0, 0, 0], scale: [1, 1, 1], generator }
+            : obj,
+        ),
+      })
+      setStatus(`Added a corner. The planter has ${nextPins.length} corners.`)
+    } else {
+      const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'planter').length
+      const id = uid('mesh')
+      const obj: MeshObject = {
+        id,
+        kind: 'mesh',
+        libraryId: 'generator_planter',
+        name: `Planter_${count + 1}`,
+        position: origin,
+        rotation: [0, 0, 0],
+        scale: [1, 1, 1],
+        generator,
+        sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
+      }
+      history.strokeIdRef.current = id
+      applyScene({ ...prev, objects: [...prev.objects, obj] })
+      setStatus(`Added planter, ${nextPins.length} corners, ${PLANTER_HEIGHT_M} m tall`)
     }
-    history.pinsRef.current = []
-    history.strokeIdRef.current = null
-    applyScene({ ...prev, objects: [...prev.objects, obj] })
-    setPins([])
+    setPins(nextPins)
     history.remember(before)
-    setStatus(`Added planter, ${width.toFixed(2)} × ${depth.toFixed(2)} m, ${PLANTER_HEIGHT_M} m tall`)
     setError(null)
   }
 
@@ -1593,7 +1673,7 @@ export default function App() {
           <h2>Library</h2>
           <p className="hint">
             {categoryPath[0] === 'generators'
-              ? 'Click Curbs, Rails, or Stairs to draw a run. Platforms take a corner on each click, Banks a pad with eight free corners, and Planters a brick box. Escape leaves the tool.'
+              ? 'Click Curbs, Rails, Stairs, or Banks to draw a run. Platforms and planters take a corner on each click. Escape leaves the tool.'
               : categoryPath[0] === 'interactive'
                 ? 'Click a bus stop or a fast-travel point, then click the map. It stands on the ground. Right-click turns it 90°. Escape leaves the tool.'
                 : categoryPath[0] === 'traffic'
@@ -1737,7 +1817,7 @@ export default function App() {
                   <span className="swatch" style={{ background: '#8ea0b0' }} />
                   <span>
                     <strong>Banks</strong>
-                    <small>{activeGenerator?.kind === 'bank' ? 'Click two corners' : 'Click to draw'}</small>
+                    <small>{activeGenerator?.kind === 'bank' ? 'Click the map to draw' : 'Click to draw'}</small>
                   </span>
                 </button>
               </li>
@@ -1753,7 +1833,7 @@ export default function App() {
                   <span className="swatch" style={{ background: '#c46a4a' }} />
                   <span>
                     <strong>Planters</strong>
-                    <small>{activeGenerator?.kind === 'planter' ? 'Click two corners' : 'Click to draw'}</small>
+                    <small>{activeGenerator?.kind === 'planter' ? 'Click to add a corner' : 'Click to draw'}</small>
                   </span>
                 </button>
               </li>
@@ -2062,7 +2142,11 @@ export default function App() {
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'platform') {
                 setStatus('Drag a corner sideways to reshape the pad. Up and down moves the whole top, so it stays flat.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'bank') {
-                setStatus('Drag any sphere to move that corner. Each of the eight corners moves on its own.')
+                setStatus(
+                  picked.generator.points
+                    ? 'Drag a gold pin to move that station. An orange pin moves only that top corner. A teal pin moves only that outer corner.'
+                    : 'Drag any sphere to move that corner. Each of the eight corners moves on its own.',
+                )
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'planter') {
                 setStatus('Drag a sphere sideways to move that corner. Up and down sets that corner only.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'stairs') {
@@ -2125,9 +2209,9 @@ export default function App() {
             ) : activeGenerator?.kind === 'platform' ? (
               <span>Click the map to drop a corner. The third click builds the pad, and another click adds a corner. The top stays flat. Escape leaves Platforms.</span>
             ) : activeGenerator?.kind === 'bank' ? (
-              <span>Click two opposite corners. The bank starts 0.5 m tall. Select it and drag any of the eight spheres. Escape leaves Banks.</span>
+              <span>Click the map to drop the foot of the tall side. The next click builds the bank, and another click extends it. The slope runs down to the outer edge. Every corner can be moved on its own. Escape leaves Banks.</span>
             ) : activeGenerator?.kind === 'planter' ? (
-              <span>Click two opposite corners. The box is 0.55 m tall, with a brick wall, a granite rim, and grass inside. Escape leaves Planters.</span>
+              <span>Click the map to drop a corner. The third click builds the planter, and another click adds a corner. Each corner keeps its own base and rim. Escape leaves Planters.</span>
             ) : activeGenerator?.kind === 'stairs' ? (
               <span>Click the map to drop a pin at the foot of the tall side. The next click starts the stairs, and another click adds a section. The steps rise there and run down toward the outer edge, so a pin on the bottom of a platform puts the tall side against the wall. Escape leaves Stairs.</span>
             ) : activeGenerator?.kind === 'kit' ? (
@@ -2262,14 +2346,96 @@ export default function App() {
                   Drag a corner sideways to reshape the pad. Drag any corner up or down and the whole top moves, so it stays flat.
                 </p>
               )}
-              {selected.generator?.kind === 'bank' && (
+              {selected.generator?.kind === 'bank' && selected.generator.points && (
+                <>
+                  <p className="hint">
+                    Drag a gold pin to move that station. The top and the outer edge come with it. Drag an orange pin to move only that top corner. Drag a teal pin to move only that outer corner.
+                  </p>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={selected.generator.closed === true}
+                      onChange={(event) => {
+                        if (selected.generator?.kind !== 'bank' || !selected.generator.points || !selected.generator.tops || !selected.generator.outers) return
+                        const closed = event.target.checked
+                        const width = selected.generator.width ?? STAIR_WIDTH_M
+                        const height = selected.generator.height ?? STAIR_HEIGHT_M
+                        const matches = bankLayoutMatches(
+                          selected.generator.points,
+                          selected.generator.tops,
+                          selected.generator.outers,
+                          width,
+                          height,
+                          selected.generator.closed === true,
+                          selected.generator.reversed === true,
+                        )
+                        const frame = matches
+                          ? bankFrame(selected.generator.points, width, height, closed, selected.generator.reversed === true)
+                          : null
+                        patchObject(selected.id, {
+                          generator: {
+                            ...selected.generator,
+                            closed,
+                            tops: frame?.tops ?? selected.generator.tops,
+                            outers: frame?.outers ?? selected.generator.outers,
+                          },
+                        })
+                      }}
+                    />
+                    Closed
+                  </label>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      if (selected.generator?.kind !== 'bank' || !selected.generator.points || !selected.generator.tops || !selected.generator.outers) return
+                      const width = selected.generator.width ?? STAIR_WIDTH_M
+                      const height = selected.generator.height ?? STAIR_HEIGHT_M
+                      const reversed = selected.generator.reversed !== true
+                      const matches = bankLayoutMatches(
+                        selected.generator.points,
+                        selected.generator.tops,
+                        selected.generator.outers,
+                        width,
+                        height,
+                        selected.generator.closed === true,
+                        selected.generator.reversed === true,
+                      )
+                      const frame = matches
+                        ? bankFrame(selected.generator.points, width, height, selected.generator.closed === true, reversed)
+                        : null
+                      const outers = frame
+                        ? frame.outers
+                        : selected.generator.outers.map((outer, index) => {
+                            const foot = selected.generator?.kind === 'bank' ? selected.generator.points?.[index] : undefined
+                            if (!foot) return outer
+                            return [round4(foot[0] * 2 - outer[0]), outer[1], round4(foot[2] * 2 - outer[2])] as [number, number, number]
+                          })
+                      patchObject(selected.id, {
+                        generator: {
+                          ...selected.generator,
+                          reversed,
+                          tops: frame?.tops ?? selected.generator.tops,
+                          outers,
+                        },
+                      })
+                    }}
+                  >
+                    Reverse
+                  </button>
+                  {selected.generator.closed && selected.generator.points.length < 3 && (
+                    <p className="hint">Add a third pin. Two pins cannot close into a loop.</p>
+                  )}
+                </>
+              )}
+              {selected.generator?.kind === 'bank' && !selected.generator.points && (
                 <p className="hint">
                   Drag any sphere to move that corner. The base and the top are separate, so each of the eight corners moves on its own.
                 </p>
               )}
               {selected.generator?.kind === 'planter' && (
                 <p className="hint">
-                  Drag a sphere sideways to move that corner. Drag it up or down to set that corner's rim or base. Each corner is independent.
+                  Drag a sphere sideways to reshape the outline. Drag it up or down to set that corner's rim or base. Each corner is independent.
                 </p>
               )}
               {selected.generator?.kind === 'stairs' && (
@@ -3217,7 +3383,10 @@ function duplicateObject(
             : source.generator.kind === 'bank'
               ? {
                   ...source.generator,
-                  vertices: source.generator.vertices.map((point) => [point[0], point[1], point[2]]) as typeof source.generator.vertices,
+                  points: source.generator.points?.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+                  tops: source.generator.tops?.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+                  outers: source.generator.outers?.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+                  vertices: source.generator.vertices?.map((point) => [point[0], point[1], point[2]]) as typeof source.generator.vertices,
                 }
             : source.generator.kind === 'rail'
               ? {
@@ -3228,17 +3397,8 @@ function duplicateObject(
               : source.generator.kind === 'planter'
                 ? {
                     ...source.generator,
-                    corners: [
-                      [source.generator.corners[0][0], source.generator.corners[0][1], source.generator.corners[0][2]],
-                      [source.generator.corners[1][0], source.generator.corners[1][1], source.generator.corners[1][2]],
-                    ],
-                    tops: source.generator.tops ? [source.generator.tops[0], source.generator.tops[1]] : undefined,
-                    sideBases: source.generator.sideBases
-                      ? [source.generator.sideBases[0], source.generator.sideBases[1]]
-                      : undefined,
-                    sideTops: source.generator.sideTops
-                      ? [source.generator.sideTops[0], source.generator.sideTops[1]]
-                      : undefined,
+                    points: source.generator.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+                    rims: source.generator.rims?.map((y) => y),
                   }
               : source.generator.kind === 'stairs'
                 ? {
