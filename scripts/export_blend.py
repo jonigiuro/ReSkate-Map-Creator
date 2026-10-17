@@ -2188,10 +2188,11 @@ def make_planter_mesh(name, points, rims, project_root, materials=None):
     slots = []
     up = (0.0, 1.0, 0.0)
     down = (0.0, -1.0, 0.0)
+    loop_normals = []
 
-    def add(slot, a, b, c, ua, ub, uc, outward):
+    def add(slot, a, b, c, ua, ub, uc, outward, vertex_normals=None):
         before = len(faces)
-        _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward)
+        _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward, loop_normals, vertex_normals)
         if len(faces) != before:
             slots.append(slot)
 
@@ -2230,26 +2231,6 @@ def make_planter_mesh(name, points, rims, project_root, materials=None):
                 outward,
             )
 
-    def band(slot, outside, inside, y_at, outward, tile):
-        count = len(outside)
-        for index in range(count):
-            a = outside[index]
-            b = outside[(index + 1) % count]
-            c = inside[(index + 1) % len(inside)]
-            d = inside[index]
-            quad(
-                slot,
-                vertex(a, y_at(a)),
-                vertex(b, y_at(b)),
-                vertex(c, y_at(c)),
-                vertex(d, y_at(d)),
-                (a["x"] / tile, a["z"] / tile),
-                (b["x"] / tile, b["z"] / tile),
-                (c["x"] / tile, c["z"] / tile),
-                (d["x"] / tile, d["z"] / tile),
-                outward,
-            )
-
     def cap(slot, ring, y_at, outward, tile):
         flat = [(corner["x"], 0.0, corner["z"]) for corner in ring]
         for i0, i1, i2 in _platform_triangles(flat):
@@ -2265,13 +2246,107 @@ def make_planter_mesh(name, points, rims, project_root, materials=None):
                 outward,
             )
 
-    wall(0, rings["brick"], lambda corner: corner["base"], lambda corner: corner["brick"], True, BRICK_TILE_M)
-    cap(0, rings["brick"], lambda corner: corner["base"], down, BRICK_TILE_M)
-    wall(1, rings["outer"], lambda corner: corner["brick"], lambda corner: corner["rim"], True, STONE_TILE_M)
-    wall(1, rings["inner"], lambda corner: corner["brick"], lambda corner: corner["rim"], False, STONE_TILE_M)
-    band(1, rings["outer"], rings["inner"], lambda corner: corner["rim"], up, STONE_TILE_M)
-    band(1, rings["outer"], rings["brick"], lambda corner: corner["brick"], down, STONE_TILE_M)
-    cap(2, rings["inner"], lambda corner: corner["brick"], up, STONE_TILE_M)
+    def slope_normal(start, end, y0, y1, face_up):
+        dx = end["x"] - start["x"]
+        dz = end["z"] - start["z"]
+        span = math.hypot(dx, dz) or 1.0
+        slope = (y1 - y0) / span
+        dirx, dirz = dx / span, dz / span
+        scale = -1.0 if face_up else 1.0
+        return _unit((scale * slope * dirx, 1.0 if face_up else -1.0, scale * slope * dirz))
+
+    def blend_normal(a, b):
+        summed = (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+        if summed[0] * summed[0] + summed[1] * summed[1] + summed[2] * summed[2] < 1e-8:
+            return a
+        return _unit(summed)
+
+    def slope_strip(slot, outer_a, outer_b, inner_a, inner_b, y0, y1, face_up, tile, start_n, end_n, side_n):
+        span = math.hypot(outer_b["x"] - outer_a["x"], outer_b["z"] - outer_a["z"])
+        if span < 1e-5:
+            return
+        rise = abs(y1 - y0)
+
+        def ang(a, b):
+            return math.acos(max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])))
+
+        slanted = rise > 0.004 or ang(start_n, side_n) > 0.02 or ang(end_n, side_n) > 0.02
+        segments = min(80, max(2, math.ceil(span / 0.08))) if slanted else 1
+        outward = up if face_up else down
+
+        def at(a, b, t, y):
+            return (a["x"] + (b["x"] - a["x"]) * t, y, a["z"] + (b["z"] - a["z"]) * t)
+
+        def normal_at(t):
+            if t <= 0.0:
+                return start_n
+            if t >= 1.0:
+                return end_n
+            return side_n
+
+        for step in range(segments):
+            t0 = step / segments
+            t1 = (step + 1) / segments
+            h0 = y0 + (y1 - y0) * t0
+            h1 = y0 + (y1 - y0) * t1
+            a = at(outer_a, outer_b, t0, h0)
+            b = at(outer_a, outer_b, t1, h1)
+            c = at(inner_a, inner_b, t1, h1)
+            d = at(inner_a, inner_b, t0, h0)
+            n0, n1 = normal_at(t0), normal_at(t1)
+            add(slot, a, b, c, (a[0] / tile, a[2] / tile), (b[0] / tile, b[2] / tile), (c[0] / tile, c[2] / tile), outward, (n0, n1, n1))
+            add(slot, a, c, d, (a[0] / tile, a[2] / tile), (c[0] / tile, c[2] / tile), (d[0] / tile, d[2] / tile), outward, (n0, n1, n0))
+
+    outer = rings["outer"]
+    brick_ring = rings["brick"]
+    inner = rings["inner"]
+    count = len(outer)
+    # Outer granite face stays a straight trapezoid between the corner heights.
+    wall(1, outer, lambda corner: corner["brick"], lambda corner: corner["rim"], True, STONE_TILE_M)
+    wall(0, brick_ring, lambda corner: corner["base"], lambda corner: corner["brick"], True, BRICK_TILE_M)
+    wall(1, inner, lambda corner: corner["brick"], lambda corner: corner["rim"], False, STONE_TILE_M)
+    rim_normals = [
+        slope_normal(outer[index], outer[(index + 1) % count], outer[index]["rim"], outer[(index + 1) % count]["rim"], True)
+        for index in range(count)
+    ]
+    brick_normals = [
+        slope_normal(outer[index], outer[(index + 1) % count], outer[index]["brick"], outer[(index + 1) % count]["brick"], False)
+        for index in range(count)
+    ]
+    for index, start in enumerate(outer):
+        nxt = (index + 1) % count
+        prev = (index - 1) % count
+        end = outer[nxt]
+        slope_strip(
+            1,
+            start,
+            end,
+            inner[index],
+            inner[nxt],
+            start["rim"],
+            end["rim"],
+            True,
+            STONE_TILE_M,
+            blend_normal(rim_normals[prev], rim_normals[index]),
+            blend_normal(rim_normals[index], rim_normals[nxt]),
+            rim_normals[index],
+        )
+        slope_strip(
+            1,
+            start,
+            end,
+            brick_ring[index],
+            brick_ring[nxt],
+            start["brick"],
+            end["brick"],
+            False,
+            STONE_TILE_M,
+            blend_normal(brick_normals[prev], brick_normals[index]),
+            blend_normal(brick_normals[index], brick_normals[nxt]),
+            brick_normals[index],
+        )
+    cap(0, brick_ring, lambda corner: corner["base"], down, BRICK_TILE_M)
+    cap(2, inner, lambda corner: corner["brick"], up, STONE_TILE_M)
 
     if not faces:
         return None
@@ -2280,7 +2355,7 @@ def make_planter_mesh(name, points, rims, project_root, materials=None):
         granite_material(project_root),
         grass_material(project_root),
     )
-    obj = _link_mesh(name, verts, faces, (0.72, 0.38, 0.28), material=mats[0], loop_uvs=uvs)
+    obj = _link_mesh(name, verts, faces, (0.72, 0.38, 0.28), material=mats[0], loop_uvs=uvs, loop_normals=loop_normals)
     mesh = obj.data
     mesh.materials.clear()
     for mat in mats:

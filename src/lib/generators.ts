@@ -1244,34 +1244,6 @@ function addPlanterWall(
   }
 }
 
-function addPlanterBand(
-  mesh: MeshArrays,
-  outside: PlanterCorner[],
-  inside: PlanterCorner[],
-  yAt: (corner: PlanterCorner) => number,
-  outward: THREE.Vector3,
-  tile: number,
-) {
-  for (let index = 0; index < outside.length; index += 1) {
-    const a = outside[index]
-    const b = outside[(index + 1) % outside.length]
-    const c = inside[(index + 1) % inside.length]
-    const d = inside[index]
-    quadMesh(
-      mesh,
-      planterVertex(a, yAt(a)),
-      planterVertex(b, yAt(b)),
-      planterVertex(c, yAt(c)),
-      planterVertex(d, yAt(d)),
-      [a.x / tile, a.z / tile],
-      [b.x / tile, b.z / tile],
-      [c.x / tile, c.z / tile],
-      [d.x / tile, d.z / tile],
-      outward,
-    )
-  }
-}
-
 function addPlanterCap(
   mesh: MeshArrays,
   ring: PlanterCorner[],
@@ -1299,20 +1271,137 @@ function addPlanterCap(
   }
 }
 
+/** Slope of this side, level across the curb, so the concrete reads as one incline. */
+function planterSlopeNormal(start: PlanterCorner, end: PlanterCorner, y0: number, y1: number, up: boolean) {
+  const dx = end.x - start.x
+  const dz = end.z - start.z
+  const span = Math.hypot(dx, dz) || 1
+  const slope = (y1 - y0) / span
+  const dirx = dx / span
+  const dirz = dz / span
+  const scale = up ? -1 : 1
+  return new THREE.Vector3(scale * slope * dirx, up ? 1 : -1, scale * slope * dirz).normalize()
+}
+
+function blendPlanterNormal(a: THREE.Vector3, b: THREE.Vector3) {
+  const sum = a.clone().add(b)
+  if (sum.lengthSq() < 1e-8) return a.clone()
+  return sum.normalize()
+}
+
+/**
+ * Top of one curb. Height runs straight from one corner to the next and stays level
+ * across the block. The block is split along its length so that surface stays smooth,
+ * and the corner normal is shared with the next side so the turn doesn't step.
+ */
+function addPlanterSlope(
+  mesh: MeshArrays,
+  outerA: PlanterCorner,
+  outerB: PlanterCorner,
+  innerA: PlanterCorner,
+  innerB: PlanterCorner,
+  y0: number,
+  y1: number,
+  up: boolean,
+  tile: number,
+  startNormal: THREE.Vector3,
+  endNormal: THREE.Vector3,
+  sideNormal: THREE.Vector3,
+) {
+  const span = Math.hypot(outerB.x - outerA.x, outerB.z - outerA.z)
+  if (span < 1e-5) return
+  const rise = Math.abs(y1 - y0)
+  const slanted =
+    rise > 0.004 || startNormal.angleTo(sideNormal) > 0.02 || endNormal.angleTo(sideNormal) > 0.02
+  const segments = slanted ? Math.min(80, Math.max(2, Math.ceil(span / 0.08))) : 1
+  const outward = up ? UP : new THREE.Vector3(0, -1, 0)
+  const at = (from: PlanterCorner, to: PlanterCorner, t: number, y: number) =>
+    new THREE.Vector3(from.x + (to.x - from.x) * t, y, from.z + (to.z - from.z) * t)
+  const uv = (point: THREE.Vector3): [number, number] => [point.x / tile, point.z / tile]
+  const normalAt = (t: number) => (t <= 0 ? startNormal : t >= 1 ? endNormal : sideNormal)
+  for (let step = 0; step < segments; step += 1) {
+    const t0 = step / segments
+    const t1 = (step + 1) / segments
+    const h0 = y0 + (y1 - y0) * t0
+    const h1 = y0 + (y1 - y0) * t1
+    const a = at(outerA, outerB, t0, h0)
+    const b = at(outerA, outerB, t1, h1)
+    const c = at(innerA, innerB, t1, h1)
+    const d = at(innerA, innerB, t0, h0)
+    const n0 = normalAt(t0)
+    const n1 = normalAt(t1)
+    addTri(mesh.positions, mesh.normals, mesh.uvs, mesh.tangents, a, b, c, uv(a), uv(b), uv(c), outward, [n0, n1, n1])
+    addTri(mesh.positions, mesh.normals, mesh.uvs, mesh.tangents, a, c, d, uv(a), uv(c), uv(d), outward, [n0, n1, n0])
+  }
+}
+
+/**
+ * Brick, granite, and grass along the outline. A slanted curb keeps each corner's height,
+ * so neighboring sides meet on the corner instead of stepping or folding across the block.
+ */
+function addSlopedPlanter(brickMesh: MeshArrays, granite: MeshArrays, grass: MeshArrays, rings: PlanterRings) {
+  const { outer, brick, inner } = rings
+  const count = outer.length
+  const down = new THREE.Vector3(0, -1, 0)
+  addPlanterWall(brickMesh, brick, (corner) => corner.base, (corner) => corner.brick, true, BRICK_TILE_M)
+  addPlanterWall(granite, inner, (corner) => corner.brick, (corner) => corner.rim, false, STONE_TILE_M)
+
+  const rimNormals = outer.map((corner, index) => {
+    const next = outer[(index + 1) % count]
+    return planterSlopeNormal(corner, next, corner.rim, next.rim, true)
+  })
+  const brickNormals = outer.map((corner, index) => {
+    const next = outer[(index + 1) % count]
+    return planterSlopeNormal(corner, next, corner.brick, next.brick, false)
+  })
+
+  for (let index = 0; index < count; index += 1) {
+    const next = (index + 1) % count
+    const prev = (index - 1 + count) % count
+    const start = outer[index]
+    const end = outer[next]
+    addPlanterSlope(
+      granite,
+      start,
+      end,
+      inner[index],
+      inner[next],
+      start.rim,
+      end.rim,
+      true,
+      STONE_TILE_M,
+      blendPlanterNormal(rimNormals[prev], rimNormals[index]),
+      blendPlanterNormal(rimNormals[index], rimNormals[next]),
+      rimNormals[index],
+    )
+    addPlanterSlope(
+      granite,
+      start,
+      end,
+      brick[index],
+      brick[next],
+      start.brick,
+      end.brick,
+      false,
+      STONE_TILE_M,
+      blendPlanterNormal(brickNormals[prev], brickNormals[index]),
+      blendPlanterNormal(brickNormals[index], brickNormals[next]),
+      brickNormals[index],
+    )
+  }
+
+  addPlanterCap(brickMesh, brick, (corner) => corner.base, down, BRICK_TILE_M)
+  addPlanterCap(grass, inner, (corner) => corner.brick, UP, STONE_TILE_M)
+}
+
 export function buildPlanterGeometry(points: Vec3[], rims?: number[]) {
   const rings = planterRings(points, rims)
   if (!rings) return null
   const brick = freshMesh()
   const granite = freshMesh()
   const grass = freshMesh()
-  const down = new THREE.Vector3(0, -1, 0)
-  addPlanterWall(brick, rings.brick, (corner) => corner.base, (corner) => corner.brick, true, BRICK_TILE_M)
-  addPlanterCap(brick, rings.brick, (corner) => corner.base, down, BRICK_TILE_M)
   addPlanterWall(granite, rings.outer, (corner) => corner.brick, (corner) => corner.rim, true, STONE_TILE_M)
-  addPlanterWall(granite, rings.inner, (corner) => corner.brick, (corner) => corner.rim, false, STONE_TILE_M)
-  addPlanterBand(granite, rings.outer, rings.inner, (corner) => corner.rim, UP, STONE_TILE_M)
-  addPlanterBand(granite, rings.outer, rings.brick, (corner) => corner.brick, down, STONE_TILE_M)
-  addPlanterCap(grass, rings.inner, (corner) => corner.brick, UP, STONE_TILE_M)
+  addSlopedPlanter(brick, granite, grass, rings)
 
   const brickGeometry = finishMesh(brick)
   const graniteGeometry = finishMesh(granite)
