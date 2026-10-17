@@ -31,8 +31,20 @@ function emit() {
   for (const listener of listeners) listener()
 }
 
+/** Packaged editor: read images from the folder next to the exe, not the asar copy. */
+function textureSource(projectPath: string) {
+  if (typeof window === 'undefined' || window.location.protocol !== 'file:') return projectPath
+  if (!projectPath.startsWith('public/img/')) return projectPath
+  return `reskate://local/${encodeURI(projectPath.replace(/^public\//, ''))}`
+}
+
 function textureUrl(projectPath: string, version: number) {
-  const rel = projectPath.replace(/^public\//, '')
+  const source = textureSource(projectPath)
+  if (/^reskate:/i.test(source)) {
+    const bare = source.split('?')[0]
+    return version > 0 ? `${bare}?v=${version}` : bare
+  }
+  const rel = source.replace(/^public\//, '')
   const url = `${import.meta.env.BASE_URL}${encodeURI(rel)}`
   return version > 0 ? `${url}?v=${version}` : url
 }

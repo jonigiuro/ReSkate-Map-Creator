@@ -1,5 +1,5 @@
 import { useTexture } from '@react-three/drei'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
 import { useTextureSets, type TextureSet } from '../lib/textureSets'
 
@@ -53,6 +53,27 @@ export function TextureSetMaterial({ set, ghost }: { set: TextureSet; ghost?: bo
 
   useEffect(() => () => material.dispose(), [material])
   return <primitive object={material} attach="material" />
+}
+
+/** A missing image used to throw out of the canvas and blank the editor. */
+export class TextureSetBoundary extends Component<
+  { resetKey: string; fallback: ReactNode; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  componentDidUpdate(prev: { resetKey: string }) {
+    if (prev.resetKey !== this.props.resetKey && this.state.failed) this.setState({ failed: false })
+  }
+
+  render() {
+    if (this.state.failed) return this.props.fallback
+    return this.props.children
+  }
 }
 
 export function useSlotOverrides(materials: Record<string, string> | undefined, ghost?: boolean) {

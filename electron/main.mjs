@@ -4,6 +4,8 @@ import {
   dialog,
   ipcMain,
   Menu,
+  net,
+  protocol,
   shell,
 } from 'electron'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
@@ -37,6 +39,48 @@ function installDir() {
   const portableDir = process.env.PORTABLE_EXECUTABLE_DIR
   if (portableDir) return portableDir
   return path.dirname(process.execPath)
+}
+
+/**
+ * The packaged page lives inside the asar, so a relative image URL cannot see a
+ * texture dropped into public/img/textures next to the exe. reskate:// reads that folder.
+ */
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'reskate',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+])
+
+function textureFileFromRequest(requestUrl) {
+  const url = new URL(requestUrl)
+  if (url.hostname !== 'local') return null
+  const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '')
+  const folder = rel.startsWith('img/private-textures/')
+    ? 'private-textures'
+    : rel.startsWith('img/textures/')
+      ? 'textures'
+      : null
+  if (!folder) return null
+  const root = path.resolve(installDir(), 'public', 'img', folder)
+  const abs = path.resolve(installDir(), 'public', ...rel.split('/'))
+  const fromRoot = path.relative(root, abs)
+  if (fromRoot.startsWith('..') || path.isAbsolute(fromRoot)) return null
+  return abs
+}
+
+function registerTextureProtocol() {
+  protocol.handle('reskate', (request) => {
+    const filePath = textureFileFromRequest(request.url)
+    if (!filePath) return new Response('Not found', { status: 404 })
+    return net.fetch(pathToFileURL(filePath).href)
+  })
 }
 
 /** Bundled scripts and asphalt textures. Outside the asar so Blender can read them. */
@@ -422,6 +466,7 @@ function registerIpc() {
 }
 
 app.whenReady().then(async () => {
+  registerTextureProtocol()
   registerIpc()
   await createWindow()
   app.on('activate', () => {

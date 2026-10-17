@@ -76,7 +76,7 @@ import {
   snapObjectToVertex,
   type VertexHit,
 } from '../lib/vertexSnap'
-import { TextureSetMaterial } from './TextureSetMaterial'
+import { TextureSetBoundary, TextureSetMaterial } from './TextureSetMaterial'
 import { useTextureSets } from '../lib/textureSets'
 import type { DrawGenerator } from '../lib/kitLayout'
 
@@ -2237,7 +2237,16 @@ function SlotMaterial({
 }) {
   const sets = useTextureSets()
   const set = setId ? sets.find((item) => item.id === setId) : undefined
-  if (set) return <TextureSetMaterial set={set} ghost={ghost} />
+  const backup = slotFallback(fallback, ghost)
+  if (!set) return backup
+  return (
+    <TextureSetBoundary resetKey={`${set.id}:${set.albedo}`} fallback={backup}>
+      <TextureSetMaterial set={set} ghost={ghost} />
+    </TextureSetBoundary>
+  )
+}
+
+function slotFallback(fallback: 'concrete' | 'platform' | 'brick' | 'grass' | 'rail', ghost?: boolean) {
   if (fallback === 'platform') return <PlatformMaterial ghost={ghost} />
   if (fallback === 'brick') return <BrickMaterial ghost={ghost} />
   if (fallback === 'grass') return <GrassMaterial ghost={ghost} />
