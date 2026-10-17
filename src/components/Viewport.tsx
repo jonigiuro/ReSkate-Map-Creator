@@ -1074,6 +1074,7 @@ function MeshItem({
             materials={authoredMaterials(obj.assetFile, obj.materials, dedicatedAssets)}
             mirrored={obj.scale[0] * obj.scale[1] * obj.scale[2] < 0}
             propLight={obj.lightRig ? parsePropLight(obj.lightRig) ?? obj.lightRig : undefined}
+            emitLight={selected}
           />
         )}
       </group>
@@ -3385,6 +3386,7 @@ function SceneContents(props: Props) {
             assetRevision={placeAssetRevision}
             mirrored={placeScaleX < 0}
             propLight={placePropLight ? parsePropLight(placePropLight) ?? placePropLight : undefined}
+            emitLight
             ghost
           />
         </group>

@@ -1,5 +1,5 @@
 import { useGLTF, useTexture } from '@react-three/drei'
-import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react'
+import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
 import { httpPreviewUrl } from '../../lib/assetLibrary'
 import { clampPitch, lightPreviewIntensity } from '../../lib/lights'
@@ -196,14 +196,15 @@ function bindMirrorDraw(root: THREE.Object3D, mirrored: boolean) {
   })
 }
 
-function bindPropLight(root: THREE.Object3D, rig: PropLight) {
+function bindPropLight(root: THREE.Object3D, rig: PropLight, emit: boolean) {
   const node = root.getObjectByName(rig.node)
-  if (!node) return () => {}
+  if (!node) return { lights: [] as THREE.Light[], dispose: () => {} }
   const stored = node.userData.propLightRest as THREE.Quaternion | undefined
   const rest = stored ?? node.quaternion.clone()
   node.userData.propLightRest = rest
   node.quaternion.copy(rest)
   const added: THREE.Object3D[] = []
+  const lights: THREE.Light[] = []
   const anchor = node.parent ?? node
   anchor.updateWorldMatrix(true, true)
   node.updateWorldMatrix(true, false)
@@ -219,11 +220,17 @@ function bindPropLight(root: THREE.Object3D, rig: PropLight) {
     const color = new THREE.Color(rig.color[0], rig.color[1], rig.color[2])
     const intensity = lightPreviewIntensity(rig.energy, rig.exposure)
     if (rig.kind === 'point') {
-      group.add(new THREE.PointLight(color, intensity, rig.range, 2))
+      const light = new THREE.PointLight(color, intensity, rig.range, 2)
+      // Hidden lamps stay out of the shader. Every extra lamp recompiles the scene.
+      light.visible = emit
+      lights.push(light)
+      group.add(light)
     } else {
       const angle = rig.kind === 'spot' ? rig.spotSize / 2 : Math.min(Math.PI / 2 - 0.01, rig.spread / 2)
       const light = new THREE.SpotLight(color, intensity, rig.range, angle, rig.spotBlend, 2)
       light.castShadow = false
+      light.visible = emit
+      lights.push(light)
       const target = new THREE.Object3D()
       target.position.set(0, -1, 0)
       group.add(target)
@@ -251,17 +258,20 @@ function bindPropLight(root: THREE.Object3D, rig: PropLight) {
   }
   node.quaternion.copy(rest)
   node.rotateX(THREE.MathUtils.degToRad(clampPitch(rig.rotation)))
-  return () => {
-    node.quaternion.copy(rest)
-    for (const group of added) {
-      group.traverse((child) => {
-        const mesh = child as THREE.Mesh
-        if (mesh.geometry) mesh.geometry.dispose()
-        const material = mesh.material as THREE.Material | undefined
-        if (material && 'dispose' in material) material.dispose()
-      })
-      group.removeFromParent()
-    }
+  return {
+    lights,
+    dispose: () => {
+      node.quaternion.copy(rest)
+      for (const group of added) {
+        group.traverse((child) => {
+          const mesh = child as THREE.Mesh
+          if (mesh.geometry) mesh.geometry.dispose()
+          const material = mesh.material as THREE.Material | undefined
+          if (material && 'dispose' in material) material.dispose()
+        })
+        group.removeFromParent()
+      }
+    },
   }
 }
 
@@ -272,6 +282,7 @@ function GltfMesh({
   ghost,
   mirrored = false,
   propLight,
+  emitLight = false,
 }: {
   url: string
   assetFile?: string
@@ -279,6 +290,8 @@ function GltfMesh({
   ghost?: boolean
   mirrored?: boolean
   propLight?: PropLight
+  /** Only this lamp is a real light. The others keep their beam, without lighting the scene. */
+  emitLight?: boolean
 }) {
   const gltf = useGLTF(url)
   const overrides = useSlotOverrides(materials, ghost)
@@ -343,10 +356,23 @@ function GltfMesh({
     bindMirrorDraw(view.clone, mirrored)
   }, [mirrored, view])
 
+  const lamps = useRef<THREE.Light[]>([])
+
   useLayoutEffect(() => {
     if (!propLight) return
-    return bindPropLight(view.clone, propLight)
+    const bound = bindPropLight(view.clone, propLight, emitLight)
+    lamps.current = bound.lights
+    return () => {
+      lamps.current = []
+      bound.dispose()
+    }
+    // emitLight is applied below so selecting a lamp does not rebuild it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [propLight, view])
+
+  useLayoutEffect(() => {
+    for (const light of lamps.current) light.visible = emitLight
+  }, [emitLight])
 
   return <primitive object={view.clone} />
 }
@@ -358,6 +384,7 @@ function AuthoredMesh({
   ghost,
   mirrored = false,
   propLight,
+  emitLight = false,
 }: {
   assetFile: string
   revision: number
@@ -365,6 +392,7 @@ function AuthoredMesh({
   ghost?: boolean
   mirrored?: boolean
   propLight?: PropLight
+  emitLight?: boolean
 }) {
   const url = useAuthoredPreviewUrl(assetFile, revision)
   if (!url) return <FallbackBox ghost={ghost} />
@@ -378,6 +406,7 @@ function AuthoredMesh({
           ghost={ghost}
           mirrored={mirrored}
           propLight={propLight}
+          emitLight={emitLight}
         />
       </PreviewErrorBoundary>
     </Suspense>
@@ -517,6 +546,7 @@ export function LibraryMesh({
   ghost,
   mirrored = false,
   propLight,
+  emitLight = false,
 }: {
   libraryId: string
   assetFile?: string
@@ -527,6 +557,7 @@ export function LibraryMesh({
   /** Negative scale reverses triangle winding. Draw the outside, not the inside. */
   mirrored?: boolean
   propLight?: PropLight
+  emitLight?: boolean
 }) {
   if (assetFile) {
     return (
@@ -537,6 +568,7 @@ export function LibraryMesh({
         ghost={ghost}
         mirrored={mirrored}
         propLight={propLight}
+        emitLight={emitLight}
       />
     )
   }
