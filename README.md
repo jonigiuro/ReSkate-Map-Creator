@@ -2,7 +2,9 @@
 
 ![ReSkate Map Creator, laying out a skatepark](public/img/screenshot.JPG)
 
-An editor for laying out a skatepark and exporting a `.blend` that ReSkate Studio can load. Place library pieces, draw curbs and rails, set a spawn, add travel points, traffic, and lights, then export.
+![The same park in the game](public/img/game-screenshot.png)
+
+An editor for laying out a skatepark and exporting a `.blend` that ReSkate Studio can load. Place library pieces, draw curbs, rails, platforms, banks, planters, and stairs, set a spawn, add travel points, traffic, and lights, then export.
 
 ## Warning
 
@@ -10,7 +12,7 @@ This is vibe-coded. I'm not responsible if it messes up your PC, or if anything 
 
 ## Get the app
 
-Download the latest Windows zip from the [releases page](https://github.com/jonigiuro/ReSkate-Map-Creator/releases). Unzip it and run `ReSkate Map Creator.exe`. The `Objects` folder next to the exe is the library. `public/img/textures` and `public/img/private-textures` sit next to it too. Export reads those texture folders from there.
+Download the latest Windows zip from the [releases page](https://github.com/jonigiuro/ReSkate-Map-Creator/releases). Unzip it and run `ReSkate Map Creator.exe`. The `Objects` folder next to the exe is the library. `public/img/textures` and `public/img/private-textures` sit next to it too. The editor and the export both read those folders, including texture sets you add after installing.
 
 The download is a normal folder. The exe is unsigned, so Avast and other antivirus tools may warn.
 
@@ -19,13 +21,13 @@ Blender has to be installed on your computer. The first time export cannot find 
 ## Features
 
 - **Library.** Folders in `Objects` become categories. The library reads `.blend`, `.fbx`, and `.obj`, and refreshes when a file is added or saved. A piece follows the cursor and stands on the surface under it, including walls and slopes.
-- **Generators.** Draw curbs, rails, platforms, banks, and planters on the map, then drag their pins. A `.blend` in `Objects/Generators` becomes its own kit run.
+- **Generators.** Draw curbs, rails, platforms, banks, planters, and stairs on the map, then drag their pins. A `.blend` in `Objects/Generators` becomes its own kit run.
 - **Interactive.** Bus stops and fast-travel points, with the facing the game reads and a pause-map name.
 - **Traffic.** Vehicle lanes, bus lanes, and pedestrian routes, including loops, joins, width, weight, speed class, and stairs.
-- **Lights.** Point, spot, and area lights, with color, energy, exposure, range, shadow, and time of day. A prop in a folder named Lights can carry its own lamp.
+- **Lights.** Point, spot, and area lights, with color, energy, exposure, range, shadow, and time of day. A prop in a folder named Lights can carry its own lamp. That lamp is on while you place the piece and while it is selected.
 - **Spawn.** Every map has one spawn. The figure is where the skater starts, and the arrow is where they head.
 - **Selection.** Click to select one piece. Ctrl-click adds or removes pieces. Move, rotate, and scale a group around the center of the selection.
-- **Transform.** Move, rotate, and scale with the gizmo or by typing numbers. Snap each one to a step. Mirror a piece left to right.
+- **Transform.** Move, rotate, and scale with the gizmo or by typing numbers. Snap each one to a step. Hold Control while placing or dragging a generator pin to snap it to a nearby vertex. Mirror a piece left to right.
 - **Materials.** Give each material slot a texture and a contact sound, or keep what the file already has. Rescan picks up new texture folders. A mesh with its own textures beside the file keeps those.
 - **Collision and the pause map.** Each mesh can use a triangle mesh, a hull, or no collision, and can be hidden from the pause map.
 - **Camera.** Orbit, pan, zoom, and frame the selection.
@@ -75,6 +77,8 @@ The top bar has Move, Scale, and Rotate. Turn one on and set the step.
 | Scale | 1.1 | Scale. |
 | Rotate | 45° | Rotate. |
 
+Hold the Control key to snap a generator pin to a nearby vertex. It works while you are dropping a new pin and while you drag an existing one. The pin catches the vertex closest to the cursor. A marker in the top bar lights up while a vertex has it. Drag a single axis arrow and only that axis snaps, so the other two stay where they are. Let go of Control and the pin follows the surface again.
+
 ### Copy and paste
 
 `Ctrl+C` copies every selected object except the spawn. `Ctrl+V` pastes them, selects the new copies, and returns to Select. The first paste sits 1 m further along X. The next paste sits 2 m further, then 3 m, and so on, so the copies do not stack.
@@ -93,9 +97,10 @@ Open **Generators** in the library. These are drawn on the map. Escape leaves th
 
 - **Curbs.** Click to drop a pin. The next click builds a 0.5 m wide curb, and another click turns the corner on the same mesh. The top 10 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move that pin. Drag it up or down to set that end's top or base.
 - **Rails.** The same kind of drawing: a 5 cm rail on 0.5 m posts. The top sphere sets the rail. The bottom sphere sets the foot of the post.
-- **Platforms.** Click two opposite corners. The pad is 0.5 m tall and the top stays flat. Drag a corner sideways to resize the pad. Drag it up or down and both corners move together.
-- **Banks.** Click two opposite corners. The bank starts 0.5 m tall. Each of the eight corners has its own sphere, so the base and the top can slope independently.
-- **Planters.** Click two opposite corners. You get a brick box, about 0.55 m tall, with a granite rim and grass inside. Each corner's height is its own.
+- **Platforms.** Click to drop a corner. The third click builds the pad, and another click adds a corner. The pad is 0.5 m tall and the top stays flat. Drag a corner sideways to reshape the outline. Drag any corner up or down and the whole top moves with it.
+- **Banks.** Click the foot of the tall side. The next click builds the bank, and another click extends it. It starts 2 m wide and 0.6 m tall, and the slope runs down to the outer edge. A gold pin moves that station, top and outer edge together. An orange pin moves only that top corner. A teal pin moves only that outer corner. **Closed** joins the run into a loop, which needs three pins. **Reverse** flips which side the slope runs to. A bank saved the older way still has eight corners, and each one moves on its own.
+- **Planters.** Click to drop a corner. The third click builds the planter, and another click adds a corner. You get a brick box, about 0.55 m tall, with a granite rim and grass inside. Drag a sphere sideways to reshape the outline. Drag it up or down to set that corner's rim or base, and the other corners stay put. Each corner of the curb is a flat square as wide as the curb. The lip between two corners is one straight slope.
+- **Stairs.** Click the foot of the tall side. The next click starts the flight, and another click adds a section. The steps rise on the pins and run down toward the outer edge, so a pin on the bottom of a platform puts the tall side against that wall. A new flight has 4 steps, runs 2 m, and is 0.6 m tall. The inspector sets the step count from 1 to 40. Drag a path pin to move the foot of the tall side. Drag any top pin and the whole flight changes height. Drag any side pin and the steps run further out. **Closed** joins the run into a loop, which needs three pins. **Reverse** flips which way the steps run. The steps and the tread are separate materials. The original stair sound is concrete.
 - **Kits.** A `.blend` in `Objects/Generators` shows up here as its own tool. Click to extend the run, and click off the line to turn the corner. Straight pieces stretch so they meet. Corners slant the faces that meet.
 
 ### Interactive
@@ -116,7 +121,7 @@ Open **Lights**. **Point Light** shines every way. **Spot Light** is a cone. **A
 
 Select a light to set its color, energy, exposure, range, and shadow. A spot has a cone angle and edge softness. An area light has a shape and a size. Choose which times of day it is on: morning, noon, afternoon, evening, night, weather day, and weather night. Clear every time and the game leaves it out. The sun and sky stay on the game's own time of day. These are direct lights.
 
-A `.blend` in a folder named Lights can carry its own lamp. Name an empty `Direction`, and parent a point, spot, or area lamp under it. Placing that piece keeps the mesh. The lamp type comes from the file. Color, energy, range, and the other lamp settings are the ones in the inspector. **X** pitches that empty so the lamp looks up and down, from -360 to 360 degrees. The housing stays put.
+A `.blend` in a folder named Lights can carry its own lamp. Name an empty `Direction`, and parent a point, spot, or area lamp under it. Placing that piece keeps the mesh. The lamp type comes from the file. Color, energy, range, and the other lamp settings are the ones in the inspector. The lamp is on while you place the piece and while that piece is selected. **X** pitches that empty so the lamp looks up and down, from -360 to 360 degrees. The housing stays put.
 
 ### Spawn
 
@@ -124,7 +129,7 @@ Every map has one spawn. The figure is 1.7 m tall, and the arrow is where the sk
 
 ### Materials
 
-Select a curb, rail, platform, bank, planter, or a library piece that uses the shared texture list. Each slot has a texture and a contact sound. **Original** keeps the texture and sound already on that material. Another choice changes this copy only. **Rescan textures** picks up new texture folders and reports how many sets it found.
+Select a curb, rail, platform, bank, planter, stairs, or a library piece that uses the shared texture list. Each slot has a texture and a contact sound. Stairs have a slot for the steps and a slot for the tread. **Original** keeps the texture and sound already on that material. On stairs, that sound is concrete. Another choice changes this copy only. **Rescan textures** picks up new texture folders, including ones you drop next to the exe, and reports how many sets it found.
 
 A mesh with its own textures beside the file keeps those. Export copies them with the object.
 
@@ -162,6 +167,7 @@ These work when you are not typing in a field, except undo, redo, and Escape, wh
 |---|---|
 | Left click | Select one object, or place the held piece. |
 | Ctrl-click | Add or remove a piece from the selection. |
+| Hold Control on a generator pin | Snap that pin to a nearby vertex. An axis arrow snaps only that axis. |
 | Click empty ground | Clear the selection. |
 | Right-drag | Orbit. |
 | Middle-drag | Pan. |
