@@ -77,7 +77,7 @@ import {
   lightSwatch,
   lightTimeMask,
 } from './lib/lights'
-import { generatorMaterialSlots, reloadTextureSets, useTextureSets, type TextureSet } from './lib/textureSets'
+import { findTextureSet, generatorMaterialSlots, reloadTextureSets, useTextureSets, type TextureSet } from './lib/textureSets'
 import { useSceneHistory } from './lib/sceneHistory'
 import {
   BUS_STOP_PIECE,
@@ -3898,7 +3898,7 @@ function MaterialFields({
         <p className="hint">Materials show up when the preview has loaded.</p>
       ) : (
         slots.map((slot) => {
-          const chosen = sets.find((set) => set.id === object.materials?.[slot.id])
+          const chosen = findTextureSet(sets, object.materials?.[slot.id])
           const open = openSlot === slot.id
           const branch = textureBranch(sets, texturePath)
           return (

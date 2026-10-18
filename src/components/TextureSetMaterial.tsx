@@ -1,7 +1,7 @@
 import { useTexture } from '@react-three/drei'
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
-import { useTextureSets, useTextureCatalogReady, type TextureSet } from '../lib/textureSets'
+import { findTextureSet, useTextureSets, useTextureCatalogReady, type TextureSet } from '../lib/textureSets'
 import { isDirectXNormal } from '../lib/normalMaps'
 
 const CONCRETE_FALLBACK_MAPS = [
@@ -129,19 +129,27 @@ export function ConcreteClearMaterial({ ghost }: { ghost?: boolean }) {
   )
 }
 
-/** A missing image used to throw out of the canvas and blank the editor. */
+/**
+ * A missing image used to throw out of the canvas and blank the editor.
+ * The backup is remembered against resetKey. A new texture has to be tried on
+ * the next render, before that backup can throw again and pin the old one.
+ */
 export class TextureSetBoundary extends Component<
   { resetKey: string; fallback: ReactNode; children: ReactNode },
-  { failed: boolean }
+  { failed: boolean; seenKey: string }
 > {
-  state = { failed: false }
+  state = { failed: false, seenKey: '' }
 
   static getDerivedStateFromError() {
     return { failed: true }
   }
 
-  componentDidUpdate(prev: { resetKey: string }) {
-    if (prev.resetKey !== this.props.resetKey && this.state.failed) this.setState({ failed: false })
+  static getDerivedStateFromProps(
+    props: { resetKey: string },
+    state: { failed: boolean; seenKey: string },
+  ) {
+    if (state.seenKey === props.resetKey) return null
+    return { failed: false, seenKey: props.resetKey }
   }
 
   render() {
@@ -158,7 +166,7 @@ export function useSlotOverrides(materials: Record<string, string> | undefined, 
     const chosen: { slot: string; set: TextureSet }[] = []
     const clear = concreteClearSet()
     for (const [slot, id] of Object.entries(materials ?? {})) {
-      chosen.push({ slot, set: sets.find((item) => item.id === id) ?? clear })
+      chosen.push({ slot, set: findTextureSet(sets, id) ?? clear })
     }
     return chosen
   }, [materials, ready, sets])

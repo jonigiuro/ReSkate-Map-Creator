@@ -939,11 +939,11 @@ def striped_concrete_material(project_root):
     cached = bpy.data.materials.get("striped_concrete")
     if cached:
         return cached
-    folder = Path(project_root) / "public" / "img" / "textures" / "striped_concrete"
+    folder = Path(project_root) / "public" / "img" / "textures" / "concrete" / "Concrete Tiles"
     files = {
-        "base": folder / "striped_conrete_albedo.png",
-        "normal": folder / "triped_concrete_normal.jfif",
-        "rough": folder / "striped_concrete_roughness.jfif",
+        "base": folder / "Concrete010_1K-JPG_Color.jpg",
+        "normal": folder / "Concrete010_1K-JPG_NormalDX.jpg",
+        "rough": folder / "Concrete010_1K-JPG_Roughness.jpg",
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
@@ -975,7 +975,15 @@ def brick_material(project_root):
     cached = bpy.data.materials.get("brick")
     if cached:
         return cached
-    path = Path(project_root) / "public" / "img" / "textures" / "bricks.jpg"
+    path = (
+        Path(project_root)
+        / "public"
+        / "img"
+        / "textures"
+        / "Brick"
+        / "Bricks030_1K-JPG"
+        / "Bricks030_1K-JPG_Color.jpg"
+    )
     if not path.is_file():
         print("Brick texture missing, planter walls use concrete")
         return concrete_clear_material("brick", project_root)
@@ -1033,7 +1041,7 @@ def grass_material(project_root):
     cached = bpy.data.materials.get("grass")
     if cached:
         return cached
-    folder = Path(project_root) / "public" / "img" / "textures" / "grass"
+    folder = Path(project_root) / "public" / "img" / "textures"
     files = {
         "base": folder / "Stylized_HandpaintedGrass_01_basecolor.jpg",
         "normal": folder / "Stylized_HandpaintedGrass_01_normalogl.jpg",
@@ -4031,7 +4039,7 @@ def apply_material_overrides(objects, overrides, texture_sets, project_root):
             if mat.get("reskate_texset") == set_id:
                 used.add(key)
                 continue
-            spec = texture_sets.get(set_id)
+            spec = resolve_texture_set(texture_sets, set_id)
             if not isinstance(spec, dict):
                 print(f"Unknown texture set {set_id} on {mat.name}")
                 continue
@@ -4073,6 +4081,31 @@ def apply_surface_sounds(objects, sounds):
             print(f"Surface sound {identifier} on {replacement.name}")
 
 
+MOVED_TEXTURE_PREFIXES = (
+    ("concrete_colored/", "concrete/ColoredConcrete/"),
+    ("concrete2/", "concrete/ColoredConcrete/"),
+    ("galvanized_metal/", "Metal/galvanized_metal/"),
+    ("Ground Tiles 2/", "Paving Stones/PavingStone011/"),
+    ("StylizedStonePattern/", "Stone/StonePattern/"),
+    ("cartoony marble tiles/", "Paving Stones/cartoony marble tiles/"),
+    ("grass/", ""),
+)
+
+
+def resolve_texture_set(texture_sets, set_id):
+    if not texture_sets or not set_id:
+        return None
+    spec = texture_sets.get(set_id)
+    if isinstance(spec, dict):
+        return spec
+    for old, new in MOVED_TEXTURE_PREFIXES:
+        if set_id.startswith(old):
+            moved = texture_sets.get(new + set_id[len(old) :])
+            if isinstance(moved, dict):
+                return moved
+    return None
+
+
 def texset_name(set_id):
     digest = hashlib.sha1(set_id.encode("utf-8")).hexdigest()[:12]
     return f"texset_{digest}"
@@ -4081,7 +4114,7 @@ def texset_name(set_id):
 def overridden_material(project_root, texture_sets, set_id, fallback):
     if not set_id:
         return fallback()
-    spec = texture_sets.get(set_id) if texture_sets else None
+    spec = resolve_texture_set(texture_sets, set_id)
     if not isinstance(spec, dict):
         print(f"Unknown texture set {set_id}")
         return fallback()

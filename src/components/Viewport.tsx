@@ -77,7 +77,7 @@ import {
   type VertexHit,
 } from '../lib/vertexSnap'
 import { TextureSetBoundary, TextureSetMaterial, ConcreteClearMaterial } from './TextureSetMaterial'
-import { useTextureSets } from '../lib/textureSets'
+import { findTextureSet, useTextureSets } from '../lib/textureSets'
 import type { DrawGenerator } from '../lib/kitLayout'
 
 export type TransformMode = 'translate' | 'rotate' | 'scale'
@@ -2181,12 +2181,12 @@ function CurbHandleSphere({
   )
 }
 
-const BRICK_MAP = `${import.meta.env.BASE_URL}img/textures/bricks.jpg`
+const BRICK_MAP = `${import.meta.env.BASE_URL}img/textures/Brick/Bricks030_1K-JPG/Bricks030_1K-JPG_Color.jpg`
 
 const GRASS_MAPS = [
-  `${import.meta.env.BASE_URL}img/textures/grass/Stylized_HandpaintedGrass_01_basecolor.jpg`,
-  `${import.meta.env.BASE_URL}img/textures/grass/Stylized_HandpaintedGrass_01_normalogl.jpg`,
-  `${import.meta.env.BASE_URL}img/textures/grass/Stylized_HandpaintedGrass_01_height.jpg`,
+  `${import.meta.env.BASE_URL}img/textures/Stylized_HandpaintedGrass_01_basecolor.jpg`,
+  `${import.meta.env.BASE_URL}img/textures/Stylized_HandpaintedGrass_01_normalogl.jpg`,
+  `${import.meta.env.BASE_URL}img/textures/Stylized_HandpaintedGrass_01_height.jpg`,
 ] as const
 
 const CONCRETE_MAPS = [
@@ -2196,9 +2196,9 @@ const CONCRETE_MAPS = [
 ] as const
 
 const STRIPED_CONCRETE_MAPS = [
-  `${import.meta.env.BASE_URL}img/textures/striped_concrete/striped_conrete_albedo.png`,
-  `${import.meta.env.BASE_URL}img/textures/striped_concrete/triped_concrete_normal.jfif`,
-  `${import.meta.env.BASE_URL}img/textures/striped_concrete/striped_concrete_roughness.jfif`,
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete%20Tiles/Concrete010_1K-JPG_Color.jpg`,
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete%20Tiles/Concrete010_1K-JPG_NormalDX.jpg`,
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete%20Tiles/Concrete010_1K-JPG_Roughness.jpg`,
 ] as const
 
 const galvanizedMap = (file: string) =>
@@ -2237,7 +2237,7 @@ function SlotMaterial({
   fallback: 'concrete' | 'platform' | 'brick' | 'grass' | 'rail'
 }) {
   const sets = useTextureSets()
-  const set = setId ? sets.find((item) => item.id === setId) : undefined
+  const set = findTextureSet(sets, setId)
   const backup = slotFallback(fallback, ghost)
   if (!set) return backup
   return (

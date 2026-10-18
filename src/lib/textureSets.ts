@@ -125,6 +125,29 @@ export function useTextureCatalogReady() {
   )
 }
 
+/** Folders that moved. Saved maps still name the old path. */
+const MOVED_TEXTURE_PREFIXES: [string, string][] = [
+  ['concrete_colored/', 'concrete/ColoredConcrete/'],
+  ['concrete2/', 'concrete/ColoredConcrete/'],
+  ['galvanized_metal/', 'Metal/galvanized_metal/'],
+  ['Ground Tiles 2/', 'Paving Stones/PavingStone011/'],
+  ['StylizedStonePattern/', 'Stone/StonePattern/'],
+  ['cartoony marble tiles/', 'Paving Stones/cartoony marble tiles/'],
+  ['grass/', ''],
+]
+
+export function findTextureSet(sets: TextureSet[], id: string | undefined): TextureSet | undefined {
+  if (!id) return undefined
+  const direct = sets.find((set) => set.id === id)
+  if (direct) return direct
+  for (const [from, to] of MOVED_TEXTURE_PREFIXES) {
+    if (!id.startsWith(from)) continue
+    const moved = sets.find((set) => set.id === to + id.slice(from.length))
+    if (moved) return moved
+  }
+  return undefined
+}
+
 export function generatorMaterialSlots(kind: string | undefined): { id: string; label: string }[] {
   if (kind === 'curb') {
     return [
