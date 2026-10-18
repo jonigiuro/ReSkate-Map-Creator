@@ -23,6 +23,7 @@ type RawTextureSet = {
 const EMPTY: TextureSet[] = []
 let sets: TextureSet[] = EMPTY
 let loaded = false
+let catalogReady = false
 let generation = 0
 let requestId = 0
 const listeners = new Set<() => void>()
@@ -60,6 +61,7 @@ function publish(raw: RawTextureSet[], version: number) {
     ...(set.height ? { height: textureUrl(set.height, version) } : {}),
   }))
   loaded = true
+  catalogReady = true
   emit()
 }
 
@@ -107,6 +109,19 @@ export function useTextureSets(): TextureSet[] {
     },
     () => sets,
     () => EMPTY,
+  )
+}
+
+/** True once the folder scan has finished. Missing choices can then use the fallback. */
+export function useTextureCatalogReady() {
+  return useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener)
+      ensureLoaded()
+      return () => listeners.delete(listener)
+    },
+    () => catalogReady,
+    () => false,
   )
 }
 

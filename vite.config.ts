@@ -50,6 +50,7 @@ type LibraryHelpers = {
     scriptPath: string
   }) => Promise<{ lightRig?: unknown }>
   resolveLibraryBlender: () => Promise<string | null>
+  missingAssetPreviews: (projectRoot: string, assetFiles: string[]) => Promise<string[]>
 }
 
 async function loadTextureSets() {
@@ -139,6 +140,76 @@ function blendExportPlugin(): Plugin {
             res.end(JSON.stringify({ error: message }))
           }
         })
+      })
+
+      server.middlewares.use('/api/library-preview-missing', (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.end()
+          return
+        }
+        const chunks: Buffer[] = []
+        req.on('data', (chunk: Buffer) => {
+          chunks.push(chunk)
+        })
+        req.on('end', () => {
+          void (async () => {
+            try {
+              const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { files?: unknown }
+              const files = Array.isArray(body.files)
+                ? body.files.filter((file): file is string => typeof file === 'string')
+                : []
+              const { missingAssetPreviews } = await loadLibraryHelpers()
+              const missing = await missingAssetPreviews(root, files)
+              res.statusCode = 200
+              res.setHeader('Content-Type', 'application/json')
+              res.setHeader('Cache-Control', 'no-cache')
+              res.end(JSON.stringify({ missing }))
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err)
+              res.statusCode = 500
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: message }))
+            }
+          })()
+        })
+      })
+
+      server.middlewares.use('/api/library-preview-build', (req, res) => {
+        if (req.method !== 'GET') {
+          res.statusCode = 405
+          res.end()
+          return
+        }
+        const query = new URL(req.url ?? '/', 'http://127.0.0.1')
+        const assetFile = query.searchParams.get('file')
+        if (!assetFile) {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'Missing file query.' }))
+          return
+        }
+        void (async () => {
+          try {
+            const { ensureAssetPreview, resolveLibraryBlender } = await loadLibraryHelpers()
+            const blenderPath = await resolveLibraryBlender()
+            await ensureAssetPreview({
+              projectRoot: root,
+              assetFile,
+              blenderPath,
+              scriptPath: path.join(root, 'scripts', 'preview_asset.py'),
+            })
+            res.statusCode = 200
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Cache-Control', 'no-cache')
+            res.end(JSON.stringify({ ok: true }))
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: message }))
+          }
+        })()
       })
 
       server.middlewares.use('/api/library-thumb', (req, res) => {

@@ -18,6 +18,7 @@ import {
 } from '../scripts/blender_export.mjs'
 import {
   ensureAssetPreview,
+  missingAssetPreviews,
   readAssetPreviewMeta,
   resolveLibraryBlender,
   scanProjectLibrary,
@@ -311,6 +312,11 @@ function registerIpc() {
       blenderPath,
       scriptPath: previewScriptPath(),
     })
+  })
+
+  ipcMain.handle('library:missing-previews', async (_event, assetFiles) => {
+    const files = Array.isArray(assetFiles) ? assetFiles : []
+    return missingAssetPreviews(installDir(), files)
   })
 
   ipcMain.handle('library:thumb', async (_event, assetFile) => {

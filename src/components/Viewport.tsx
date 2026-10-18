@@ -76,7 +76,7 @@ import {
   snapObjectToVertex,
   type VertexHit,
 } from '../lib/vertexSnap'
-import { TextureSetBoundary, TextureSetMaterial } from './TextureSetMaterial'
+import { TextureSetBoundary, TextureSetMaterial, ConcreteClearMaterial } from './TextureSetMaterial'
 import { useTextureSets } from '../lib/textureSets'
 import type { DrawGenerator } from '../lib/kitLayout'
 
@@ -2202,7 +2202,7 @@ const STRIPED_CONCRETE_MAPS = [
 ] as const
 
 const galvanizedMap = (file: string) =>
-  `${import.meta.env.BASE_URL}img/textures/galvanized_metal/${file.replaceAll(' ', '%20')}`
+  `${import.meta.env.BASE_URL}img/textures/Metal/galvanized_metal/${file.replaceAll(' ', '%20')}`
 
 const WAX_MAPS = [
   `${import.meta.env.BASE_URL}img/private-textures/wax/wax_albedo.jpg`,
@@ -2248,11 +2248,16 @@ function SlotMaterial({
 }
 
 function slotFallback(fallback: 'concrete' | 'platform' | 'brick' | 'grass' | 'rail', ghost?: boolean) {
-  if (fallback === 'platform') return <PlatformMaterial ghost={ghost} />
-  if (fallback === 'brick') return <BrickMaterial ghost={ghost} />
-  if (fallback === 'grass') return <GrassMaterial ghost={ghost} />
-  if (fallback === 'rail') return <RailMaterial ghost={ghost} />
-  return <CurbMaterial ghost={ghost} />
+  let material = <CurbMaterial ghost={ghost} />
+  if (fallback === 'platform') material = <PlatformMaterial ghost={ghost} />
+  else if (fallback === 'brick') material = <BrickMaterial ghost={ghost} />
+  else if (fallback === 'grass') material = <GrassMaterial ghost={ghost} />
+  else if (fallback === 'rail') material = <RailMaterial ghost={ghost} />
+  return (
+    <TextureSetBoundary resetKey={`builtin:${fallback}`} fallback={<ConcreteClearMaterial ghost={ghost} />}>
+      {material}
+    </TextureSetBoundary>
+  )
 }
 
 function CurbMaterial({ ghost }: { ghost?: boolean }) {

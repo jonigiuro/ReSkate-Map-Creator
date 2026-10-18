@@ -38,6 +38,8 @@ import type { DrawGenerator } from './lib/kitLayout'
 import { getPiece } from './lib/library'
 import { usePreviewMaterials } from './lib/previewMaterials'
 import { preloadSceneModels, sceneModelFiles } from './lib/preloadModels'
+import { ensureThumbnail, mapPool, missingPreviews, type ThumbTarget } from './lib/thumbnails'
+import { omitMissingAssets, type RemovedAsset } from './lib/missingAssets'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
 import { SURFACE_SOUNDS } from './lib/surfaceSounds'
 import {
@@ -75,7 +77,7 @@ import {
   lightSwatch,
   lightTimeMask,
 } from './lib/lights'
-import { generatorMaterialSlots, reloadTextureSets, useTextureSets } from './lib/textureSets'
+import { generatorMaterialSlots, reloadTextureSets, useTextureSets, type TextureSet } from './lib/textureSets'
 import { useSceneHistory } from './lib/sceneHistory'
 import {
   BUS_STOP_PIECE,
@@ -149,8 +151,11 @@ export default function App() {
   const [snapRotateSize, setSnapRotateSize] = useState('45')
   const [vertexSnap, setVertexSnap] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const [sceneLoad, setSceneLoad] = useState<{ done: number; total: number } | null>(null)
+  const [sceneLoad, setSceneLoad] = useState<{ done: number; total: number; firstTime: boolean } | null>(null)
+  const [thumbBuild, setThumbBuild] = useState<{ done: number; total: number } | null>(null)
+  const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({})
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
+  const [missingAssets, setMissingAssets] = useState<RemovedAsset[] | null>(null)
   const [optimizeExport, setOptimizeExport] = useState(true)
   const [chunkSize, setChunkSize] = useState('20')
   const [scenePath, setScenePath] = useState<string | null>(null)
@@ -233,6 +238,8 @@ export default function App() {
   const exportingRef = useRef(false)
   exportingRef.current = exporting
   const openingMapRef = useRef(false)
+  const thumbBuildRef = useRef(false)
+  thumbBuildRef.current = thumbBuild !== null
   const assetRevisionsRef = useRef<Record<string, number>>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
   const saveSceneRef = useRef<(saveAs: boolean) => void>(() => {})
@@ -347,7 +354,7 @@ export default function App() {
   deleteSelectedRef.current = deleteSelected
 
   function mirrorHorizontal() {
-    if (exportingRef.current || exportDialogRef.current || openingMapRef.current) return
+    if (exportingRef.current || exportDialogRef.current || openingMapRef.current || thumbBuildRef.current) return
     if (activePiece) {
       if (isInteractivePiece(activePiece)) {
         setStatus('Turn it with right-click. The arrow is the facing.')
@@ -406,7 +413,7 @@ export default function App() {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (exportingRef.current || openingMapRef.current) {
+      if (exportingRef.current || openingMapRef.current || thumbBuildRef.current) {
         event.preventDefault()
         return
       }
@@ -518,7 +525,7 @@ export default function App() {
     const desktop = window.reskateDesktop
     if (!desktop?.onHistoryCommand) return
     return desktop.onHistoryCommand((key) => {
-      if (exportingRef.current || exportDialogRef.current || openingMapRef.current) return
+      if (exportingRef.current || exportDialogRef.current || openingMapRef.current || thumbBuildRef.current) return
       if (key === 'y') redoRef.current()
       else undoRef.current()
     })
@@ -1353,6 +1360,7 @@ export default function App() {
 
   function newScene() {
     setFileMenuOpen(false)
+    setMissingAssets(null)
     adoptScene(createNewScene(), null)
     setStatus('New scene')
   }
@@ -1414,23 +1422,49 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err))
       return
     }
+    let removed: RemovedAsset[] = []
+    try {
+      const library = await fetchAssetCatalog()
+      const known = [
+        ...library.pieces.map((piece) => piece.assetFile),
+        ...library.kits.map((kit) => kit.assetFile),
+      ]
+      const cleaned = omitMissingAssets(next, known)
+      next = cleaned.scene
+      removed = cleaned.removed
+    } catch {
+      // The library scan failed, so the map opens as it was saved.
+    }
     const files = sceneModelFiles(next)
     const opened = path ? `Opened ${sceneFileName(path)}` : 'Opened scene'
+    const removedNote =
+      removed.length === 1
+        ? '1 piece was removed because its file is gone.'
+        : `${removed.length} pieces were removed because their files are gone.`
+    const status = removed.length > 0 ? `${opened}. ${removedNote}` : opened
     if (files.length === 0) {
       adoptScene(next, path)
-      setStatus(opened)
+      setMissingAssets(removed.length > 0 ? removed : null)
+      setStatus(status)
       return
     }
     openingMapRef.current = true
-    flushSync(() => setSceneLoad({ done: 0, total: files.length }))
+    let firstTime = false
+    try {
+      firstTime = (await missingPreviews(files)).length > 0
+    } catch {
+      firstTime = true
+    }
+    flushSync(() => setSceneLoad({ done: 0, total: files.length, firstTime }))
     try {
       await afterPaint()
       await preloadSceneModels(files, (file) => assetRevisionsRef.current[file] ?? 0, (done) => {
-        setSceneLoad({ done, total: files.length })
+        setSceneLoad({ done, total: files.length, firstTime })
       })
       adoptScene(next, path)
+      setMissingAssets(removed.length > 0 ? removed : null)
       await afterPaint()
-      setStatus(opened)
+      setStatus(status)
     } finally {
       openingMapRef.current = false
       setSceneLoad(null)
@@ -1495,6 +1529,81 @@ export default function App() {
   const folderPieces = insideFolder
     ? catalog.pieces.filter((piece) => piece.categoryId === currentCategoryId)
     : []
+  const thumbTargets = useMemo(() => {
+    const inCatalog =
+      categoryPath.length > 0 &&
+      !(BUILTIN_LIBRARY_ROOTS as readonly string[]).includes(categoryPath[0] ?? '')
+    const pieces =
+      categoryPath.length === 0
+        ? catalog.pieces.filter((piece) => piece.categoryId === null)
+        : inCatalog
+          ? folderPieces
+          : []
+    return pieces
+      .filter((piece) => piece.assetFile)
+      .map((piece): ThumbTarget => ({ assetFile: piece.assetFile, revision: piece.revision }))
+  }, [catalog.pieces, categoryPath, folderPieces])
+  const thumbKey = thumbTargets.map((target) => `${target.assetFile}@${target.revision}`).join('\n')
+  const thumbRunRef = useRef(0)
+  const thumbTargetsRef = useRef(thumbTargets)
+  thumbTargetsRef.current = thumbTargets
+  useEffect(() => {
+    const run = ++thumbRunRef.current
+    const targets = thumbTargetsRef.current
+    let alive = true
+    void (async () => {
+      if (targets.length === 0) {
+        if (run === thumbRunRef.current) setThumbBuild(null)
+        return
+      }
+      let missing: string[] = []
+      try {
+        missing = await missingPreviews(targets.map((target) => target.assetFile))
+      } catch {
+        if (run === thumbRunRef.current) setThumbBuild(null)
+        return
+      }
+      if (!alive || run !== thumbRunRef.current) return
+      const missingSet = new Set(missing)
+      const cached = targets.filter((target) => !missingSet.has(target.assetFile))
+      await Promise.all(
+        cached.map(async (target) => {
+          const url =
+            window.location.protocol === 'file:'
+              ? await ensureThumbnail(target.assetFile, target.revision).catch(() => null)
+              : httpPreviewThumbUrl(target.assetFile, target.revision)
+          if (!url || !alive) return
+          setThumbUrls((prev) => (prev[target.assetFile] === url ? prev : { ...prev, [target.assetFile]: url }))
+        }),
+      )
+      if (!alive || run !== thumbRunRef.current) return
+      if (missing.length === 0) {
+        setThumbBuild(null)
+        return
+      }
+      flushSync(() => setThumbBuild({ done: 0, total: missing.length }))
+      await afterPaint()
+      let done = 0
+      await mapPool(missing, 2, async (assetFile) => {
+        const target = targets.find((item) => item.assetFile === assetFile)
+        try {
+          if (target) {
+            const url = await ensureThumbnail(target.assetFile, target.revision)
+            if (alive) setThumbUrls((prev) => ({ ...prev, [assetFile]: url }))
+          }
+        } catch {
+          // The swatch stays. The next visit tries this piece again.
+        } finally {
+          done += 1
+          if (run === thumbRunRef.current) setThumbBuild({ done, total: missing.length })
+        }
+      })
+      if (run === thumbRunRef.current) setThumbBuild(null)
+    })()
+    return () => {
+      alive = false
+    }
+  }, [thumbKey])
   const assetRevisions = Object.fromEntries([
     ...catalog.pieces.map((piece) => [piece.assetFile, piece.revision] as const),
     ...(catalog.kits ?? []).map((kit) => [kit.assetFile, kit.revision] as const),
@@ -1554,9 +1663,9 @@ export default function App() {
   const browsingCatalog = !(BUILTIN_LIBRARY_ROOTS as readonly string[]).includes(categoryPath[0] ?? '')
 
   return (
-    <div className="app" aria-busy={exporting || sceneLoad !== null}>
+    <div className="app" aria-busy={exporting || sceneLoad !== null || thumbBuild !== null}>
       <MirrorHotkey onMirror={() => mirrorRef.current()} />
-      <div className="app-shell" inert={exporting || sceneLoad !== null}>
+      <div className="app-shell" inert={exporting || sceneLoad !== null || thumbBuild !== null}>
       <header className="topbar">
         <div className="brand-block">
           <div className="file-row">
@@ -2017,8 +2126,7 @@ export default function App() {
                       id={piece.id}
                       label={piece.label}
                       detail="Click to place"
-                      assetFile={piece.assetFile}
-                      revision={piece.revision}
+                      thumb={thumbUrls[piece.assetFile]}
                       active={activePiece === piece.id}
                       onToggle={() => togglePiece(piece.id)}
                     />
@@ -2050,8 +2158,7 @@ export default function App() {
                   id={piece.id}
                   label={piece.label}
                   detail="Click to place"
-                  assetFile={piece.assetFile}
-                  revision={piece.revision}
+                  thumb={thumbUrls[piece.assetFile]}
                   active={activePiece === piece.id}
                   onToggle={() => togglePiece(piece.id)}
                 />
@@ -2982,7 +3089,13 @@ export default function App() {
       </div>
       </div>
       {exporting && <ExportBusy />}
-      {sceneLoad && <SceneLoadBusy done={sceneLoad.done} total={sceneLoad.total} />}
+      {sceneLoad && (
+        <SceneLoadBusy done={sceneLoad.done} total={sceneLoad.total} firstTime={sceneLoad.firstTime} />
+      )}
+      {thumbBuild && !sceneLoad && <ThumbBuildBusy done={thumbBuild.done} total={thumbBuild.total} />}
+      {missingAssets && missingAssets.length > 0 && (
+        <MissingAssetsDialog removed={missingAssets} onClose={() => setMissingAssets(null)} />
+      )}
       {exportDialogOpen && (
         <ExportDialog
           optimize={optimizeExport}
@@ -3008,14 +3121,54 @@ function afterPaint() {
   })
 }
 
-function SceneLoadBusy({ done, total }: { done: number; total: number }) {
+function WorkProgress({ done, total }: { done: number; total: number }) {
+  const pct = total === 0 ? 0 : Math.min(100, Math.round((done / total) * 100))
+  return (
+    <div
+      className="work-progress"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={total}
+      aria-valuenow={done}
+      aria-valuetext={`${done} of ${total}`}
+    >
+      <span style={{ width: `${pct}%` }} />
+    </div>
+  )
+}
+
+function SceneLoadBusy({ done, total, firstTime }: { done: number; total: number; firstTime: boolean }) {
   return (
     <div className="export-busy" role="status" aria-live="polite" aria-busy="true">
       <div className="export-busy-card">
         <span className="export-spinner" aria-hidden="true" />
-        <strong>Opening map</strong>
+        <strong>{firstTime ? 'Creating previews' : 'Opening map'}</strong>
         <p className="hint">
-          Loading models, {done} of {total}. The editor stays locked until they are ready.
+          {firstTime
+            ? 'Blender is creating a preview and a thumbnail for each piece in this map. This happens the first time a piece is opened. The editor stays locked until they are ready.'
+            : 'Loading models. The editor stays locked until they are ready.'}
+        </p>
+        <WorkProgress done={done} total={total} />
+        <p className="hint">
+          {done} of {total}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function ThumbBuildBusy({ done, total }: { done: number; total: number }) {
+  return (
+    <div className="export-busy" role="status" aria-live="polite" aria-busy="true">
+      <div className="export-busy-card">
+        <span className="export-spinner" aria-hidden="true" />
+        <strong>Creating thumbnails</strong>
+        <p className="hint">
+          Blender is making a thumbnail for each piece that does not have one yet. This happens once. The editor stays locked until they are ready.
+        </p>
+        <WorkProgress done={done} total={total} />
+        <p className="hint">
+          {done} of {total}
         </p>
       </div>
     </div>
@@ -3029,6 +3182,54 @@ function ExportBusy() {
         <span className="export-spinner" aria-hidden="true" />
         <strong id="export-busy-title">Exporting .blend</strong>
         <p className="hint">Blender is building the map. The editor stays locked until it finishes.</p>
+      </div>
+    </div>
+  )
+}
+
+function assetLabel(assetFile: string) {
+  const parts = assetFile.replace(/\\/g, '/').split('/')
+  const file = parts.at(-1) ?? assetFile
+  const folder = parts.at(-2)
+  if (!folder || folder === 'Objects') return file
+  return `${folder} / ${file}`
+}
+
+function MissingAssetsDialog({
+  removed,
+  onClose,
+}: {
+  removed: RemovedAsset[]
+  onClose: () => void
+}) {
+  return (
+    <div className="export-dialog-backdrop" onMouseDown={onClose}>
+      <div
+        className="export-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="missing-assets-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <h2 id="missing-assets-title">Missing pieces removed</h2>
+        <p className="hint">
+          {removed.length === 1
+            ? 'This piece is no longer in the library, so it was taken off the map. Save the map to keep it this way.'
+            : 'These pieces are no longer in the library, so they were taken off the map. Save the map to keep it this way.'}
+        </p>
+        <ul className="missing-assets">
+          {removed.map((item, index) => (
+            <li key={`${item.assetFile}-${index}`}>
+              <span>{item.name}</span>
+              <span className="file">{assetLabel(item.assetFile)}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="actions">
+          <button type="button" className="primary" onClick={onClose}>
+            OK
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -3583,6 +3784,68 @@ function authoredLabel(assetFile: string) {
   return 'BLENDER'
 }
 
+function folderTitle(name: string) {
+  return name.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function materialTitle(set: TextureSet) {
+  const file = decodeURIComponent(set.id.split('/').pop() ?? set.label)
+  const cleaned = file
+    .replace(/\.[^.]+$/, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b(base ?color|albedo|diffuse|colour|color)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return cleaned || set.label
+}
+
+function textureChoiceTitle(set: TextureSet, sets: TextureSet[]) {
+  const parts = set.id.split('/')
+  const folder = parts.length > 1 ? decodeURIComponent(parts[parts.length - 2]) : ''
+  if (!folder) return materialTitle(set)
+  const dir = parts.slice(0, -1).join('/')
+  const alone = sets.filter((other) => other.id.split('/').slice(0, -1).join('/') === dir).length === 1
+  return alone ? folderTitle(folder) : materialTitle(set)
+}
+
+function textureBranch(sets: TextureSet[], path: string[]) {
+  const prefix = path.join('/')
+  const folders = new Map<string, { count: number; deeper: boolean; direct: TextureSet | false | null }>()
+  const materials: TextureSet[] = []
+  const touch = (name: string, set: TextureSet, nested: boolean) => {
+    const entry = folders.get(name) ?? { count: 0, deeper: false, direct: null }
+    entry.count += 1
+    if (nested) entry.deeper = true
+    else if (entry.direct === null) entry.direct = set
+    else entry.direct = false
+    folders.set(name, entry)
+  }
+  for (const set of sets) {
+    const dir = set.id.split('/').slice(0, -1).join('/')
+    if (!prefix) {
+      if (!dir) materials.push(set)
+      else {
+        const parts = dir.split('/')
+        touch(parts[0], set, parts.length > 1)
+      }
+    } else if (dir === prefix) {
+      materials.push(set)
+    } else if (dir.startsWith(`${prefix}/`)) {
+      const parts = dir.slice(prefix.length + 1).split('/')
+      touch(parts[0], set, parts.length > 1)
+    }
+  }
+  const folderRows: [string, number][] = []
+  for (const [name, entry] of folders) {
+    if (!entry.deeper && entry.direct) materials.push(entry.direct)
+    else folderRows.push([name, entry.count])
+  }
+  return {
+    folders: folderRows.sort((a, b) => a[0].localeCompare(b[0])),
+    materials: materials.sort((a, b) => textureChoiceTitle(a, sets).localeCompare(textureChoiceTitle(b, sets))),
+  }
+}
+
 function MaterialFields({
   object,
   dedicated,
@@ -3597,6 +3860,8 @@ function MaterialFields({
   const sets = useTextureSets()
   const [scanning, setScanning] = useState(false)
   const [scanNote, setScanNote] = useState<string | null>(null)
+  const [openSlot, setOpenSlot] = useState<string | null>(null)
+  const [texturePath, setTexturePath] = useState<string[]>([])
   const assetFile =
     object.assetFile ?? (object.generator?.kind === 'kit' ? object.generator.assetFile : undefined)
   const previewNames = usePreviewMaterials(assetFile)
@@ -3632,38 +3897,125 @@ function MaterialFields({
       {slots.length === 0 ? (
         <p className="hint">Materials show up when the preview has loaded.</p>
       ) : (
-        slots.map((slot) => (
-          <div key={slot.id} className="material-slot">
-            <label>
-              {slot.label}
-              <select
-                value={object.materials?.[slot.id] ?? ''}
-                onChange={(event) => choose(slot.id, event.target.value)}
-              >
-                <option value="">Original</option>
-                {sets.map((set) => (
-                  <option key={set.id} value={set.id}>
-                    {set.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Sound
-              <select
-                value={object.sounds?.[slot.id] ?? ''}
-                onChange={(event) => chooseSound(slot.id, event.target.value)}
-              >
-                <option value="">Original</option>
-                {SURFACE_SOUNDS.map((sound) => (
-                  <option key={sound.id} value={sound.id}>
-                    {sound.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-        ))
+        slots.map((slot) => {
+          const chosen = sets.find((set) => set.id === object.materials?.[slot.id])
+          const open = openSlot === slot.id
+          const branch = textureBranch(sets, texturePath)
+          return (
+            <div key={slot.id} className="material-slot">
+              <div className="material-choice">
+                <span className="meta">{slot.label}</span>
+                <button
+                  type="button"
+                  className={open ? 'lib active' : 'lib'}
+                  aria-expanded={open}
+                  onClick={() => {
+                    setOpenSlot(open ? null : slot.id)
+                    setTexturePath([])
+                  }}
+                >
+                  {chosen ? (
+                    <img className="swatch" src={chosen.albedo} alt="" />
+                  ) : (
+                    <span className="swatch" style={{ background: '#9aa3ad' }} />
+                  )}
+                  <span>
+                    <strong>{chosen ? textureChoiceTitle(chosen, sets) : 'Original'}</strong>
+                    <small>{open ? 'Close the library' : 'Browse textures'}</small>
+                  </span>
+                </button>
+              </div>
+              <label>
+                Sound
+                <select
+                  value={object.sounds?.[slot.id] ?? ''}
+                  onChange={(event) => chooseSound(slot.id, event.target.value)}
+                >
+                  <option value="">Original</option>
+                  {SURFACE_SOUNDS.map((sound) => (
+                    <option key={sound.id} value={sound.id}>
+                      {sound.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {open && (
+                <div className="material-browser">
+                  {texturePath.length > 0 && (
+                    <>
+                      <p className="library-path">
+                        <button type="button" onClick={() => setTexturePath([])}>
+                          Textures
+                        </button>
+                        {texturePath.map((name, index) => (
+                          <span key={texturePath.slice(0, index + 1).join('/')}>
+                            <span aria-hidden="true"> / </span>
+                            <button type="button" onClick={() => setTexturePath(texturePath.slice(0, index + 1))}>
+                              {folderTitle(name)}
+                            </button>
+                          </span>
+                        ))}
+                      </p>
+                      <button
+                        type="button"
+                        className="ghost library-back"
+                        onClick={() => setTexturePath((path) => path.slice(0, -1))}
+                      >
+                        Back
+                      </button>
+                    </>
+                  )}
+                  <ul>
+                    <li>
+                      <button
+                        type="button"
+                        className={chosen ? 'lib' : 'lib active'}
+                        aria-pressed={!chosen}
+                        onClick={() => choose(slot.id, '')}
+                      >
+                        <span className="swatch" style={{ background: '#9aa3ad' }} />
+                        <span>
+                          <strong>Original</strong>
+                          <small>Keep the texture already on this material</small>
+                        </span>
+                      </button>
+                    </li>
+                    {branch.folders.map(([name, count]) => (
+                      <li key={name}>
+                        <button
+                          type="button"
+                          className="lib"
+                          onClick={() => setTexturePath((path) => [...path, name])}
+                        >
+                          <span className="swatch folder" />
+                          <span>
+                            <strong>{folderTitle(name)}</strong>
+                            <small>
+                              {count} {count === 1 ? 'texture' : 'textures'}
+                            </small>
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                    {branch.materials.map((set) => (
+                      <li key={set.id}>
+                        <PieceButton
+                          id={set.id}
+                          label={textureChoiceTitle(set, sets)}
+                          detail={chosen?.id === set.id ? 'Selected' : 'Use this texture'}
+                          thumb={set.albedo}
+                          active={chosen?.id === set.id}
+                          onToggle={() => choose(slot.id, set.id)}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                  {sets.length === 0 ? <p className="hint">No textures in the library yet.</p> : null}
+                </div>
+              )}
+            </div>
+          )
+        })
       )}
       <button
         type="button"
@@ -3769,35 +4121,12 @@ function round4(n: number) {
   return Math.round(n * 10000) / 10000
 }
 
-function useLibraryThumb(assetFile?: string, revision = 0) {
-  const http = typeof window !== 'undefined' && window.location.protocol !== 'file:'
-  const [fileUrl, setFileUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (http || !assetFile) return
-    const desktop = window.reskateDesktop
-    if (!desktop?.previewThumb) return
-    let cancel = false
-    void desktop.previewThumb(assetFile).then((url) => {
-      if (!cancel) setFileUrl(url)
-    })
-    return () => {
-      cancel = true
-    }
-  }, [assetFile, http, revision])
-
-  if (!assetFile) return null
-  if (http) return httpPreviewThumbUrl(assetFile, revision)
-  return fileUrl
-}
-
 function PieceButton({
   id,
   label,
   detail,
   color,
-  assetFile,
-  revision,
+  thumb,
   active,
   onToggle,
 }: {
@@ -3805,12 +4134,10 @@ function PieceButton({
   label: string
   detail: string
   color?: string
-  assetFile?: string
-  revision?: number
+  thumb?: string | null
   active: boolean
   onToggle: () => void
 }) {
-  const thumb = useLibraryThumb(assetFile, revision)
   const [thumbFailed, setThumbFailed] = useState(false)
 
   useEffect(() => {

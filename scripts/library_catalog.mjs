@@ -343,6 +343,37 @@ function cacheDirFor(projectRoot, assetFile) {
   return path.join(projectRoot, '.cache', 'library', hash)
 }
 
+/** The glb path when this piece already has a current preview and thumbnail. */
+async function readyPreview(projectRoot, assetFile) {
+  const absBlend = resolveInsideProject(projectRoot, assetFile)
+  const sourceStat = await stat(absBlend)
+  const revision = Math.round(sourceStat.mtimeMs)
+  const dir = cacheDirFor(projectRoot, assetFile)
+  const glbPath = path.join(dir, 'preview.glb')
+  const pngPath = path.join(dir, 'preview.png')
+  const metaPath = path.join(dir, 'meta.json')
+  const meta = JSON.parse(await readFile(metaPath, 'utf8'))
+  await access(glbPath)
+  await access(pngPath)
+  if (meta.revision !== revision || meta.pipeline !== PREVIEW_PIPELINE) return null
+  return glbPath
+}
+
+/** Pieces that still need Blender to build a thumbnail. Order matches the input. */
+export async function missingAssetPreviews(projectRoot, assetFiles) {
+  const missing = []
+  for (const assetFile of assetFiles) {
+    if (typeof assetFile !== 'string' || assetFile.length === 0) continue
+    try {
+      if (await readyPreview(projectRoot, assetFile)) continue
+    } catch {
+      // Missing file, or a preview that never rendered a thumbnail.
+    }
+    missing.push(assetFile)
+  }
+  return missing
+}
+
 async function buildPreview({ projectRoot, assetFile, blenderPath, scriptPath }) {
   const absBlend = resolveInsideProject(projectRoot, assetFile)
   const sourceStat = await stat(absBlend)
@@ -352,10 +383,8 @@ async function buildPreview({ projectRoot, assetFile, blenderPath, scriptPath })
   const pngPath = path.join(dir, 'preview.png')
   const metaPath = path.join(dir, 'meta.json')
   try {
-    const meta = JSON.parse(await readFile(metaPath, 'utf8'))
-    await access(glbPath)
-    await access(pngPath)
-    if (meta.revision === revision && meta.pipeline === PREVIEW_PIPELINE) return glbPath
+    const ready = await readyPreview(projectRoot, assetFile)
+    if (ready) return ready
   } catch {
     // cache miss, or an older preview that never rendered a thumbnail
   }

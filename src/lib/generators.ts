@@ -6,8 +6,8 @@ export const CURB_HEIGHT_M = 0.5
 /** Concrete band under the metal edge. The rest of the curb is the brick body. */
 export const CURB_CAP_M = 0.1
 export const CURB_WIDTH_M = 0.5
-/** Concrete texture repeats once per metre along the curb. */
-export const CURB_TILE_M = 1
+/** One texture repeat covers this many metres on every generator. */
+export const CURB_TILE_M = 2
 /** Square metal trim on each top corner. It sits 2 mm proud of the concrete. */
 export const CURB_LIP_M = 0.025
 const CURB_LIP_PROUD_M = 0.002
@@ -421,9 +421,9 @@ export function buildCurbLipGeometry(points: Vec3[], width: number, height: numb
       const across = b.innerTop.clone().sub(b.outerTop)
       if (across.lengthSq() < 1e-10) continue
       across.normalize()
-      const u0 = distances[i]
-      const u1 = distances[i + 1]
-      const span = CURB_LIP_M + CURB_LIP_PROUD_M
+      const u0 = distances[i] / CURB_TILE_M
+      const u1 = distances[i + 1] / CURB_TILE_M
+      const span = (CURB_LIP_M + CURB_LIP_PROUD_M) / CURB_TILE_M
       tri(a.outerTop, a.innerTop, b.innerTop, [u0, 0], [u0, span], [u1, span], UP)
       tri(a.outerTop, b.innerTop, b.outerTop, [u0, 0], [u1, span], [u1, 0], UP)
       tri(a.outerTop, b.outerTop, b.outerDown, [u0, span], [u1, span], [u1, 0], across.clone().negate())
@@ -440,7 +440,7 @@ export function buildCurbLipGeometry(points: Vec3[], width: number, height: numb
     const startOut = profiles[0].outerTop.clone().sub(profiles[1].outerTop)
     const endOut = profiles[profiles.length - 1].outerTop.clone().sub(profiles[profiles.length - 2].outerTop)
     if (startOut.lengthSq() > 1e-10) cap(profiles[0], startOut.normalize(), 0)
-    if (endOut.lengthSq() > 1e-10) cap(profiles[profiles.length - 1], endOut.normalize(), distances[distances.length - 1])
+    if (endOut.lengthSq() > 1e-10) cap(profiles[profiles.length - 1], endOut.normalize(), distances[distances.length - 1] / CURB_TILE_M)
   }
 
   addStrip('left')
@@ -595,7 +595,7 @@ function platformRing(points: Vec3[]): Vec3[] | null {
   return ring
 }
 
-/** Solid pad from an outline. Local Y is the base. The top is one flat height. UVs are metres. */
+/** Solid pad from an outline. Local Y is the base. The top is one flat height. One UV unit is CURB_TILE_M metres. */
 export function buildPlatformGeometry(points: Vec3[], height: number) {
   const ring = platformRing(points)
   if (!ring) return null
@@ -650,9 +650,9 @@ export function buildPlatformGeometry(points: Vec3[], height: number) {
       v(ax, h, az),
       v(bx, h, bz),
       v(cx, h, cz),
-      [ax, az],
-      [bx, bz],
-      [cx, cz],
+      [ax / CURB_TILE_M, az / CURB_TILE_M],
+      [bx / CURB_TILE_M, bz / CURB_TILE_M],
+      [cx / CURB_TILE_M, cz / CURB_TILE_M],
       UP,
     )
     addTri(
@@ -663,9 +663,9 @@ export function buildPlatformGeometry(points: Vec3[], height: number) {
       v(ax, 0, az),
       v(cx, 0, cz),
       v(bx, 0, bz),
-      [ax, az],
-      [cx, cz],
-      [bx, bz],
+      [ax / CURB_TILE_M, az / CURB_TILE_M],
+      [cx / CURB_TILE_M, cz / CURB_TILE_M],
+      [bx / CURB_TILE_M, bz / CURB_TILE_M],
       down,
     )
   }
@@ -678,9 +678,9 @@ export function buildPlatformGeometry(points: Vec3[], height: number) {
     const length = Math.hypot(b[0] - a[0], b[2] - a[2])
     // Positive area keeps the inside on the right of each edge, so left is outside.
     const outward = leftOf(horizontalDir(a, b))
-    const u0 = along
-    const u1 = along + length
-    along = u1
+    const u0 = along / CURB_TILE_M
+    const u1 = (along + length) / CURB_TILE_M
+    along = u1 * CURB_TILE_M
     quad(
       v(a[0], 0, a[2]),
       v(b[0], 0, b[2]),
@@ -688,8 +688,8 @@ export function buildPlatformGeometry(points: Vec3[], height: number) {
       v(a[0], h, a[2]),
       [u0, 0],
       [u1, 0],
-      [u1, h],
-      [u0, h],
+      [u1, h / CURB_TILE_M],
+      [u0, h / CURB_TILE_M],
       outward,
     )
   }
@@ -744,12 +744,12 @@ function metreUv(point: THREE.Vector3, normal: THREE.Vector3): [number, number] 
   const ax = Math.abs(normal.x)
   const ay = Math.abs(normal.y)
   const az = Math.abs(normal.z)
-  if (ay >= ax && ay >= az) return [point.x, point.z]
-  if (ax >= az) return [point.z, point.y]
-  return [point.x, point.y]
+  if (ay >= ax && ay >= az) return [point.x / CURB_TILE_M, point.z / CURB_TILE_M]
+  if (ax >= az) return [point.z / CURB_TILE_M, point.y / CURB_TILE_M]
+  return [point.x / CURB_TILE_M, point.y / CURB_TILE_M]
 }
 
-/** Solid from eight free corners. Faces stay in the platform winding. UVs are metres. */
+/** Solid from eight free corners. Faces stay in the platform winding. One UV unit is CURB_TILE_M metres. */
 export function buildBankGeometry(vertices: NonNullable<BankGenerator['vertices']>) {
   const positions: number[] = []
   const normals: number[] = []
@@ -946,8 +946,8 @@ export const PLANTER_WALL_M = 0.34
 export const PLANTER_OVERHANG_M = 0.07
 export const MIN_PLANTER_SPAN_M = 0.5
 export const MIN_PLANTER_THICKNESS_M = 0.2
-const BRICK_TILE_M = 0.8
-const STONE_TILE_M = 1
+const BRICK_TILE_M = 1.6
+const STONE_TILE_M = 2
 
 /** Rim at each corner, local Y. A missing rim sits PLANTER_HEIGHT_M above that corner's base. */
 export function planterRimYs(points: Vec3[], rims?: number[]) {
@@ -2224,8 +2224,8 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
     const finish = new THREE.Vector3(...points[i + 1])
     const axis = start.clone().add(finish).multiplyScalar(0.5)
     const along = segDirs[i]
-    const u0 = distances[i]
-    const u1 = distances[i + 1]
+    const u0 = distances[i] / CURB_TILE_M
+    const u1 = distances[i + 1] / CURB_TILE_M
     const radial = (vertex: THREE.Vector3, centre: THREE.Vector3) => {
       const offset = vertex.clone().sub(centre)
       offset.addScaledVector(along, -offset.dot(along))
@@ -2242,7 +2242,7 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
       const nb = radial(b, start)
       const nc = radial(c, finish)
       const nd = radial(d, finish)
-      const around = Math.PI * 2 * radius
+      const around = (Math.PI * 2 * radius) / CURB_TILE_M
       const v0 = (k / sides) * around
       const v1 = ((k + 1) / sides) * around
       tri(a, b, c, [u0, v0], [u0, v1], [u1, v1], outward, [na, nb, nc])
@@ -2254,7 +2254,7 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
   const end = new THREE.Vector3(...points[points.length - 1])
   const startOut = tangents[0].clone().negate()
   const endOut = tangents[tangents.length - 1]
-  const endU = distances[distances.length - 1]
+  const endU = distances[distances.length - 1] / CURB_TILE_M
   for (let k = 0; k < sides; k++) {
     const k2 = (k + 1) % sides
     tri(start, rings[0][k2], rings[0][k], [0, 0], [0, 0], [0, 0], startOut)
@@ -2288,11 +2288,13 @@ export function buildRailGeometry(bases: Vec3[], radius = RAIL_RADIUS_M, tops?: 
       const outward = lower[k].clone().add(lower[k2]).add(upper[k2]).add(upper[k]).multiplyScalar(0.25).sub(axis)
       const n0 = radial(lower[k])
       const n1 = radial(lower[k2])
-      const postAround = Math.PI * 2 * RAIL_POST_RADIUS_M
+      const postAround = (Math.PI * 2 * RAIL_POST_RADIUS_M) / CURB_TILE_M
       const v0 = (k / sides) * postAround
       const v1 = ((k + 1) / sides) * postAround
-      tri(lower[k], lower[k2], upper[k2], [y0, v0], [y0, v1], [y1, v1], outward, [n0, n1, n1])
-      tri(lower[k], upper[k2], upper[k], [y0, v0], [y1, v1], [y1, v0], outward, [n0, n1, n0])
+      const yu0 = y0 / CURB_TILE_M
+      const yu1 = y1 / CURB_TILE_M
+      tri(lower[k], lower[k2], upper[k2], [yu0, v0], [yu0, v1], [yu1, v1], outward, [n0, n1, n1])
+      tri(lower[k], upper[k2], upper[k], [yu0, v0], [yu1, v1], [yu1, v0], outward, [n0, n1, n0])
       tri(bottom, lower[k2], lower[k], [0, 0], [0, 0], [0, 0], new THREE.Vector3(0, -1, 0))
       tri(top, upper[k], upper[k2], [0, 0], [0, 0], [0, 0], UP)
     }

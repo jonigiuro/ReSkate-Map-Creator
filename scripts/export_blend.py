@@ -15,6 +15,7 @@ import json
 import math
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 import bpy
@@ -141,7 +142,10 @@ def apply_plant_leaves(objects, blend_path, project_root):
         return
     image = leaves_image_path(project_root)
     if not image.is_file():
-        print(f"Leaves texture missing, plants stay untextured: {image}")
+        clear = concrete_clear_paths(project_root)
+        image = clear["albedo"] if clear else None
+    if image is None or not Path(image).is_file():
+        print(f"Leaves texture missing, plants stay untextured: {leaves_image_path(project_root)}")
         return
     seen = set()
     for obj in objects:
@@ -484,7 +488,35 @@ def assign_metre_uvs(mesh, verts_three, faces, tile):
             loop_index += 1
 
 
+def image_for_game(path):
+    """A JPEG bigger than 512 goes black in the distance. Pack the same pixels as a PNG."""
+    path = Path(path)
+    if path.suffix.lower() not in {".jpg", ".jpeg", ".jfif", ".webp"} or not path.is_file():
+        return path
+    probe = bpy.data.images.load(str(path.resolve()), check_existing=False)
+    width, height = probe.size
+    if max(width, height) <= 512:
+        bpy.data.images.remove(probe)
+        return path
+    digest = hashlib.sha1(str(path.resolve()).lower().encode()).hexdigest()[:16]
+    dest = Path(tempfile.gettempdir()) / "reskate-map-png" / f"{digest}.png"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not dest.is_file() or dest.stat().st_mtime < path.stat().st_mtime:
+            probe.file_format = "PNG"
+            probe.filepath_raw = str(dest)
+            probe.save()
+            print(f"Packed {path.name} as PNG ({width}x{height})")
+    except Exception as exc:
+        print(f"Could not repack {path.name} as PNG: {exc}")
+        bpy.data.images.remove(probe)
+        return path
+    bpy.data.images.remove(probe)
+    return dest
+
+
 def _image_texture(nodes, path, colorspace, location):
+    path = image_for_game(path)
     image = bpy.data.images.load(str(Path(path).resolve()), check_existing=True)
     try:
         image.colorspace_settings.name = colorspace
@@ -503,16 +535,98 @@ def _image_texture(nodes, path, colorspace, location):
     return node
 
 
+def is_directx_normal(path):
+    """AmbientCG marks DirectX normals with dx. OpenGL names are left alone."""
+    stem = Path(path).stem.lower() if path else ""
+    if "opengl" in stem or "normalogl" in stem or "normalgl" in stem:
+        return False
+    tokens = [token for token in re.split(r"[^a-z0-9]+", stem) if token]
+    if "gl" in tokens:
+        return False
+    return "dx" in tokens or "normaldx" in tokens or any(token.endswith("dx") for token in tokens)
+
+
+def wire_normal(nodes, links, image_node, normal_map):
+    """DirectX normals need the green channel flipped before the Normal Map node."""
+    color = image_node.outputs["Color"]
+    image = getattr(image_node, "image", None)
+    source = image.filepath if image is not None else ""
+    if is_directx_normal(source):
+        separate = nodes.new("ShaderNodeSeparateColor")
+        separate.location = (image_node.location[0] + 220, image_node.location[1])
+        invert = nodes.new("ShaderNodeInvert")
+        invert.location = (separate.location[0] + 180, separate.location[1] - 80)
+        combine = nodes.new("ShaderNodeCombineColor")
+        combine.location = (separate.location[0] + 180, separate.location[1] + 40)
+        links.new(color, separate.inputs["Color"])
+        links.new(separate.outputs["Red"], combine.inputs["Red"])
+        links.new(separate.outputs["Green"], invert.inputs["Color"])
+        links.new(invert.outputs["Color"], combine.inputs["Green"])
+        links.new(separate.outputs["Blue"], combine.inputs["Blue"])
+        color = combine.outputs["Color"]
+    links.new(color, normal_map.inputs["Color"])
+
+
+def concrete_clear_paths(project_root):
+    """The concrete maps still in the library. Missing materials use these."""
+    folder = Path(project_root) / "public" / "img" / "textures" / "concrete"
+    files = {
+        "albedo": folder / "Concrete_BaseColor.png",
+        "normal": folder / "Concrete_Normal.png",
+        "roughness": folder / "Concrete_Roughness.png",
+        "height": None,
+    }
+    if not files["albedo"].is_file():
+        return None
+    return files
+
+
+def concrete_clear_material(name, project_root):
+    """Stand-in for a texture that is no longer in the library."""
+    files = concrete_clear_paths(project_root)
+    if files is None:
+        return placeholder_material(name, (0.78, 0.76, 0.72))
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+    bsdf = nodes.get("Principled BSDF")
+    base = _image_texture(nodes, files["albedo"], "sRGB", (-640, 280))
+    links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
+    if files["roughness"] is not None and files["roughness"].is_file():
+        rough = _image_texture(nodes, files["roughness"], "Non-Color", (-640, 40))
+        links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+    normal_map = None
+    if files["normal"] is not None and files["normal"].is_file():
+        normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-640, -240))
+        normal_map = nodes.new("ShaderNodeNormalMap")
+        normal_map.location = (-180, -240)
+        wire_normal(nodes, links, normal_tex, normal_map)
+        links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
+    if files["height"] is not None and files["height"].is_file():
+        height_tex = _image_texture(nodes, files["height"], "Non-Color", (-640, -480))
+        bump = nodes.new("ShaderNodeBump")
+        bump.location = (-180, -460)
+        bump.inputs["Strength"].default_value = 0.2
+        links.new(height_tex.outputs["Color"], bump.inputs["Height"])
+        if normal_map is not None:
+            links.new(normal_map.outputs["Normal"], bump.inputs["Normal"])
+        links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    if "Metallic" in bsdf.inputs:
+        bsdf.inputs["Metallic"].default_value = 0.0
+    return mat
+
+
 def asphalt_material(project_root):
-    """Principled asphalt from public/img/textures/asphalt, packed into the blend."""
+    """Principled asphalt from Asphalt023L, packed into the blend. The normal is DirectX."""
     cached = bpy.data.materials.get("asphalt")
     if cached:
         return cached
-    folder = Path(project_root) / "public" / "img" / "textures" / "asphalt"
+    folder = Path(project_root) / "public" / "img" / "textures" / "Asphalt" / "Asphalt023L_1K-JPG"
     files = {
-        "base": folder / "Asphalt_BaseColor.jpg",
-        "normal": folder / "Asphalt_Normal.jpg",
-        "rough": folder / "Asphalt_Roughness.jpg",
+        "base": folder / "Asphalt023L_1K-JPG_Color.jpg",
+        "normal": folder / "Asphalt023L_1K-JPG_NormalDX.jpg",
+        "rough": folder / "Asphalt023L_1K-JPG_Roughness.jpg",
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
@@ -526,12 +640,23 @@ def asphalt_material(project_root):
     bsdf = nodes.get("Principled BSDF")
     base = _image_texture(nodes, files["base"], "sRGB", (-520, 280))
     rough = _image_texture(nodes, files["rough"], "Non-Color", (-520, 0))
-    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-520, -280))
+    normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-760, -280))
+    separate = nodes.new("ShaderNodeSeparateColor")
+    separate.location = (-480, -280)
+    invert = nodes.new("ShaderNodeInvert")
+    invert.location = (-280, -420)
+    combine = nodes.new("ShaderNodeCombineColor")
+    combine.location = (-280, -220)
     normal_map = nodes.new("ShaderNodeNormalMap")
-    normal_map.location = (-220, -280)
+    normal_map.location = (-40, -280)
     links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
     links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
-    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_tex.outputs["Color"], separate.inputs["Color"])
+    links.new(separate.outputs["Red"], combine.inputs["Red"])
+    links.new(separate.outputs["Green"], invert.inputs["Color"])
+    links.new(invert.outputs["Color"], combine.inputs["Green"])
+    links.new(separate.outputs["Blue"], combine.inputs["Blue"])
+    links.new(combine.outputs["Color"], normal_map.inputs["Color"])
     links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
     if "Metallic" in bsdf.inputs:
         bsdf.inputs["Metallic"].default_value = 0.0
@@ -686,7 +811,7 @@ def _side_outward(p0, p1, centre):
     return normal
 
 
-CURB_TILE_M = 1.0
+CURB_TILE_M = 2.0
 CURB_CAP_M = 0.1
 CURB_LIP_M = 0.025
 CURB_LIP_PROUD_M = 0.002
@@ -774,7 +899,7 @@ def _edge_distances(sections, side):
 
 
 def concrete_material(project_root):
-    """Tileable concrete packed into the blend. One UV unit is one metre."""
+    """Tileable concrete packed into the blend. One UV unit is two metres."""
     cached = bpy.data.materials.get("concrete")
     if cached:
         return stamp_metal_rail(cached)
@@ -786,15 +911,15 @@ def concrete_material(project_root):
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
-        print("Concrete textures missing, curb stays flat: " + ", ".join(missing))
-        return stamp_metal_rail(placeholder_material("concrete", (0.78, 0.76, 0.72)))
+        print("Concrete textures missing, curb stays on concrete: " + ", ".join(missing))
+        return stamp_metal_rail(concrete_clear_material("concrete", project_root))
 
     mat = bpy.data.materials.new("concrete")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     bsdf = nodes.get("Principled BSDF")
-    base = _image_texture(nodes, files["base"], "sRGB", (-520, 280))
+    base = _image_texture(nodes, files["base"], "sRGB", (-760, 280))
     rough = _image_texture(nodes, files["rough"], "Non-Color", (-520, 0))
     normal_tex = _image_texture(nodes, files["normal"], "Non-Color", (-520, -280))
     normal_map = nodes.new("ShaderNodeNormalMap")
@@ -810,7 +935,7 @@ def concrete_material(project_root):
 
 
 def striped_concrete_material(project_root):
-    """Tileable striped concrete packed into the blend. One UV unit is one metre."""
+    """Tileable striped concrete packed into the blend. One UV unit is two metres."""
     cached = bpy.data.materials.get("striped_concrete")
     if cached:
         return cached
@@ -822,8 +947,8 @@ def striped_concrete_material(project_root):
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
-        print("Striped concrete textures missing, platform stays flat: " + ", ".join(missing))
-        return placeholder_material("striped_concrete", (0.62, 0.6, 0.58))
+        print("Striped concrete textures missing, platform uses concrete: " + ", ".join(missing))
+        return concrete_clear_material("striped_concrete", project_root)
 
     mat = bpy.data.materials.new("striped_concrete")
     mat.use_nodes = True
@@ -846,14 +971,14 @@ def striped_concrete_material(project_root):
 
 
 def brick_material(project_root):
-    """Stylised brick albedo. One UV unit is 0.8 m, set by the planter mesh."""
+    """Stylised brick albedo. One UV unit is 1.6 m, set by the planter mesh."""
     cached = bpy.data.materials.get("brick")
     if cached:
         return cached
     path = Path(project_root) / "public" / "img" / "textures" / "bricks.jpg"
     if not path.is_file():
-        print("Brick texture missing, planter walls stay flat")
-        return placeholder_material("brick", (0.72, 0.38, 0.28))
+        print("Brick texture missing, planter walls use concrete")
+        return concrete_clear_material("brick", project_root)
     mat = bpy.data.materials.new("brick")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -881,8 +1006,8 @@ def granite_material(project_root):
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
-        print("Concrete textures missing, planter rim stays flat: " + ", ".join(missing))
-        return placeholder_material("granite", (0.62, 0.62, 0.6))
+        print("Concrete textures missing, planter rim uses concrete: " + ", ".join(missing))
+        return concrete_clear_material("granite", project_root)
     mat = bpy.data.materials.new("granite")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -916,12 +1041,8 @@ def grass_material(project_root):
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
-        print("Grass textures missing, planter grass stays flat: " + ", ".join(missing))
-        mat = placeholder_material("grass", (0.56, 0.66, 0.29))
-        bsdf = mat.node_tree.nodes.get("Principled BSDF")
-        if bsdf and "Roughness" in bsdf.inputs:
-            bsdf.inputs["Roughness"].default_value = 0.95
-        return mat
+        print("Grass textures missing, planter grass uses concrete: " + ", ".join(missing))
+        return concrete_clear_material("grass", project_root)
     mat = bpy.data.materials.new("grass")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -1119,9 +1240,9 @@ def make_curb_lip_mesh(name, points, width, height, tops=None, project_root=".",
             if across is None:
                 continue
             outward = _vscale(across, -1.0)
-            u0 = distances[index]
-            u1 = distances[index + 1]
-            span = CURB_LIP_M + CURB_LIP_PROUD_M
+            u0 = distances[index] / CURB_TILE_M
+            u1 = distances[index + 1] / CURB_TILE_M
+            span = (CURB_LIP_M + CURB_LIP_PROUD_M) / CURB_TILE_M
             _add_tri(verts, faces, uvs, a["outer_top"], a["inner_top"], b["inner_top"], (u0, 0.0), (u0, span), (u1, span), (0.0, 1.0, 0.0))
             _add_tri(verts, faces, uvs, a["outer_top"], b["inner_top"], b["outer_top"], (u0, 0.0), (u1, span), (u1, 0.0), (0.0, 1.0, 0.0))
             _add_tri(verts, faces, uvs, a["outer_top"], b["outer_top"], b["outer_down"], (u0, span), (u1, span), (u1, 0.0), outward)
@@ -1140,7 +1261,7 @@ def make_curb_lip_mesh(name, points, width, height, tops=None, project_root=".",
         if start_out:
             cap(profiles[0], start_out, 0.0)
         if end_out:
-            cap(profiles[-1], end_out, distances[-1])
+            cap(profiles[-1], end_out, distances[-1] / CURB_TILE_M)
 
     add_strip(0)
     add_strip(1)
@@ -1319,11 +1440,11 @@ def make_curb_wax_mesh(name, points, width, height, tops=None, project_root=".")
 
 
 def rail_material(project_root):
-    """Galvanized steel for rails and curb lips. One UV unit is one metre."""
+    """Galvanized steel for rails and curb lips. One UV unit is two metres."""
     cached = bpy.data.materials.get("galvanized")
     if cached:
         return stamp_metal_rail(cached)
-    folder = Path(project_root) / "public" / "img" / "textures" / "galvanized_metal"
+    folder = Path(project_root) / "public" / "img" / "textures" / "Metal" / "galvanized_metal"
     stem = "standard galvanized steel, ideal for structures"
     files = {
         "base": folder / f"{stem}_BaseColor.jpg",
@@ -1333,13 +1454,8 @@ def rail_material(project_root):
     }
     missing = [str(path) for path in files.values() if not path.is_file()]
     if missing:
-        print("Galvanized textures missing, rail stays flat metal: " + ", ".join(missing))
-        mat = placeholder_material("galvanized", (0.72, 0.74, 0.76))
-        bsdf = mat.node_tree.nodes.get("Principled BSDF") if mat.use_nodes else None
-        if bsdf and "Metallic" in bsdf.inputs:
-            bsdf.inputs["Metallic"].default_value = 0.85
-            bsdf.inputs["Roughness"].default_value = 0.35
-        return stamp_metal_rail(mat)
+        print("Galvanized textures missing, rail uses concrete: " + ", ".join(missing))
+        return stamp_metal_rail(concrete_clear_material("galvanized", project_root))
 
     mat = bpy.data.materials.new("galvanized")
     mat.use_nodes = True
@@ -1442,15 +1558,17 @@ def _add_vertical_post(verts, faces, uvs, x, z, y0, y1, radius, sides, loop_norm
         outward = _vsub(_vscale(_vadd(_vadd(lower[k], lower[k2]), _vadd(upper[k2], upper[k])), 0.25), axis)
         n0 = _unit((lower[k][0] - x, 0.0, lower[k][2] - z), (1.0, 0.0, 0.0))
         n1 = _unit((lower[k2][0] - x, 0.0, lower[k2][2] - z), (1.0, 0.0, 0.0))
-        around = 2.0 * math.pi * float(radius)
+        around = 2.0 * math.pi * float(radius) / CURB_TILE_M
         v0 = (k / sides) * around
         v1 = ((k + 1) / sides) * around
+        yu0 = y0 / CURB_TILE_M
+        yu1 = y1 / CURB_TILE_M
         _add_tri(
-            verts, faces, uvs, lower[k], lower[k2], upper[k2], (y0, v0), (y0, v1), (y1, v1), outward,
+            verts, faces, uvs, lower[k], lower[k2], upper[k2], (yu0, v0), (yu0, v1), (yu1, v1), outward,
             loop_normals, (n0, n1, n1),
         )
         _add_tri(
-            verts, faces, uvs, lower[k], upper[k2], upper[k], (y0, v0), (y1, v1), (y1, v0), outward,
+            verts, faces, uvs, lower[k], upper[k2], upper[k], (yu0, v0), (yu1, v1), (yu1, v0), outward,
             loop_normals, (n0, n1, n0),
         )
         _add_tri(
@@ -1517,8 +1635,8 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
     for i in range(len(rings) - 1):
         axis = _vscale(_vadd(centres[i], centres[i + 1]), 0.5)
         along = seg[i]
-        u0 = distances[i]
-        u1 = distances[i + 1]
+        u0 = distances[i] / CURB_TILE_M
+        u1 = distances[i + 1] / CURB_TILE_M
         for k in range(sides):
             k2 = (k + 1) % sides
             a = rings[i][k]
@@ -1530,7 +1648,7 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
             nb = _radial_normal(b, centres[i], along)
             nc = _radial_normal(c, centres[i + 1], along)
             nd = _radial_normal(d, centres[i + 1], along)
-            around = 2.0 * math.pi * float(radius)
+            around = 2.0 * math.pi * float(radius) / CURB_TILE_M
             v0 = (k / sides) * around
             v1 = ((k + 1) / sides) * around
             _add_tri(verts, faces, uvs, a, b, c, (u0, v0), (u0, v1), (u1, v1), outward, loop_normals, (na, nb, nc))
@@ -1538,7 +1656,7 @@ def make_rail_mesh(name, points, radius, color, material=None, tops=None):
 
     start_out = _vscale(tangents[0], -1.0)
     end_out = tangents[-1]
-    end_u = distances[-1]
+    end_u = distances[-1] / CURB_TILE_M
     for k in range(sides):
         k2 = (k + 1) % sides
         _add_tri(
@@ -1822,9 +1940,9 @@ def make_platform_mesh(name, points, height, color, material=None):
             top_a,
             top_b,
             top_c,
-            (a[0], a[2]),
-            (b[0], b[2]),
-            (c[0], c[2]),
+            (a[0] / CURB_TILE_M, a[2] / CURB_TILE_M),
+            (b[0] / CURB_TILE_M, b[2] / CURB_TILE_M),
+            (c[0] / CURB_TILE_M, c[2] / CURB_TILE_M),
             (0.0, 1.0, 0.0),
             loop_normals,
         )
@@ -1835,9 +1953,9 @@ def make_platform_mesh(name, points, height, color, material=None):
             (a[0], 0.0, a[2]),
             (c[0], 0.0, c[2]),
             (b[0], 0.0, b[2]),
-            (a[0], a[2]),
-            (c[0], c[2]),
-            (b[0], b[2]),
+            (a[0] / CURB_TILE_M, a[2] / CURB_TILE_M),
+            (c[0] / CURB_TILE_M, c[2] / CURB_TILE_M),
+            (b[0] / CURB_TILE_M, b[2] / CURB_TILE_M),
             (0.0, -1.0, 0.0),
             loop_normals,
         )
@@ -1848,9 +1966,9 @@ def make_platform_mesh(name, points, height, color, material=None):
         direction = _horiz_dir(a, b)
         # Positive area keeps the inside on the right of each edge, so left is outside.
         outward = _left_of(direction)
-        u0 = along
-        u1 = along + length
-        along = u1
+        u0 = along / CURB_TILE_M
+        u1 = (along + length) / CURB_TILE_M
+        along = u1 * CURB_TILE_M
         add_quad(
             (a[0], 0.0, a[2]),
             (b[0], 0.0, b[2]),
@@ -1858,8 +1976,8 @@ def make_platform_mesh(name, points, height, color, material=None):
             (a[0], h, a[2]),
             (u0, 0.0),
             (u1, 0.0),
-            (u1, h),
-            (u0, h),
+            (u1, h / CURB_TILE_M),
+            (u0, h / CURB_TILE_M),
             outward,
         )
     if not faces:
@@ -1898,7 +2016,7 @@ def make_bank_mesh(name, vertices, color, material=None):
         (3, 4, 0),
         (3, 7, 4),
     ]
-    return _link_mesh(name, verts, faces, color, material=material, tile=1.0)
+    return _link_mesh(name, verts, faces, color, material=material, tile=CURB_TILE_M)
 
 
 def _bank_outer_points(points, depth, closed=False, reversed=False):
@@ -1980,10 +2098,10 @@ def _bank_uv(point, normal):
     ax, ay, az = abs(normal[0]), abs(normal[1]), abs(normal[2])
     x, y, z = point
     if ay >= ax and ay >= az:
-        return (x, z)
+        return (x / CURB_TILE_M, z / CURB_TILE_M)
     if ax >= az:
-        return (z, y)
-    return (x, y)
+        return (z / CURB_TILE_M, y / CURB_TILE_M)
+    return (x / CURB_TILE_M, y / CURB_TILE_M)
 
 
 def make_bank_run_mesh(name, points, tops, outers, color, material=None, closed=False):
@@ -2040,8 +2158,8 @@ PLANTER_CAP_M = 0.14
 PLANTER_WALL_M = 0.34
 PLANTER_OVERHANG_M = 0.07
 MIN_PLANTER_THICKNESS_M = 0.2
-BRICK_TILE_M = 0.8
-STONE_TILE_M = 1.0
+BRICK_TILE_M = 1.6
+STONE_TILE_M = 2.0
 
 
 def _planter_insets(span_x, span_z):
@@ -3526,8 +3644,10 @@ def pack_images_from(source_blend, before_images):
         if not candidate.exists():
             print(f"Texture missing, left unpacked: {candidate}")
             continue
+        candidate = image_for_game(candidate)
         img.filepath = str(candidate.resolve())
         try:
+            img.reload()
             img.pack()
         except Exception as exc:
             print(f"Could not pack {candidate}: {exc}")
@@ -3799,9 +3919,14 @@ def retarget_material(mat, spec, project_root):
     if material_invisible(mat):
         return False
     albedo = spec_file(project_root, spec, "albedo")
+    clear = None
     if albedo is None:
-        print(f"Texture set {spec.get('id', '')} is missing its color map")
-        return False
+        clear = concrete_clear_paths(project_root)
+        if clear is None:
+            print(f"Texture set {spec.get('id', '')} is missing its color map")
+            return False
+        print(f"Texture set {spec.get('id', '')} is missing, using concrete")
+        albedo = clear["albedo"]
     vector = capture_image_vector(mat)
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -3817,22 +3942,22 @@ def retarget_material(mat, spec, project_root):
     base = _image_texture(nodes, albedo, "sRGB", (-640, 280))
     links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
     images.append(base)
-    rough = spec_file(project_root, spec, "roughness")
+    rough = clear["roughness"] if clear else spec_file(project_root, spec, "roughness")
     if rough is not None:
         tex = _image_texture(nodes, rough, "Non-Color", (-640, 40))
         links.new(tex.outputs["Color"], bsdf.inputs["Roughness"])
         images.append(tex)
     elif "Roughness" in bsdf.inputs:
         bsdf.inputs["Roughness"].default_value = 0.9
-    metal = spec_file(project_root, spec, "metallic")
+    metal = None if clear else spec_file(project_root, spec, "metallic")
     if metal is not None and "Metallic" in bsdf.inputs:
         tex = _image_texture(nodes, metal, "Non-Color", (-640, -180))
         links.new(tex.outputs["Color"], bsdf.inputs["Metallic"])
         images.append(tex)
     elif "Metallic" in bsdf.inputs:
         bsdf.inputs["Metallic"].default_value = 0.0
-    normal_path = spec_file(project_root, spec, "normal")
-    height_path = spec_file(project_root, spec, "height")
+    normal_path = clear["normal"] if clear else spec_file(project_root, spec, "normal")
+    height_path = clear["height"] if clear else spec_file(project_root, spec, "height")
     normal_out = None
     if normal_path is not None:
         normal_tex = _image_texture(nodes, normal_path, "Non-Color", (-640, -400))
@@ -3841,6 +3966,9 @@ def retarget_material(mat, spec, project_root):
         normal_map.location = (-280, -400)
         normal_map.inputs["Strength"].default_value = 1.0
         links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+        if is_directx_normal(normal_path):
+            links.remove(normal_map.inputs["Color"].links[0])
+            wire_normal(nodes, links, normal_tex, normal_map)
         normal_out = normal_map.outputs["Normal"]
     if height_path is not None:
         height_tex = _image_texture(nodes, height_path, "Non-Color", (-640, -620))
@@ -4729,6 +4857,9 @@ def build(scene):
                 blend_path = Path(asset)
                 if not blend_path.is_absolute():
                     blend_path = project_root / asset
+                if not blend_path.is_file():
+                    print(f"Skipping {name}: asset not found at {blend_path}")
+                    continue
                 append_authored_asset(
                     name,
                     blend_path,

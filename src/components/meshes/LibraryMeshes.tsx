@@ -12,9 +12,9 @@ const ASPHALT_TILE_M = 2
 const publicFile = (file: string) => `${import.meta.env.BASE_URL}${file}`
 
 const ASPHALT_MAPS = [
-  publicFile('img/textures/asphalt/Asphalt_BaseColor.jpg'),
-  publicFile('img/textures/asphalt/Asphalt_Normal.jpg'),
-  publicFile('img/textures/asphalt/Asphalt_Roughness.jpg'),
+  publicFile('img/textures/Asphalt/Asphalt023L_1K-JPG/Asphalt023L_1K-JPG_Color.jpg'),
+  publicFile('img/textures/Asphalt/Asphalt023L_1K-JPG/Asphalt023L_1K-JPG_NormalDX.jpg'),
+  publicFile('img/textures/Asphalt/Asphalt023L_1K-JPG/Asphalt023L_1K-JPG_Roughness.jpg'),
 ] as const
 
 function useWedgeGeometry(width: number, depth: number, height: number) {
@@ -464,6 +464,7 @@ function FlatPad({
       map: colorMap,
       normalMap,
       roughnessMap,
+      normalScale: new THREE.Vector2(1, -1),
       roughness: 1,
       metalness: 0,
       transparent: !!ghost,

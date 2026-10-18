@@ -1,7 +1,71 @@
 import { useTexture } from '@react-three/drei'
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as THREE from 'three'
-import { useTextureSets, type TextureSet } from '../lib/textureSets'
+import { useTextureSets, useTextureCatalogReady, type TextureSet } from '../lib/textureSets'
+import { isDirectXNormal } from '../lib/normalMaps'
+
+const CONCRETE_FALLBACK_MAPS = [
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_BaseColor.png`,
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_Normal.png`,
+  `${import.meta.env.BASE_URL}img/textures/concrete/Concrete_Roughness.png`,
+] as const
+
+export function concreteClearSet(): TextureSet {
+  return {
+    id: 'concrete/Concrete_BaseColor.png',
+    label: 'concrete',
+    albedo: CONCRETE_FALLBACK_MAPS[0],
+    normal: CONCRETE_FALLBACK_MAPS[1],
+    roughness: CONCRETE_FALLBACK_MAPS[2],
+  }
+}
+
+function FlatConcreteMaterial({ ghost }: { ghost?: boolean }) {
+  const material = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: '#c8c2b8',
+        roughness: 1,
+        metalness: 0,
+        side: THREE.DoubleSide,
+        transparent: !!ghost,
+        opacity: ghost ? 0.45 : 1,
+        depthWrite: !ghost,
+      }),
+    [ghost],
+  )
+  useEffect(() => () => material.dispose(), [material])
+  return <primitive object={material} attach="material" />
+}
+
+function ConcreteMapsMaterial({ ghost }: { ghost?: boolean }) {
+  const [colorMap, normalMap, roughnessMap] = useTexture([...CONCRETE_FALLBACK_MAPS])
+  const material = useMemo(() => {
+    for (const map of [colorMap, normalMap, roughnessMap]) {
+      map.wrapS = THREE.RepeatWrapping
+      map.wrapT = THREE.RepeatWrapping
+      map.needsUpdate = true
+    }
+    colorMap.colorSpace = THREE.SRGBColorSpace
+    normalMap.colorSpace = THREE.NoColorSpace
+    roughnessMap.colorSpace = THREE.NoColorSpace
+    return new THREE.MeshStandardMaterial({
+      map: colorMap,
+      normalMap,
+      roughnessMap,
+      normalScale: new THREE.Vector2(1, 1),
+      roughness: 1,
+      metalness: 0,
+      side: THREE.DoubleSide,
+      transparent: !!ghost,
+      opacity: ghost ? 0.45 : 1,
+      depthWrite: !ghost,
+    })
+  }, [colorMap, ghost, normalMap, roughnessMap])
+
+  useEffect(() => () => material.dispose(), [material])
+  return <primitive object={material} attach="material" />
+}
 
 /** Draws one public/img/textures set on whatever mesh it is attached to. */
 export function TextureSetMaterial({ set, ghost }: { set: TextureSet; ghost?: boolean }) {
@@ -34,14 +98,14 @@ export function TextureSetMaterial({ set, ghost }: { set: TextureSet; ghost?: bo
     for (const map of [normalMap, roughnessMap, metalnessMap, heightMap]) {
       if (map) map.colorSpace = THREE.NoColorSpace
     }
-    return new THREE.MeshStandardMaterial({
+    const material = new THREE.MeshStandardMaterial({
       map: colorMap,
       normalMap,
       roughnessMap,
       metalnessMap,
       bumpMap: heightMap,
       bumpScale: heightMap ? 0.04 : 0,
-      normalScale: new THREE.Vector2(1, 1),
+      normalScale: new THREE.Vector2(1, isDirectXNormal(set.normal) ? -1 : 1),
       roughness: roughnessMap ? 1 : 0.9,
       metalness: metalnessMap ? 1 : 0,
       side: THREE.DoubleSide,
@@ -49,10 +113,20 @@ export function TextureSetMaterial({ set, ghost }: { set: TextureSet; ghost?: bo
       opacity: ghost ? 0.45 : 1,
       depthWrite: !ghost,
     })
+    return material
   }, [ghost, loaded, set])
 
   useEffect(() => () => material.dispose(), [material])
   return <primitive object={material} attach="material" />
+}
+
+/** Last resort when a texture file is gone. A missing image file falls through to a flat concrete color. */
+export function ConcreteClearMaterial({ ghost }: { ghost?: boolean }) {
+  return (
+    <TextureSetBoundary resetKey="concrete-fallback" fallback={<FlatConcreteMaterial ghost={ghost} />}>
+      <ConcreteMapsMaterial ghost={ghost} />
+    </TextureSetBoundary>
+  )
 }
 
 /** A missing image used to throw out of the canvas and blank the editor. */
@@ -78,14 +152,16 @@ export class TextureSetBoundary extends Component<
 
 export function useSlotOverrides(materials: Record<string, string> | undefined, ghost?: boolean) {
   const sets = useTextureSets()
+  const ready = useTextureCatalogReady()
   const assignment = useMemo(() => {
+    if (!ready) return []
     const chosen: { slot: string; set: TextureSet }[] = []
+    const clear = concreteClearSet()
     for (const [slot, id] of Object.entries(materials ?? {})) {
-      const set = sets.find((item) => item.id === id)
-      if (set) chosen.push({ slot, set })
+      chosen.push({ slot, set: sets.find((item) => item.id === id) ?? clear })
     }
     return chosen
-  }, [materials, sets])
+  }, [materials, ready, sets])
   const [overrides, setOverrides] = useState<THREE.MeshStandardMaterial[]>([])
   const held = useRef<THREE.MeshStandardMaterial[]>([])
 
@@ -95,24 +171,9 @@ export function useSlotOverrides(materials: Record<string, string> | undefined, 
     const built: THREE.MeshStandardMaterial[] = []
     void Promise.all(
       assignment.map(async ({ slot, set }) => {
-        const material = new THREE.MeshStandardMaterial({
-          name: slot,
-          roughness: set.roughness ? 1 : 0.9,
-          metalness: set.metallic ? 1 : 0,
-          side: THREE.DoubleSide,
-          transparent: !!ghost,
-          opacity: ghost ? 0.45 : 1,
-          depthWrite: !ghost,
-        })
-        material.map = await loadMap(loader, set.albedo, true)
-        if (set.normal) material.normalMap = await loadMap(loader, set.normal, false)
-        if (set.roughness) material.roughnessMap = await loadMap(loader, set.roughness, false)
-        if (set.metallic) material.metalnessMap = await loadMap(loader, set.metallic, false)
-        if (set.height) {
-          material.bumpMap = await loadMap(loader, set.height, false)
-          material.bumpScale = 0.04
-        }
-        material.needsUpdate = true
+        const material = await loadSetMaterial(loader, slot, set, ghost).catch(() =>
+          loadSetMaterial(loader, slot, concreteClearSet(), ghost),
+        )
         built.push(material)
       }),
     )
@@ -175,6 +236,36 @@ function loadMap(loader: THREE.TextureLoader, url: string, color: boolean) {
     map.needsUpdate = true
     return map
   })
+}
+
+async function loadSetMaterial(
+  loader: THREE.TextureLoader,
+  slot: string,
+  set: TextureSet,
+  ghost?: boolean,
+) {
+  const material = new THREE.MeshStandardMaterial({
+    name: slot,
+    roughness: set.roughness ? 1 : 0.9,
+    metalness: set.metallic ? 1 : 0,
+    side: THREE.DoubleSide,
+    transparent: !!ghost,
+    opacity: ghost ? 0.45 : 1,
+    depthWrite: !ghost,
+  })
+  material.map = await loadMap(loader, set.albedo, true)
+  if (set.normal) {
+    material.normalMap = await loadMap(loader, set.normal, false)
+    material.normalScale.set(1, isDirectXNormal(set.normal) ? -1 : 1)
+  }
+  if (set.roughness) material.roughnessMap = await loadMap(loader, set.roughness, false)
+  if (set.metallic) material.metalnessMap = await loadMap(loader, set.metallic, false)
+  if (set.height) {
+    material.bumpMap = await loadMap(loader, set.height, false)
+    material.bumpScale = 0.04
+  }
+  material.needsUpdate = true
+  return material
 }
 
 function uvChannel(material: THREE.Material | undefined) {
