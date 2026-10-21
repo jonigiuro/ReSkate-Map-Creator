@@ -206,35 +206,123 @@ def share_duplicate_materials(collapse=True):
         if collapse and obj.type == "MESH":
             collapse_material_slots(obj)
 
-    for image in list(bpy.data.images):
-        image.use_fake_user = False
-        if image.users == 0:
-            bpy.data.images.remove(image)
+    drop_unused_images()
 
     if shared and collapse:
         print(f"Shared duplicate materials ({len(bpy.data.materials)} materials left)")
 
 
+_DATA_MAP_TOKENS = (
+    "normal", "rough", "height", "displace", "bump", "metallic", "metalness",
+    "gloss", "specular", "occlusion", "opacity", "alpha",
+)
+
+
+def image_share_key(image):
+    """Resolved file of a texture. Copies appended from other pieces share this."""
+    if image.source == "VIEWER" or not image.filepath:
+        return None
+    path = Path(bpy.path.abspath(image.filepath))
+    if not path.is_file():
+        return None
+    return str(path.resolve()).casefold()
+
+
+def _is_data_map(name):
+    tokens = [token for token in re.split(r"[^a-z0-9]+", name.lower()) if token]
+    return any(any(part in token for part in _DATA_MAP_TOKENS) for token in tokens)
+
+
+def _image_keeper(images):
+    """Prefer the authored file over a temporary PNG rewrite, and the colorspace the map needs."""
+
+    def rank(image):
+        space = image.colorspace_settings.name.casefold()
+        if _is_data_map(image.name):
+            space_rank = 0 if space != "srgb" else 1
+        else:
+            space_rank = 0 if space == "srgb" else 1
+        temporary = "reskate-map-png" in image.filepath.replace("\\", "/").lower()
+        return (temporary, space_rank, -image.users, len(image.name), image.name)
+
+    return sorted(images, key=rank)[0]
+
+
+def _remap_images(images):
+    if len(images) < 2:
+        return 0
+    keep = _image_keeper(images)
+    removed = 0
+    for image in images:
+        if image == keep or image.name not in bpy.data.images:
+            continue
+        image.user_remap(keep)
+        image.use_fake_user = False
+        if image.users == 0:
+            bpy.data.images.remove(image)
+            removed += 1
+    return removed
+
+
+def drop_unused_images():
+    removed = 0
+    for image in list(bpy.data.images):
+        if image.source == "VIEWER":
+            continue
+        image.use_fake_user = False
+        if image.users == 0:
+            bpy.data.images.remove(image)
+            removed += 1
+    return removed
+
+
+def share_duplicate_images():
+    """Point every copy of the same texture file at one image datablock."""
+    groups = {}
+    for image in list(bpy.data.images):
+        key = image_share_key(image)
+        if key is None:
+            continue
+        groups.setdefault(key, []).append(image)
+
+    removed = 0
+    for images in groups.values():
+        removed += _remap_images(images)
+
+    removed += drop_unused_images()
+    if removed:
+        print(f"Shared duplicate textures ({len(bpy.data.images)} images left)")
+    return removed
+
+
 def collapse_material_slots(obj):
-    """Drop repeated slots that already point at the same material."""
+    """Drop repeated slots that already point at the same material.
+
+    Reading a polygon's material index while writing another one makes Blender
+    return 0 for the rest of the loop, so every face would keep the first slot.
+    """
     mesh = obj.data
     if len(mesh.materials) < 2:
         return
     remap = {}
     kept = []
+    seen = {}
     for index, mat in enumerate(mesh.materials):
-        if mat in kept:
-            remap[index] = kept.index(mat)
+        pointer = mat.as_pointer() if mat is not None else None
+        if pointer in seen:
+            remap[index] = seen[pointer]
         else:
             remap[index] = len(kept)
+            seen[pointer] = len(kept)
             kept.append(mat)
     if len(kept) == len(mesh.materials):
         return
-    for poly in mesh.polygons:
-        poly.material_index = remap.get(poly.material_index, 0)
+    indexes = [remap.get(poly.material_index, 0) for poly in mesh.polygons]
     mesh.materials.clear()
     for mat in kept:
         mesh.materials.append(mat)
+    if indexes:
+        mesh.polygons.foreach_set("material_index", indexes)
 
 
 def part_name(obj):
@@ -3659,10 +3747,11 @@ def pack_images_from(source_blend, before_images):
             img.pack()
         except Exception as exc:
             print(f"Could not pack {candidate}: {exc}")
+    share_duplicate_images()
 
 
 def import_foreign_mesh(path):
-    """Import an .fbx or .obj. Meshes land in world space with no parent empty."""
+    """Import an .fbx, .obj, or .glb. Meshes land in world space with no parent empty."""
     import addon_utils
 
     suffix = path.suffix.lower()
@@ -3671,6 +3760,9 @@ def import_foreign_mesh(path):
         bpy.ops.import_scene.fbx(filepath=str(path))
     elif suffix == ".obj":
         bpy.ops.wm.obj_import(filepath=str(path))
+    elif suffix == ".glb":
+        addon_utils.enable("io_scene_gltf2")
+        bpy.ops.import_scene.gltf(filepath=str(path))
     else:
         raise RuntimeError(f"Unsupported asset type: {path}")
 
@@ -4306,10 +4398,10 @@ def append_authored_asset(
     light_rig=None,
 ):
     """
-    Copy an authored .blend, .fbx, or .obj into the map.
+    Copy an authored .blend, .fbx, .obj, or .glb into the map.
 
     Blend files use libraries.load, so materials, images, curve splines, and
-    ReSkate addon ID properties come with them. FBX and OBJ are imported, then
+    ReSkate addon ID properties come with them. FBX, OBJ, and GLB are imported, then
     flattened to meshes. Nothing here rewrites addon props.
     """
     blend_path = Path(blend_path).resolve()
@@ -4325,7 +4417,7 @@ def append_authored_asset(
     if suffix == ".blend":
         with bpy.data.libraries.load(str(blend_path), link=False) as (data_from, data_to):
             data_to.objects = list(data_from.objects)
-    elif suffix in {".fbx", ".obj"}:
+    elif suffix in {".fbx", ".obj", ".glb"}:
         import_foreign_mesh(blend_path)
         bpy.context.view_layer.update()
         fresh = [obj for obj in bpy.data.objects if obj not in before_objects]
@@ -5369,6 +5461,7 @@ def build(scene):
     if EXPORT_OPTIMIZE:
         share_duplicate_materials()
         join_same_pieces()
+    share_duplicate_images()
 
     # Unit scale: metres (Blender default)
     bpy.context.scene.unit_settings.system = "METRIC"

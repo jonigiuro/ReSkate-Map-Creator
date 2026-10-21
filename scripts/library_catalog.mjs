@@ -29,13 +29,14 @@ function toPosix(value) {
   return value.replace(/\\/g, '/')
 }
 
-const MODEL_RANK = { '.blend': 0, '.fbx': 1, '.obj': 2 }
+const MODEL_RANK = { '.blend': 0, '.fbx': 1, '.obj': 2, '.glb': 3 }
 
 function modelExt(name) {
   const lower = name.toLowerCase()
   if (lower.endsWith('.blend') && !/\.blend\d+$/i.test(lower)) return '.blend'
   if (lower.endsWith('.fbx')) return '.fbx'
   if (lower.endsWith('.obj')) return '.obj'
+  if (lower.endsWith('.glb')) return '.glb'
   return null
 }
 
@@ -70,7 +71,7 @@ function parentIdOf(rel) {
  * A folder that holds one model is one placeable object, named after the
  * folder. Several different models in that folder are each a piece, and the
  * folder becomes the category, so they can share one texture folder.
- * An .fbx or .obj with the same name as a .blend is the same object, and the
+ * An .fbx, .obj, or .glb with the same name as a .blend is the same object, and the
  * .blend wins. Anything beside the models, including textures, stays with
  * them and is not scanned. Parent folders with no model of their own are
  * categories.
@@ -92,7 +93,7 @@ function chooseModel(folderName, files) {
   return ranked[0].entry
 }
 
-/** One file per object name. A .blend beats an .fbx or .obj of the same name. */
+/** One file per object name. A .blend beats an .fbx, .obj, or .glb of the same name. */
 function distinctModels(files) {
   const groups = new Map()
   for (const entry of files) {
@@ -266,7 +267,7 @@ export function resolveInsideProject(projectRoot, assetFile) {
     throw new Error('Asset path is outside the project.')
   }
   if (!isModelFile(path.basename(abs))) {
-    throw new Error('Asset must be a .blend, .fbx, or .obj file.')
+    throw new Error('Asset must be a .blend, .fbx, .obj, or .glb file.')
   }
   return abs
 }

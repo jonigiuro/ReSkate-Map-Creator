@@ -1790,7 +1790,7 @@ export default function App() {
                 : categoryPath[0] === 'lights'
                   ? 'Click a light, then click the map. It sits 4 m off that face and shines back at it. Right-click turns it 90°. Escape leaves the tool.'
                 : categoryPath.length === 0
-                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Traffic draws cars, buses, or people along a path. Lights are point, spot, and area lamps. Drop a .blend in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own. Several blends in one folder share its textures.'
+                  ? 'Open a category, then click a piece. Interactive holds bus stops and fast-travel points. Traffic draws cars, buses, or people along a path. Lights are point, spot, and area lamps. Drop a .blend, .fbx, .obj, or .glb in a folder such as Objects/grindable/bench/short metal bench/ and it shows up on its own. Several blends in one folder share its textures.'
                   : 'Click a piece to pick it up. It follows the cursor and stands on the surface under it. Right-click turns it 90° on that surface. M mirrors it left to right. Right-drag still orbits. Click the map to place another. Click the piece again before you can select. Move snap locks X and Z to the world grid.'}
           </p>
           {categoryPath.length > 0 && (

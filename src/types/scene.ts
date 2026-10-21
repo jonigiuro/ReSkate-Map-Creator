@@ -156,7 +156,7 @@ export interface MeshObject {
   id: string
   kind: 'mesh'
   libraryId: LibraryId
-  /** Project-relative .blend, .fbx, or .obj. Set for objects dropped in from a folder. */
+  /** Project-relative .blend, .fbx, .obj, or .glb. Set for objects dropped in from a folder. */
   assetFile?: string
   /** Set when the blend has a Direction empty with a point, spot, or area lamp under it. */
   lightRig?: PropLight

@@ -20,7 +20,7 @@ Blender has to be installed on your computer. The first time export cannot find 
 
 ## Features
 
-- **Library.** Folders in `Objects` become categories. The library reads `.blend`, `.fbx`, and `.obj`, and refreshes when a file is added or saved. A piece follows the cursor and stands on the surface under it, including walls and slopes.
+- **Library.** Folders in `Objects` become categories. The library reads `.blend`, `.fbx`, `.obj`, and `.glb`, and refreshes when a file is added or saved. A piece follows the cursor and stands on the surface under it, including walls and slopes.
 - **Generators.** Draw curbs, rails, platforms, banks, planters, and stairs on the map, then drag their pins. A `.blend` in `Objects/Generators` becomes its own kit run.
 - **Interactive.** Bus stops and fast-travel points, with the facing the game reads and a pause-map name.
 - **Traffic.** Vehicle lanes, bus lanes, and pedestrian routes, including loops, joins, width, weight, speed class, and stairs.
@@ -191,7 +191,7 @@ These work when you are not typing in a field, except undo, redo, and Escape, wh
 
 Put them in the `Objects` folder next to the exe. The folders become the categories in the library.
 
-The library reads `.blend`, `.fbx`, and `.obj`. Use a `.blend` when the object was made with the ReSkate addon: that file keeps the materials, textures, collision, and grind splines. An `.fbx` or `.obj` with the same name as a `.blend` in the same folder is treated as the same object, and the `.blend` is the one that shows up.
+The library reads `.blend`, `.fbx`, `.obj`, and `.glb`. Use a `.blend` when the object was made with the ReSkate addon: that file keeps the materials, textures, collision, and grind splines. An `.fbx`, `.obj`, or `.glb` with the same name as a `.blend` in the same folder is treated as the same object, and the `.blend` is the one that shows up.
 
 ```text
 Objects/New York/Stairs/Single stair/Single stair.blend

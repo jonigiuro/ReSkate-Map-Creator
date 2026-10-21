@@ -283,7 +283,7 @@ def project_root_of(source):
 
 
 def load_source(path):
-    """Open a .blend, or import an .fbx / .obj into an empty scene."""
+    """Open a .blend, or import an .fbx, .obj, or .glb into an empty scene."""
     suffix = Path(path).suffix.lower()
     if suffix == ".blend":
         bpy.ops.wm.open_mainfile(filepath=path)
@@ -295,6 +295,9 @@ def load_source(path):
         bpy.ops.import_scene.fbx(filepath=path)
     elif suffix == ".obj":
         bpy.ops.wm.obj_import(filepath=path)
+    elif suffix == ".glb":
+        enable_gltf()
+        bpy.ops.import_scene.gltf(filepath=path)
     else:
         raise RuntimeError(f"Unsupported asset type: {path}")
 
@@ -302,7 +305,7 @@ def load_source(path):
 def main():
     args = argv_after_double_dash()
     if len(args) < 3:
-        print("Usage: blender --background --python preview_asset.py -- <in.blend|fbx|obj> <out.glb> <meta.json>")
+        print("Usage: blender --background --python preview_asset.py -- <in.blend|fbx|obj|glb> <out.glb> <meta.json>")
         sys.exit(2)
 
     source = str(Path(args[0]).resolve())

@@ -248,8 +248,14 @@ async function createWindow() {
   // hidden menu accelerator can drop the keydown.
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return
-    if (!input.control || input.alt || input.meta || input.shift) return
     const key = input.key.toLowerCase()
+    // The application menu is removed, and that menu is what normally binds these.
+    if (key === 'f12' || (input.control && input.shift && !input.alt && !input.meta && key === 'i')) {
+      mainWindow.webContents.toggleDevTools()
+      event.preventDefault()
+      return
+    }
+    if (!input.control || input.alt || input.meta || input.shift) return
     const command = key === 'z' || key === '\u001a' ? 'z' : key === 'y' ? 'y' : null
     if (!command) return
     event.preventDefault()
