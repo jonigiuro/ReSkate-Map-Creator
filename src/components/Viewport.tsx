@@ -1,10 +1,5 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import {
-  ContactShadows,
-  OrbitControls,
-  TransformControls,
-  useTexture,
-} from '@react-three/drei'
+import { OrbitControls, TransformControls, useTexture } from '@react-three/drei'
 import { memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { MOUSE } from 'three'
 import * as THREE from 'three'
@@ -225,18 +220,33 @@ function surfaceHeight(point: THREE.Vector3, normal: THREE.Vector3) {
   return point.y
 }
 
+const SUN_OFFSET = new THREE.Vector3(55, 90, -70)
+/** Close work keeps a small sharp shadow. Zoomed out, it stops growing past the neighborhood. */
+const SHADOW_HALF_MIN = 24
+const SHADOW_HALF_MAX = 110
+
 function Sun() {
   const light = useRef<THREE.DirectionalLight>(null)
-  const { controls } = useThree()
+  const { camera, controls } = useThree()
 
   useFrame(() => {
     const sun = light.current
     if (!sun) return
     const target = (controls as { target?: THREE.Vector3 } | null)?.target
     const focus = target ?? _sunFocus
-    sun.position.set(focus.x + 55, focus.y + 90, focus.z - 70)
+    sun.position.copy(focus).add(SUN_OFFSET)
     sun.target.position.copy(focus)
     sun.target.updateMatrixWorld()
+
+    const distance = Math.max(camera.position.distanceTo(focus), 0.25)
+    const half = THREE.MathUtils.clamp(distance * 1.15, SHADOW_HALF_MIN, SHADOW_HALF_MAX)
+    const shadowCamera = sun.shadow.camera
+    if (Math.abs(shadowCamera.right - half) <= 0.75) return
+    shadowCamera.left = -half
+    shadowCamera.right = half
+    shadowCamera.top = half
+    shadowCamera.bottom = -half
+    shadowCamera.updateProjectionMatrix()
   })
 
   return (
@@ -245,15 +255,15 @@ function Sun() {
       castShadow
       intensity={2.6}
       color="#fff4e0"
-      shadow-mapSize={[4096, 4096]}
+      shadow-mapSize={[2048, 2048]}
       shadow-bias={-0.0004}
       shadow-normalBias={0.04}
       shadow-camera-near={10}
       shadow-camera-far={320}
-      shadow-camera-left={-140}
-      shadow-camera-right={140}
-      shadow-camera-top={140}
-      shadow-camera-bottom={-140}
+      shadow-camera-left={-SHADOW_HALF_MAX}
+      shadow-camera-right={SHADOW_HALF_MAX}
+      shadow-camera-top={SHADOW_HALF_MAX}
+      shadow-camera-bottom={-SHADOW_HALF_MAX}
     />
   )
 }
@@ -3476,8 +3486,6 @@ function SceneContents(props: Props) {
         onClickPoint={onGeneratorClick}
         onPreview={setGeneratorPreview}
       />
-
-      <ContactShadows opacity={0.12} scale={160} blur={2.4} far={40} />
     </>
   )
 }
@@ -3590,6 +3598,8 @@ export function Viewport(props: Props) {
     >
       <Canvas
         shadows
+        dpr={[1, 1.5]}
+        frameloop="demand"
         camera={{ position: [48, 36, 58], fov: 45, near: 0.5, far: 5000 }}
       >
         <EditHandlePriority />
