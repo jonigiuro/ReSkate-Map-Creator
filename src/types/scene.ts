@@ -23,6 +23,10 @@ export interface CurbGenerator {
   tops?: number[]
   width: number
   height: number
+  /** Metal trim on both top corners. Absent means the trim is shown. */
+  metalEdge?: boolean
+  /** Join the last pin back to the first. Needs at least three pins. */
+  closed?: boolean
 }
 
 /** A run of authored _start, _middle, and _end meshes. Points are the path in local space. */

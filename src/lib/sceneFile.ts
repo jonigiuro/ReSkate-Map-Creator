@@ -32,7 +32,7 @@ import {
   TRAFFIC_WIDTH_M,
 } from './traffic'
 import { defaultLightTimes, LIGHT_TIMES, parsePropLight } from './lights'
-import { clampStairHeight, clampStairSteps, clampStairWidth, planterOutlineFromLegacy } from './generators'
+import { clampCurbWidth, clampStairHeight, clampStairSteps, clampStairWidth, planterOutlineFromLegacy } from './generators'
 import { STOP_NAME_MAX } from './travelPoints'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
@@ -202,7 +202,15 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
   ) {
     tops = raw.tops
   }
-  return { kind: 'curb', points, width, height, tops }
+  return {
+    kind: 'curb' as const,
+    points,
+    width: clampCurbWidth(width),
+    height,
+    tops,
+    ...(raw.metalEdge === false ? { metalEdge: false as const } : {}),
+    ...(raw.closed === true ? { closed: true as const } : {}),
+  }
 }
 
 function parseMaterials(raw: unknown): Record<string, string> | undefined {

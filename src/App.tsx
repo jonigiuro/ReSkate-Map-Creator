@@ -20,6 +20,7 @@ import {
   PLATFORM_HEIGHT_M,
   STAIR_HEIGHT_M,
   STAIR_WIDTH_M,
+  clampCurbWidth,
   clampStairSteps,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
@@ -792,12 +793,17 @@ export default function App() {
         (obj): obj is MeshObject =>
           obj.kind === 'mesh' && obj.id === strokeId && obj.generator?.kind === 'curb',
       )
+      const keptWidth = existing?.generator?.kind === 'curb' ? existing.generator.width : CURB_WIDTH_M
+      const keptEdge = existing?.generator?.kind === 'curb' ? existing.generator.metalEdge : undefined
+      const keptClosed = existing?.generator?.kind === 'curb' ? existing.generator.closed : undefined
       const generator = {
         kind: 'curb' as const,
         points: local,
         tops: local.map((point) => round4(point[1] + CURB_HEIGHT_M)),
-        width: CURB_WIDTH_M,
+        width: keptWidth,
         height: CURB_HEIGHT_M,
+        metalEdge: keptEdge,
+        closed: keptClosed,
       }
       if (existing) {
         applyScene({
@@ -2439,9 +2445,54 @@ export default function App() {
                         : 'PLACEHOLDER MESH'}
               </p>
               {selected.generator?.kind === 'curb' && (
-                <p className="hint">
-                  The top 10 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move the whole pin. Drag it up or down to set that end's top or base.
-                </p>
+                <>
+                  <p className="hint">
+                    The top 10 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move the whole pin. Drag it up or down to set that end's top or base.
+                  </p>
+                  <label>
+                    Width (m)
+                    <input
+                      type="number"
+                      min={0.1}
+                      step={0.01}
+                      value={selected.generator.width}
+                      onChange={(event) => {
+                        if (selected.generator?.kind !== 'curb') return
+                        const width = clampCurbWidth(Number(event.target.value), selected.generator.width)
+                        patchObject(selected.id, { generator: { ...selected.generator, width } })
+                      }}
+                    />
+                  </label>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={selected.generator.metalEdge !== false}
+                      onChange={(event) => {
+                        if (selected.generator?.kind !== 'curb') return
+                        patchObject(selected.id, {
+                          generator: { ...selected.generator, metalEdge: event.target.checked },
+                        })
+                      }}
+                    />
+                    Metal edge
+                  </label>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={selected.generator.closed === true}
+                      onChange={(event) => {
+                        if (selected.generator?.kind !== 'curb') return
+                        patchObject(selected.id, {
+                          generator: { ...selected.generator, closed: event.target.checked },
+                        })
+                      }}
+                    />
+                    Closed
+                  </label>
+                  {selected.generator.closed && selected.generator.points.length < 3 && (
+                    <p className="hint">Add a third pin. Two pins cannot close into a loop.</p>
+                  )}
+                </>
               )}
               {selected.generator?.kind === 'rail' && (
                 <p className="hint">

@@ -6,6 +6,8 @@ export const CURB_HEIGHT_M = 0.5
 /** Concrete band under the metal edge. The rest of the curb is the brick body. */
 export const CURB_CAP_M = 0.1
 export const CURB_WIDTH_M = 0.5
+/** Thinnest curb the inspector and a saved map will keep. */
+export const MIN_CURB_WIDTH_M = 0.1
 /** One texture repeat covers this many metres on every generator. */
 export const CURB_TILE_M = 2
 /** Square metal trim on each top corner. It sits 2 mm proud of the concrete. */
@@ -21,6 +23,11 @@ export type Vec3 = [number, number, number]
 
 function round4(n: number) {
   return Math.round(n * 10000) / 10000
+}
+
+export function clampCurbWidth(value: number, fallback = CURB_WIDTH_M) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(MIN_CURB_WIDTH_M, value)
 }
 
 export function curbSegmentTooShort(start: Vec3, end: Vec3) {
@@ -197,6 +204,24 @@ function edgeDistances(sections: Section[], side: 'left' | 'right') {
   return distances
 }
 
+/** Closed runs add the span from the last section back to the first. */
+function ribbonDistances(sections: Section[], side: 'left' | 'right', loop: boolean) {
+  const distances = edgeDistances(sections, side)
+  if (!loop || sections.length < 2) return distances
+  const last = sections[sections.length - 1][side]
+  const first = sections[0][side]
+  distances.push(distances[distances.length - 1] + last.distanceTo(first))
+  return distances
+}
+
+function curbRunSections(points: Vec3[], halfWidth: number, closed: boolean) {
+  const loop = closed && points.length >= 3
+  return {
+    sections: loop ? closedStairSections(points, halfWidth) : curbSections(points, halfWidth),
+    loop,
+  }
+}
+
 /** Horizontal normal of the wall from p0 to p1, pointing away from centre. */
 function sideOutward(p0: THREE.Vector3, p1: THREE.Vector3, centre: THREE.Vector3) {
   const edge = new THREE.Vector3(p1.x - p0.x, 0, p1.z - p0.z)
@@ -234,14 +259,20 @@ function curbGeometry(mesh: CurbBuffers) {
  * One curb from a centreline. The top 10 cm is the concrete cap; everything
  * under that is the brick body. Points are the base, tops the top edge, both local.
  */
-export function buildCurbGeometry(points: Vec3[], width: number, height: number, tops?: number[]) {
+export function buildCurbGeometry(
+  points: Vec3[],
+  width: number,
+  height: number,
+  tops?: number[],
+  closed = false,
+) {
   if (!points || points.length < 2 || width <= 0) return null
-  const sections = curbSections(points, width / 2)
+  const { sections, loop } = curbRunSections(points, width / 2, closed)
   const body = curbBuffers()
   const cap = curbBuffers()
   const topYs = curbTopYs(points, height, tops)
-  const leftDist = edgeDistances(sections, 'left')
-  const rightDist = edgeDistances(sections, 'right')
+  const leftDist = ribbonDistances(sections, 'left', loop)
+  const rightDist = ribbonDistances(sections, 'right', loop)
   const across = width / CURB_TILE_M
 
   const bottom = (section: Section, side: 'left' | 'right') => section[side].clone()
@@ -272,9 +303,10 @@ export function buildCurbGeometry(points: Vec3[], width: number, height: number,
     outward: THREE.Vector3,
   ) => addTri(mesh.positions, mesh.normals, mesh.uvs, mesh.tangents, a, b, c, ua, ub, uc, outward)
 
-  for (let i = 0; i < sections.length - 1; i++) {
+  const segmentCount = loop ? sections.length : sections.length - 1
+  for (let i = 0; i < segmentCount; i++) {
     const a = sections[i]
-    const b = sections[i + 1]
+    const b = sections[(i + 1) % sections.length]
     const centre = a.left.clone().add(a.right).add(b.left).add(b.right).multiplyScalar(0.25)
     const left = sideOutward(a.left, b.left, centre)
     const right = sideOutward(a.right, b.right, centre)
@@ -317,28 +349,30 @@ export function buildCurbGeometry(points: Vec3[], width: number, height: number,
     tri(cap, seam(a, 'right'), top(b, 'right'), top(a, 'right'), capR0, capRT1, capRT0, right)
   }
 
-  const first = sections[0]
-  const last = sections[sections.length - 1]
-  const startOut = horizontalDir(points[1], points[0])
-  const endOut = horizontalDir(points[points.length - 2], points[points.length - 1])
-  const endUvs = (section: Section) => ({
-    leftBottom: [0, 0] as [number, number],
-    rightBottom: [across, 0] as [number, number],
-    rightSeam: [across, bodyRise(section, 'right')] as [number, number],
-    leftSeam: [0, bodyRise(section, 'left')] as [number, number],
-    rightTop: [across, capRise(section, 'right')] as [number, number],
-    leftTop: [0, capRise(section, 'left')] as [number, number],
-  })
-  const startCap = endUvs(first)
-  const endCap = endUvs(last)
-  tri(body, bottom(first, 'left'), bottom(first, 'right'), seam(first, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightSeam, startOut)
-  tri(body, bottom(first, 'left'), seam(first, 'right'), seam(first, 'left'), startCap.leftBottom, startCap.rightSeam, startCap.leftSeam, startOut)
-  tri(cap, seam(first, 'left'), seam(first, 'right'), top(first, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightTop, startOut)
-  tri(cap, seam(first, 'left'), top(first, 'right'), top(first, 'left'), startCap.leftBottom, startCap.rightTop, startCap.leftTop, startOut)
-  tri(body, bottom(last, 'left'), seam(last, 'right'), bottom(last, 'right'), endCap.leftBottom, endCap.rightSeam, endCap.rightBottom, endOut)
-  tri(body, bottom(last, 'left'), seam(last, 'left'), seam(last, 'right'), endCap.leftBottom, endCap.leftSeam, endCap.rightSeam, endOut)
-  tri(cap, seam(last, 'left'), top(last, 'right'), seam(last, 'right'), endCap.leftBottom, endCap.rightTop, endCap.rightBottom, endOut)
-  tri(cap, seam(last, 'left'), top(last, 'left'), top(last, 'right'), endCap.leftBottom, endCap.leftTop, endCap.rightTop, endOut)
+  if (!loop) {
+    const first = sections[0]
+    const last = sections[sections.length - 1]
+    const startOut = horizontalDir(points[1], points[0])
+    const endOut = horizontalDir(points[points.length - 2], points[points.length - 1])
+    const endUvs = (section: Section) => ({
+      leftBottom: [0, 0] as [number, number],
+      rightBottom: [across, 0] as [number, number],
+      rightSeam: [across, bodyRise(section, 'right')] as [number, number],
+      leftSeam: [0, bodyRise(section, 'left')] as [number, number],
+      rightTop: [across, capRise(section, 'right')] as [number, number],
+      leftTop: [0, capRise(section, 'left')] as [number, number],
+    })
+    const startCap = endUvs(first)
+    const endCap = endUvs(last)
+    tri(body, bottom(first, 'left'), bottom(first, 'right'), seam(first, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightSeam, startOut)
+    tri(body, bottom(first, 'left'), seam(first, 'right'), seam(first, 'left'), startCap.leftBottom, startCap.rightSeam, startCap.leftSeam, startOut)
+    tri(cap, seam(first, 'left'), seam(first, 'right'), top(first, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightTop, startOut)
+    tri(cap, seam(first, 'left'), top(first, 'right'), top(first, 'left'), startCap.leftBottom, startCap.rightTop, startCap.leftTop, startOut)
+    tri(body, bottom(last, 'left'), seam(last, 'right'), bottom(last, 'right'), endCap.leftBottom, endCap.rightSeam, endCap.rightBottom, endOut)
+    tri(body, bottom(last, 'left'), seam(last, 'left'), seam(last, 'right'), endCap.leftBottom, endCap.leftSeam, endCap.rightSeam, endOut)
+    tri(cap, seam(last, 'left'), top(last, 'right'), seam(last, 'right'), endCap.leftBottom, endCap.rightTop, endCap.rightBottom, endOut)
+    tri(cap, seam(last, 'left'), top(last, 'left'), top(last, 'right'), endCap.leftBottom, endCap.leftTop, endCap.rightTop, endOut)
+  }
 
   const bodyMesh = curbGeometry(body)
   const capMesh = curbGeometry(cap)
@@ -368,9 +402,15 @@ function lipProfile(corner: THREE.Vector3, inward: THREE.Vector3): LipProfile {
 }
 
 /** Metal trim along both top corners. The concrete body is unchanged. */
-export function buildCurbLipGeometry(points: Vec3[], width: number, height: number, tops?: number[]) {
+export function buildCurbLipGeometry(
+  points: Vec3[],
+  width: number,
+  height: number,
+  tops?: number[],
+  closed = false,
+) {
   if (!points || points.length < 2 || width <= 0) return null
-  const sections = curbSections(points, width / 2)
+  const { sections, loop } = curbRunSections(points, width / 2, closed)
   const topYs = curbTopYs(points, height, tops)
   const positions: number[] = []
   const normals: number[] = []
@@ -406,18 +446,25 @@ export function buildCurbLipGeometry(points: Vec3[], width: number, height: numb
       profile.outerDown.add(delta)
       profile.innerDown.add(delta)
     }
-    pullEnd(profiles[0], profiles[1].outerTop.clone().sub(profiles[0].outerTop))
-    pullEnd(
-      profiles[profiles.length - 1],
-      profiles[profiles.length - 2].outerTop.clone().sub(profiles[profiles.length - 1].outerTop),
-    )
+    if (!loop) {
+      pullEnd(profiles[0], profiles[1].outerTop.clone().sub(profiles[0].outerTop))
+      pullEnd(
+        profiles[profiles.length - 1],
+        profiles[profiles.length - 2].outerTop.clone().sub(profiles[profiles.length - 1].outerTop),
+      )
+    }
     const distances = [0]
     for (let i = 1; i < profiles.length; i++) {
       distances.push(distances[i - 1] + profiles[i - 1].outerTop.distanceTo(profiles[i].outerTop))
     }
-    for (let i = 0; i < profiles.length - 1; i++) {
+    if (loop) {
+      const last = profiles.length - 1
+      distances.push(distances[last] + profiles[last].outerTop.distanceTo(profiles[0].outerTop))
+    }
+    const segmentCount = loop ? profiles.length : profiles.length - 1
+    for (let i = 0; i < segmentCount; i++) {
       const a = profiles[i]
-      const b = profiles[i + 1]
+      const b = profiles[(i + 1) % profiles.length]
       const across = b.innerTop.clone().sub(b.outerTop)
       if (across.lengthSq() < 1e-10) continue
       across.normalize()
@@ -433,14 +480,16 @@ export function buildCurbLipGeometry(points: Vec3[], width: number, height: numb
       tri(a.innerTop, a.innerDown, b.innerDown, [u0, span], [u0, 0], [u1, 0], across)
       tri(a.innerTop, b.innerDown, b.innerTop, [u0, span], [u1, 0], [u1, span], across)
     }
-    const cap = (profile: LipProfile, outward: THREE.Vector3, u: number) => {
-      tri(profile.outerTop, profile.innerDown, profile.innerTop, [u, 1], [u, 0], [u, 1], outward)
-      tri(profile.outerTop, profile.outerDown, profile.innerDown, [u, 1], [u, 0], [u, 0], outward)
+    if (!loop) {
+      const cap = (profile: LipProfile, outward: THREE.Vector3, u: number) => {
+        tri(profile.outerTop, profile.innerDown, profile.innerTop, [u, 1], [u, 0], [u, 1], outward)
+        tri(profile.outerTop, profile.outerDown, profile.innerDown, [u, 1], [u, 0], [u, 0], outward)
+      }
+      const startOut = profiles[0].outerTop.clone().sub(profiles[1].outerTop)
+      const endOut = profiles[profiles.length - 1].outerTop.clone().sub(profiles[profiles.length - 2].outerTop)
+      if (startOut.lengthSq() > 1e-10) cap(profiles[0], startOut.normalize(), 0)
+      if (endOut.lengthSq() > 1e-10) cap(profiles[profiles.length - 1], endOut.normalize(), distances[distances.length - 1] / CURB_TILE_M)
     }
-    const startOut = profiles[0].outerTop.clone().sub(profiles[1].outerTop)
-    const endOut = profiles[profiles.length - 1].outerTop.clone().sub(profiles[profiles.length - 2].outerTop)
-    if (startOut.lengthSq() > 1e-10) cap(profiles[0], startOut.normalize(), 0)
-    if (endOut.lengthSq() > 1e-10) cap(profiles[profiles.length - 1], endOut.normalize(), distances[distances.length - 1] / CURB_TILE_M)
   }
 
   addStrip('left')
@@ -474,9 +523,15 @@ const CURB_WAX_BANDS = {
  * Decal along both top edges, wrapped onto the vertical face.
  * U repeats along the curb; V covers a single wax streak at its own aspect.
  */
-export function buildCurbWaxGeometry(points: Vec3[], width: number, height: number, tops?: number[]) {
+export function buildCurbWaxGeometry(
+  points: Vec3[],
+  width: number,
+  height: number,
+  tops?: number[],
+  closed = false,
+) {
   if (!points || points.length < 2 || width <= 0) return null
-  const sections = curbSections(points, width / 2)
+  const { sections, loop } = curbRunSections(points, width / 2, closed)
   if (sections.length < 2) return null
   const topYs = curbTopYs(points, height, tops)
   const reach = Math.min(CURB_WAX_WIDTH_M, width * 0.45)
@@ -522,11 +577,16 @@ export function buildCurbWaxGeometry(points: Vec3[], width: number, height: numb
     for (let i = 1; i < profiles.length; i++) {
       distances.push(distances[i - 1] + profiles[i - 1].outer.distanceTo(profiles[i].outer))
     }
-    for (let i = 0; i < profiles.length - 1; i++) {
+    if (loop) {
+      const last = profiles.length - 1
+      distances.push(distances[last] + profiles[last].outer.distanceTo(profiles[0].outer))
+    }
+    const segmentCount = loop ? profiles.length : profiles.length - 1
+    for (let i = 0; i < segmentCount; i++) {
       const a = profiles[i]
-      const b = profiles[i + 1]
+      const b = profiles[(i + 1) % profiles.length]
       const sectionA = sections[i]
-      const sectionB = sections[i + 1]
+      const sectionB = sections[(i + 1) % sections.length]
       const centre = sectionA.left.clone().add(sectionA.right).add(sectionB.left).add(sectionB.right).multiplyScalar(0.25)
       const outward = sideOutward(a.outer, b.outer, centre)
       const u0 = distances[i] / tile

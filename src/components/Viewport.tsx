@@ -891,6 +891,8 @@ function MeshItem({
               tops={generator.tops}
               width={generator.width}
               height={generator.height}
+              metalEdge={generator.metalEdge !== false}
+              closed={generator.closed === true}
               materials={obj.materials}
             />
             {editing && (
@@ -2356,6 +2358,8 @@ function CurbRibbon({
   height,
   tops,
   materials,
+  metalEdge = true,
+  closed = false,
   ghost,
 }: {
   points: Vec3[]
@@ -2363,19 +2367,21 @@ function CurbRibbon({
   height: number
   tops?: number[]
   materials?: Record<string, string>
+  metalEdge?: boolean
+  closed?: boolean
   ghost?: boolean
 }) {
   const parts = useMemo(
-    () => buildCurbGeometry(points, width, height, tops),
-    [points, width, height, tops],
+    () => buildCurbGeometry(points, width, height, tops, closed),
+    [points, width, height, tops, closed],
   )
   const lip = useMemo(
-    () => buildCurbLipGeometry(points, width, height, tops),
-    [points, width, height, tops],
+    () => (metalEdge ? buildCurbLipGeometry(points, width, height, tops, closed) : null),
+    [metalEdge, points, width, height, tops, closed],
   )
   const wax = useMemo(
-    () => buildCurbWaxGeometry(points, width, height, tops),
-    [points, width, height, tops],
+    () => buildCurbWaxGeometry(points, width, height, tops, closed),
+    [points, width, height, tops, closed],
   )
   useEffect(
     () => () => {
