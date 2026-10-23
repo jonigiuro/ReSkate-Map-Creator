@@ -73,6 +73,7 @@ import {
 } from '../lib/traffic'
 import { lightKindFromPiece, lightPlacement, lightPreviewIntensity, parsePropLight } from '../lib/lights'
 import { BUS_STOP_PIECE, isInteractivePiece, travelGuide } from '../lib/travelPoints'
+import { isDecalAsset } from '../lib/assetLibrary'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
 import {
@@ -256,6 +257,66 @@ function additiveClick(event: { ctrlKey: boolean; metaKey: boolean }) {
   return event.ctrlKey || event.metaKey
 }
 
+/** A repeated click this close to the last one, in pixels, selects the object behind. */
+const DRILL_PX = 4
+const GROUND_PICK = 'ground'
+const lastPick = { x: 0, y: 0, id: '' }
+
+function samePick(event: { clientX: number; clientY: number }) {
+  if (!lastPick.id) return false
+  const dx = event.clientX - lastPick.x
+  const dy = event.clientY - lastPick.y
+  return dx * dx + dy * dy <= DRILL_PX * DRILL_PX
+}
+
+/** Selectable id under a hit. Handles and placement ghosts are not objects you can drill to. */
+function hitPickId(object: THREE.Object3D) {
+  if (isEditHandle(object)) return null
+  let id: string | null = null
+  let node: THREE.Object3D | null = object
+  while (node) {
+    if (node.userData.placementGhost) return null
+    if (!id && typeof node.userData.focusId === 'string') id = node.userData.focusId
+    if (!id && node.userData.ground) id = GROUND_PICK
+    node = node.parent
+  }
+  return id
+}
+
+/**
+ * When the pointer has not moved, the click wants the object behind the one it
+ * just selected. Otherwise the front object wins, and this returns null.
+ */
+function drillTarget(
+  event: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean },
+  intersections: { object: THREE.Object3D }[],
+) {
+  if (additiveClick(event) || !samePick(event)) return null
+  const owners: string[] = []
+  for (const hit of intersections) {
+    const id = hitPickId(hit.object)
+    if (!id || owners[owners.length - 1] === id) continue
+    owners.push(id)
+  }
+  const index = owners.indexOf(lastPick.id)
+  if (index < 0) return null
+  return owners[index + 1] ?? owners[0] ?? null
+}
+
+/** True when this object should take the click. A false result lets the click fall through. */
+function claimClick(
+  event: { clientX: number; clientY: number; ctrlKey: boolean; metaKey: boolean },
+  id: string,
+  intersections: { object: THREE.Object3D }[],
+) {
+  const target = drillTarget(event, intersections)
+  if (target && target !== id) return false
+  lastPick.x = event.clientX
+  lastPick.y = event.clientY
+  lastPick.id = id
+  return true
+}
+
 function Ground({ onGroundClick }: { onGroundClick: (p: THREE.Vector3, additive: boolean) => void }) {
   const material = useMemo(() => createBlueprintMaterial(), [])
   useEffect(() => () => material.dispose(), [material])
@@ -264,10 +325,11 @@ function Ground({ onGroundClick }: { onGroundClick: (p: THREE.Vector3, additive:
     <mesh
       rotation={[-Math.PI / 2, 0, 0]}
       position={[0, -0.001, 0]}
-      userData={{ snap: true }}
+      userData={{ snap: true, ground: true }}
       onPointerDown={(e) => {
-        e.stopPropagation()
         if (e.button !== 0 || gizmoOwnsPointer.current) return
+        if (!claimClick(e, GROUND_PICK, e.intersections)) return
+        e.stopPropagation()
         onGroundClick(e.point.clone(), additiveClick(e))
       }}
     >
@@ -497,6 +559,7 @@ function MeshItem({
   dedicatedAssets?: ReadonlySet<string>
 }) {
   const ref = useRef<THREE.Group>(null)
+  const decal = isDecalAsset(obj.assetFile)
   const dragging = useRef(false)
   const handleRef = useRef<THREE.Group>(null)
   const handleDragging = useRef(false)
@@ -935,7 +998,12 @@ function MeshItem({
     <>
       <group
         ref={ref}
-        userData={{ snap: true, focusId: obj.id, selected }}
+        userData={{
+          snap: !decal,
+          focusId: obj.id,
+          selected,
+          vertexSnapIgnore: decal,
+        }}
         onPointerDown={(e) => {
           if (e.button !== 0) return
           if (gizmoOwnsPointer.current) {
@@ -965,7 +1033,7 @@ function MeshItem({
                 : undefined
           // A handle on another mesh is drawn through this one. Leave the click for that handle.
           if (!picked && pickedPin == null && e.intersections.some((hit) => isEditHandle(hit.object))) return
-          e.stopPropagation()
+          if (picked || pickedPin != null) e.stopPropagation()
           if (picked) {
             setHandle(picked)
             return
@@ -974,6 +1042,8 @@ function MeshItem({
             setPin(pickedPin)
             return
           }
+          if (!claimClick(e, obj.id, e.intersections)) return
+          e.stopPropagation()
           setHandle(null)
           setPin(null)
           onSelect(additiveClick(e))
@@ -1456,8 +1526,9 @@ function SpawnItem({
         ref={ref}
         userData={{ focusId: obj.id }}
         onPointerDown={(e) => {
-          e.stopPropagation()
           if (e.button !== 0 || gizmoOwnsPointer.current) return
+          if (!claimClick(e, obj.id, e.intersections)) return
+          e.stopPropagation()
           onSelect(additiveClick(e))
         }}
       >
@@ -1568,8 +1639,9 @@ function TravelPointItem({
         ref={ref}
         userData={{ focusId: obj.id }}
         onPointerDown={(e) => {
-          e.stopPropagation()
           if (e.button !== 0 || gizmoOwnsPointer.current) return
+          if (!claimClick(e, obj.id, e.intersections)) return
+          e.stopPropagation()
           onSelect(additiveClick(e))
         }}
       >
@@ -1727,8 +1799,9 @@ function LightItem({
         ref={ref}
         userData={{ focusId: obj.id }}
         onPointerDown={(event) => {
-          event.stopPropagation()
           if (event.button !== 0 || gizmoOwnsPointer.current) return
+          if (!claimClick(event, obj.id, event.intersections)) return
+          event.stopPropagation()
           onSelect(additiveClick(event))
         }}
       >
@@ -3250,8 +3323,9 @@ function TrafficLaneItem({
         ref={ref}
         userData={{ focusId: obj.id, selected }}
         onPointerDown={(event) => {
-          event.stopPropagation()
           if (event.button !== 0 || gizmoOwnsPointer.current) return
+          if (!claimClick(event, obj.id, event.intersections)) return
+          event.stopPropagation()
           setPin(null)
           onSelect(additiveClick(event))
         }}

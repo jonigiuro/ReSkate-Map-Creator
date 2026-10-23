@@ -33,6 +33,12 @@ export type AssetCatalog = {
 
 export const EMPTY_CATALOG: AssetCatalog = { categories: [], pieces: [], kits: [] }
 
+/** A path segment named Decals is a flat mark. Placement falls through to the surface under it. */
+export function isDecalAsset(assetFile: string | undefined) {
+  if (!assetFile) return false
+  return assetFile.split(/[\\/]/).some((part) => part.toLowerCase() === 'decals')
+}
+
 /** Drawn tools, not folders on disk. The catalog poll closes a path it cannot find. */
 export const BUILTIN_LIBRARY_ROOTS = ['generators', 'interactive', 'traffic', 'lights'] as const
 
