@@ -12,6 +12,7 @@ import type {
   PropLight,
   TrafficLaneObject,
   TravelPointObject,
+  UvFrame,
 } from '../types/scene'
 import { createBlueprintMaterial } from '../lib/blueprintMaterial'
 import {
@@ -37,6 +38,7 @@ import {
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   buildCurbGeometry,
+  applyUvFrame,
   bankFrame,
   buildBankGeometry,
   buildBankRunGeometry,
@@ -988,6 +990,7 @@ function MeshItem({
               metalEdge={generator.metalEdge !== false}
               closed={generator.closed === true}
               materials={obj.materials}
+              uv={obj.uv}
             />
             {editing && (
               <CurbEditPins
@@ -1002,7 +1005,7 @@ function MeshItem({
           </>
         ) : platform ? (
           <>
-            <PlatformMesh points={platform.points} height={platform.height} materials={obj.materials} />
+            <PlatformMesh points={platform.points} height={platform.height} materials={obj.materials} uv={obj.uv} />
             {editingPlatform &&
               platform.points.map((corner, index) => (
                 <mesh
@@ -1035,6 +1038,7 @@ function MeshItem({
               outers={bank.outers}
               closed={bank.closed === true}
               materials={obj.materials}
+              uv={obj.uv}
             />
             {editingBank &&
               bank.points.map((foot, index) => (
@@ -1065,7 +1069,7 @@ function MeshItem({
           </>
         ) : bank?.vertices ? (
           <>
-            <BankMesh vertices={bank.vertices} materials={obj.materials} />
+            <BankMesh vertices={bank.vertices} materials={obj.materials} uv={obj.uv} />
             {editingBank &&
               bank.vertices.map((point, index) => (
                 <mesh
@@ -1092,7 +1096,7 @@ function MeshItem({
           </>
         ) : rail ? (
           <>
-            <RailMesh points={rail.points} radius={rail.radius} tops={rail.tops} materials={obj.materials} />
+            <RailMesh points={rail.points} radius={rail.radius} tops={rail.tops} materials={obj.materials} uv={obj.uv} />
             {editingRail && (
               <CurbEditPins
                 points={rail.points}
@@ -1106,7 +1110,7 @@ function MeshItem({
           </>
         ) : planter ? (
           <>
-            <PlanterMesh points={planter.points} rims={planter.rims} materials={obj.materials} />
+            <PlanterMesh points={planter.points} rims={planter.rims} materials={obj.materials} uv={obj.uv} />
             {editingPlanter && planter && (
               <CurbEditPins
                 points={planter.points}
@@ -1128,6 +1132,7 @@ function MeshItem({
               closed={stairs.closed === true}
               reversed={stairs.reversed === true}
               materials={obj.materials}
+              uv={obj.uv}
             />
             {editingStairs &&
               stairPinLayout(stairs.points, stairs.width, stairs.height, stairs.closed === true, stairs.reversed === true).map((pin, index) => (
@@ -1166,6 +1171,7 @@ function MeshItem({
               closed={quarter.closed === true}
               reversed={quarter.reversed === true}
               materials={obj.materials}
+              uv={obj.uv}
             />
             {editingQuarter &&
               quarterPinLayout(
@@ -2525,6 +2531,16 @@ function WaxMaterial({ ghost }: { ghost?: boolean }) {
   return <primitive object={material} attach="material" />
 }
 
+function useSlotGeometry(geometry: THREE.BufferGeometry | null | undefined, frame?: UvFrame) {
+  const framed = useMemo(() => applyUvFrame(geometry, frame), [geometry, frame])
+  useEffect(() => {
+    return () => {
+      if (framed && framed !== geometry) framed.dispose()
+    }
+  }, [framed, geometry])
+  return framed
+}
+
 function CurbRibbon({
   points,
   width,
@@ -2532,6 +2548,7 @@ function CurbRibbon({
   tops,
   overhang = 0,
   materials,
+  uv,
   metalEdge = true,
   closed = false,
   ghost,
@@ -2542,6 +2559,7 @@ function CurbRibbon({
   tops?: number[]
   overhang?: number
   materials?: Record<string, string>
+  uv?: MeshObject['uv']
   metalEdge?: boolean
   closed?: boolean
   ghost?: boolean
@@ -2567,21 +2585,24 @@ function CurbRibbon({
   )
   useEffect(() => () => lip?.dispose(), [lip])
   useEffect(() => () => wax?.dispose(), [wax])
+  const body = useSlotGeometry(parts?.body, uv?.brick)
+  const cap = useSlotGeometry(parts?.cap, uv?.concrete)
+  const lipGeo = useSlotGeometry(lip, uv?.galvanized)
   if (!parts) return null
   return (
     <Suspense fallback={null}>
-      {parts.body && (
-        <mesh geometry={parts.body} castShadow={!ghost} receiveShadow={!ghost}>
+      {body && (
+        <mesh geometry={body} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.brick} ghost={ghost} fallback="brick" />
         </mesh>
       )}
-      {parts.cap && (
-        <mesh geometry={parts.cap} castShadow={!ghost} receiveShadow={!ghost}>
+      {cap && (
+        <mesh geometry={cap} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.concrete} ghost={ghost} fallback="concrete" />
         </mesh>
       )}
-      {lip && (
-        <mesh geometry={lip} castShadow={!ghost} receiveShadow={!ghost}>
+      {lipGeo && (
+        <mesh geometry={lipGeo} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
         </mesh>
       )}
@@ -2621,19 +2642,22 @@ function PlatformMesh({
   points,
   height,
   materials,
+  uv,
   ghost,
 }: {
   points: Vec3[]
   height: number
   materials?: Record<string, string>
+  uv?: MeshObject['uv']
   ghost?: boolean
 }) {
   const geometry = useMemo(() => buildPlatformGeometry(points, height), [points, height])
+  const framed = useSlotGeometry(geometry, uv?.striped_concrete)
   useEffect(() => () => geometry?.dispose(), [geometry])
-  if (!geometry) return null
+  if (!framed) return null
   return (
     <Suspense fallback={null}>
-      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+      <mesh geometry={framed} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
       </mesh>
     </Suspense>
@@ -2656,6 +2680,7 @@ function PlatformGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
 function BankMesh({
   vertices,
   materials,
+  uv,
   ghost,
 }: {
   vertices: [
@@ -2669,14 +2694,16 @@ function BankMesh({
     Vec3,
   ]
   materials?: Record<string, string>
+  uv?: MeshObject['uv']
   ghost?: boolean
 }) {
   const geometry = useMemo(() => buildBankGeometry(vertices), [vertices])
+  const framed = useSlotGeometry(geometry, uv?.striped_concrete)
   useEffect(() => () => geometry?.dispose(), [geometry])
-  if (!geometry) return null
+  if (!framed) return null
   return (
     <Suspense fallback={null}>
-      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+      <mesh geometry={framed} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
       </mesh>
     </Suspense>
@@ -2689,6 +2716,7 @@ function BankRunMesh({
   outers,
   closed,
   materials,
+  uv,
   ghost,
 }: {
   points: Vec3[]
@@ -2696,17 +2724,19 @@ function BankRunMesh({
   outers: Vec3[]
   closed?: boolean
   materials?: Record<string, string>
+  uv?: MeshObject['uv']
   ghost?: boolean
 }) {
   const geometry = useMemo(
     () => buildBankRunGeometry(points, tops, outers, closed === true),
     [points, tops, outers, closed],
   )
+  const framed = useSlotGeometry(geometry, uv?.striped_concrete)
   useEffect(() => () => geometry?.dispose(), [geometry])
-  if (!geometry) return null
+  if (!framed) return null
   return (
     <Suspense fallback={null}>
-      <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+      <mesh geometry={framed} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
       </mesh>
     </Suspense>
@@ -2784,15 +2814,20 @@ function PlanterMesh({
   points,
   rims,
   materials,
+  uv,
   ghost,
 }: {
   points: Vec3[]
   rims?: number[]
   materials?: Record<string, string>
+  uv?: MeshObject['uv']
   ghost?: boolean
 }) {
   const parts = useMemo(() => buildPlanterGeometry(points, rims), [points, rims])
   const wax = useMemo(() => buildPlanterWaxGeometry(points, rims), [points, rims])
+  const brick = useSlotGeometry(parts?.brick, uv?.brick)
+  const granite = useSlotGeometry(parts?.granite, uv?.granite)
+  const grass = useSlotGeometry(parts?.grass, uv?.grass)
   useEffect(
     () => () => {
       parts?.brick.dispose()
@@ -2806,13 +2841,13 @@ function PlanterMesh({
   return (
     <Suspense fallback={null}>
       <group>
-        <mesh geometry={parts.brick} castShadow={!ghost} receiveShadow={!ghost}>
+        <mesh geometry={brick ?? undefined} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.brick} ghost={ghost} fallback="brick" />
         </mesh>
-        <mesh geometry={parts.granite} castShadow={!ghost} receiveShadow={!ghost}>
+        <mesh geometry={granite ?? undefined} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.granite} ghost={ghost} fallback="concrete" />
         </mesh>
-        <mesh geometry={parts.grass} receiveShadow={!ghost}>
+        <mesh geometry={grass ?? undefined} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.grass} ghost={ghost} fallback="grass" />
         </mesh>
         {wax && (
@@ -2862,6 +2897,7 @@ function StairsMesh({
   closed,
   reversed,
   materials,
+  uv,
   ghost,
 }: {
   points: Vec3[]
@@ -2871,12 +2907,15 @@ function StairsMesh({
   closed?: boolean
   reversed?: boolean
   materials?: Record<string, string>
+  uv?: MeshObject['uv']
   ghost?: boolean
 }) {
   const parts = useMemo(
     () => buildStairsGeometry(points, width, height, steps, closed === true, reversed === true),
     [points, width, height, steps, closed, reversed],
   )
+  const body = useSlotGeometry(parts?.body, uv?.striped_concrete)
+  const tread = useSlotGeometry(parts?.tread, uv?.concrete)
   useEffect(
     () => () => {
       parts?.body.dispose()
@@ -2884,13 +2923,13 @@ function StairsMesh({
     },
     [parts],
   )
-  if (!parts) return null
+  if (!parts || !body || !tread) return null
   return (
     <Suspense fallback={null}>
-      <mesh geometry={parts.body} castShadow={!ghost} receiveShadow={!ghost}>
+      <mesh geometry={body} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.striped_concrete} ghost={ghost} fallback="platform" />
       </mesh>
-      <mesh geometry={parts.tread} castShadow={!ghost} receiveShadow={!ghost}>
+      <mesh geometry={tread} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.concrete} ghost={ghost} fallback="concrete" />
       </mesh>
     </Suspense>
@@ -2905,6 +2944,7 @@ function QuarterPipeMesh({
   closed,
   reversed,
   materials,
+  uv,
   ghost,
 }: {
   points: Vec3[]
@@ -2914,12 +2954,16 @@ function QuarterPipeMesh({
   closed?: boolean
   reversed?: boolean
   materials?: Record<string, string>
+  uv?: MeshObject['uv']
   ghost?: boolean
 }) {
   const parts = useMemo(
     () => buildQuarterPipeGeometry(points, height, steepness, closed === true, reversed === true, heights),
     [points, height, steepness, closed, reversed, heights],
   )
+  const transition = useSlotGeometry(parts?.transition, uv?.transition)
+  const top = useSlotGeometry(parts?.top, uv?.top)
+  const walls = useSlotGeometry(parts?.walls, uv?.walls)
   useEffect(
     () => () => {
       parts?.walls?.dispose()
@@ -2928,16 +2972,16 @@ function QuarterPipeMesh({
     },
     [parts],
   )
-  if (!parts) return null
+  if (!parts || !transition || !top || !walls) return null
   return (
     <Suspense fallback={null}>
-      <mesh geometry={parts.transition} castShadow={!ghost} receiveShadow={!ghost}>
+      <mesh geometry={transition} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.transition ?? materials?.curve} ghost={ghost} fallback="platform" />
       </mesh>
-      <mesh geometry={parts.top} castShadow={!ghost} receiveShadow={!ghost}>
+      <mesh geometry={top} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.top ?? materials?.striped_concrete} ghost={ghost} fallback="platform" />
       </mesh>
-      <mesh geometry={parts.walls} castShadow={!ghost} receiveShadow={!ghost}>
+      <mesh geometry={walls} castShadow={!ghost} receiveShadow={!ghost}>
         <SlotMaterial setId={materials?.walls ?? materials?.striped_concrete} ghost={ghost} fallback="platform" />
       </mesh>
     </Suspense>
@@ -3005,23 +3049,26 @@ function RailMesh({
   radius,
   tops,
   materials,
+  uv,
   ghost,
 }: {
   points: Vec3[]
   radius: number
   tops?: number[]
   materials?: Record<string, string>
+  uv?: MeshObject['uv']
   ghost?: boolean
 }) {
   const geometry = useMemo(() => buildRailGeometry(points, radius, tops), [points, radius, tops])
+  const framed = useSlotGeometry(geometry, uv?.galvanized)
   const wax = useMemo(() => buildRailWaxGeometry(points, radius, tops), [points, radius, tops])
   useEffect(() => () => geometry?.dispose(), [geometry])
   useEffect(() => () => wax?.dispose(), [wax])
-  if (!geometry) return null
+  if (!framed) return null
   return (
     <Suspense fallback={null}>
       <group>
-        <mesh geometry={geometry} castShadow={!ghost} receiveShadow={!ghost}>
+        <mesh geometry={framed} castShadow={!ghost} receiveShadow={!ghost}>
           <SlotMaterial setId={materials?.galvanized} ghost={ghost} fallback="rail" />
         </mesh>
         {wax && (

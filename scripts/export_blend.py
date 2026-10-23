@@ -901,6 +901,59 @@ def _side_outward(p0, p1, centre):
 
 CURB_TILE_M = 2.0
 CURB_CAP_M = 0.1
+
+
+def _uv_frame(raw):
+    """(scale, radians) for one material. Size is metres per tile, rotation degrees."""
+    size = CURB_TILE_M
+    rotation = 0.0
+    if isinstance(raw, dict):
+        try:
+            size = float(raw.get("size", CURB_TILE_M))
+        except (TypeError, ValueError):
+            size = CURB_TILE_M
+        try:
+            rotation = float(raw.get("rotation", 0.0))
+        except (TypeError, ValueError):
+            rotation = 0.0
+    if size != size:
+        size = CURB_TILE_M
+    size = min(50.0, max(0.05, size))
+    if rotation != rotation:
+        rotation = 0.0
+    return CURB_TILE_M / size, math.radians(rotation)
+
+
+def apply_generator_uv(obj, entry, slot_names):
+    """Turn each material's UVs the way the editor does. Wax is left alone."""
+    if obj is None:
+        return
+    raw = entry.get("uv") if isinstance(entry, dict) else None
+    if not isinstance(raw, dict) or not raw:
+        return
+    frames = [_uv_frame(raw.get(name)) for name in slot_names]
+    if all(abs(scale - 1.0) < 1e-6 and abs(radians) < 1e-8 for scale, radians in frames):
+        return
+    mesh = obj.data
+    layers = getattr(mesh, "uv_layers", None)
+    layer = layers.active if layers else None
+    if layer is None:
+        return
+    for poly in mesh.polygons:
+        slot = poly.material_index
+        if slot < 0 or slot >= len(frames):
+            continue
+        scale, radians = frames[slot]
+        if abs(scale - 1.0) < 1e-6 and abs(radians) < 1e-8:
+            continue
+        cosine = math.cos(radians)
+        sine = math.sin(radians)
+        for loop_index in range(poly.loop_start, poly.loop_start + poly.loop_total):
+            u, v = layer.data[loop_index].uv
+            layer.data[loop_index].uv = (
+                scale * (cosine * u - sine * v),
+                scale * (sine * u + cosine * v),
+            )
 MIN_CURB_WIDTH_M = 0.1
 CURB_LIP_M = 0.025
 CURB_LIP_PROUD_M = 0.002
@@ -5466,6 +5519,7 @@ def build(scene):
                     entry.get("scale") or [1, 1, 1],
                 )
                 set_sk8_mesh_props(obj, entry.get("sk8"))
+                apply_generator_uv(obj, entry, ("brick", "concrete"))
                 tag_join_piece(
                     obj,
                     "generator_curb",
@@ -5505,6 +5559,7 @@ def build(scene):
                         lip["sk8_hide_from_pause_map"] = bool((entry.get("sk8") or {}).get("hide_from_pause_map", False))
                         lip["sk8_object_surface_authored"] = True
                         lip["reskate_map_creator"] = "curb_lip"
+                        apply_generator_uv(lip, entry, ("galvanized",))
                         tag_join_piece(
                             lip,
                             "generator_curb",
@@ -5577,6 +5632,7 @@ def build(scene):
                     entry.get("scale") or [1, 1, 1],
                 )
                 set_sk8_mesh_props(obj, entry.get("sk8"))
+                apply_generator_uv(obj, entry, ("galvanized",))
                 tag_join_piece(
                     obj,
                     "generator_rail",
@@ -5645,6 +5701,7 @@ def build(scene):
                     entry.get("scale") or [1, 1, 1],
                 )
                 set_sk8_mesh_props(obj, entry.get("sk8"))
+                apply_generator_uv(obj, entry, ("striped_concrete",))
                 tag_join_piece(
                     obj,
                     "generator_platform",
@@ -5686,6 +5743,7 @@ def build(scene):
                     entry.get("scale") or [1, 1, 1],
                 )
                 set_sk8_mesh_props(obj, entry.get("sk8"))
+                apply_generator_uv(obj, entry, ("striped_concrete",))
                 tag_join_piece(
                     obj,
                     "generator_bank",
@@ -5745,6 +5803,7 @@ def build(scene):
                     entry.get("scale") or [1, 1, 1],
                 )
                 set_sk8_mesh_props(obj, entry.get("sk8"))
+                apply_generator_uv(obj, entry, ("brick", "granite", "grass"))
                 tag_join_piece(
                     obj,
                     "generator_planter",
@@ -5837,6 +5896,7 @@ def build(scene):
                     entry.get("scale") or [1, 1, 1],
                 )
                 set_sk8_mesh_props(obj, entry.get("sk8"))
+                apply_generator_uv(obj, entry, ("walls", "transition", "top"))
                 tag_join_piece(
                     obj,
                     "generator_quarter_pipe",
@@ -5889,6 +5949,7 @@ def build(scene):
                     entry.get("scale") or [1, 1, 1],
                 )
                 set_sk8_mesh_props(obj, entry.get("sk8"))
+                apply_generator_uv(obj, entry, ("striped_concrete", "concrete"))
                 tag_join_piece(
                     obj,
                     "generator_stairs",

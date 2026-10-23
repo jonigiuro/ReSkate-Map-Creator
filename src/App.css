@@ -512,6 +512,12 @@ button.lib small {
   min-width: 0;
 }
 
+.uv-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
 .transform-box {
   display: grid;
   grid-template-columns: auto repeat(3, minmax(0, 1fr));

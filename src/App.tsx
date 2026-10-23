@@ -14,6 +14,7 @@ import { createDefaultScene, createNewScene } from './lib/defaultScene'
 import { uid } from './lib/ids'
 import {
   CURB_HEIGHT_M,
+  CURB_TILE_M,
   CURB_WIDTH_M,
   DEFAULT_STAIR_STEPS,
   PLANTER_HEIGHT_M,
@@ -26,6 +27,8 @@ import {
   clampCurbOverhang,
   clampCurbWidth,
   clampStairSteps,
+  clampUvRotation,
+  clampUvSize,
   quarterCornerHeights,
   quarterRun,
   RAIL_HEIGHT_M,
@@ -2864,6 +2867,7 @@ export default function App() {
               )}
               onMaterials={(materials) => patchObject(selected.id, { materials })}
               onSounds={(sounds) => patchObject(selected.id, { sounds })}
+              onUv={(uv) => patchObject(selected.id, { uv })}
             />
           )}
           {selected?.kind === 'traffic_lane' && (
@@ -3777,6 +3781,9 @@ function duplicateObject(
       lightRig: source.lightRig ? clonePropLight(source.lightRig) : undefined,
       materials: source.materials ? { ...source.materials } : undefined,
       sounds: source.sounds ? { ...source.sounds } : undefined,
+      uv: source.uv
+        ? Object.fromEntries(Object.entries(source.uv).map(([slot, frame]) => [slot, { ...frame }]))
+        : undefined,
       generator: source.generator
         ? source.generator.kind === 'curb'
           ? {
@@ -4065,11 +4072,13 @@ function MaterialFields({
   dedicated,
   onMaterials,
   onSounds,
+  onUv,
 }: {
   object: MeshObject
   dedicated: boolean
   onMaterials: (materials: Record<string, string> | undefined) => void
   onSounds: (sounds: Record<string, string> | undefined) => void
+  onUv: (uv: MeshObject['uv']) => void
 }) {
   const sets = useTextureSets()
   const [scanning, setScanning] = useState(false)
@@ -4105,9 +4114,25 @@ function MaterialFields({
     onSounds(Object.keys(next).length > 0 ? next : undefined)
   }
 
+  function setFrame(slot: string, key: 'size' | 'rotation', raw: number) {
+    const current = object.uv?.[slot] ?? {}
+    const size = key === 'size' ? clampUvSize(raw, current.size ?? CURB_TILE_M) : (current.size ?? CURB_TILE_M)
+    const rotation = key === 'rotation' ? clampUvRotation(raw, current.rotation ?? 0) : (current.rotation ?? 0)
+    const next = { ...(object.uv ?? {}) }
+    const frame: { size?: number; rotation?: number } = {}
+    if (Math.abs(size - CURB_TILE_M) > 1e-4) frame.size = size
+    if (Math.abs(rotation) > 1e-4) frame.rotation = rotation
+    if (frame.size == null && frame.rotation == null) delete next[slot]
+    else next[slot] = frame
+    onUv(Object.keys(next).length > 0 ? next : undefined)
+  }
+
   return (
     <div className="fields">
       <p className="meta">Materials</p>
+      {generated.length > 0 && (
+        <p className="hint">Size is how many metres one tile covers. 2 is the usual size. Rotation turns that tile.</p>
+      )}
       {slots.length === 0 ? (
         <p className="hint">Materials show up when the preview has loaded.</p>
       ) : (
@@ -4153,6 +4178,30 @@ function MaterialFields({
                   ))}
                 </select>
               </label>
+              {generated.length > 0 && (
+                <div className="uv-row">
+                  <label>
+                    Size (m)
+                    <input
+                      type="number"
+                      min={0.05}
+                      max={50}
+                      step={0.1}
+                      value={object.uv?.[slot.id]?.size ?? CURB_TILE_M}
+                      onChange={(event) => setFrame(slot.id, 'size', Number(event.target.value))}
+                    />
+                  </label>
+                  <label>
+                    Rotation
+                    <input
+                      type="number"
+                      step={1}
+                      value={object.uv?.[slot.id]?.rotation ?? 0}
+                      onChange={(event) => setFrame(slot.id, 'rotation', Number(event.target.value))}
+                    />
+                  </label>
+                </div>
+              )}
               {open && (
                 <div className="material-browser">
                   {texturePath.length > 0 && (

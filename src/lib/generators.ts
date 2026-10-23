@@ -10,6 +10,94 @@ export const CURB_WIDTH_M = 0.5
 export const MIN_CURB_WIDTH_M = 0.1
 /** One texture repeat covers this many metres on every generator. */
 export const CURB_TILE_M = 2
+/** Smallest tile the inspector will keep, so a texture cannot collapse to a point. */
+export const MIN_UV_SIZE_M = 0.05
+export const MAX_UV_SIZE_M = 50
+
+export function clampUvSize(value: number, fallback = CURB_TILE_M) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(MAX_UV_SIZE_M, Math.max(MIN_UV_SIZE_M, value))
+}
+
+/** Degrees, wrapped to -180..180. -180 lands on 180, the same turn. */
+export function clampUvRotation(value: number, fallback = 0) {
+  if (!Number.isFinite(value)) return fallback
+  let degrees = value % 360
+  if (degrees > 180) degrees -= 360
+  if (degrees <= -180) degrees += 360
+  return Math.round(degrees * 1000) / 1000
+}
+
+/**
+ * Scale and turn a generator's UVs. Size is metres per tile, rotation is degrees.
+ * Positive rotation turns the tile anticlockwise. The export uses this same turn.
+ * A default frame returns the same geometry.
+ */
+export function applyUvFrame(
+  geometry: THREE.BufferGeometry | null | undefined,
+  frame?: { size?: number; rotation?: number },
+) {
+  if (!geometry) return null
+  const metres = frame?.size == null ? CURB_TILE_M : clampUvSize(frame.size)
+  const scale = CURB_TILE_M / metres
+  const radians = ((frame?.rotation ?? 0) * Math.PI) / 180
+  const wholeTurns = radians / (Math.PI * 2)
+  if (Math.abs(scale - 1) < 1e-6 && Math.abs(wholeTurns - Math.round(wholeTurns)) < 1e-6) return geometry
+  const copy = geometry.clone()
+  const uv = copy.getAttribute('uv')
+  if (!uv) return copy
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  for (let i = 0; i < uv.count; i++) {
+    const u = uv.getX(i)
+    const v = uv.getY(i)
+    uv.setXY(i, scale * (cos * u - sin * v), scale * (sin * u + cos * v))
+  }
+  uv.needsUpdate = true
+  const position = copy.getAttribute('position')
+  const tangent = copy.getAttribute('tangent')
+  if (
+    tangent &&
+    position &&
+    !copy.index &&
+    tangent.itemSize === 4 &&
+    position.count === uv.count &&
+    uv.count % 3 === 0
+  ) {
+    for (let i = 0; i < uv.count; i += 3) {
+      const ax = position.getX(i)
+      const ay = position.getY(i)
+      const az = position.getZ(i)
+      const e1x = position.getX(i + 1) - ax
+      const e1y = position.getY(i + 1) - ay
+      const e1z = position.getZ(i + 1) - az
+      const e2x = position.getX(i + 2) - ax
+      const e2y = position.getY(i + 2) - ay
+      const e2z = position.getZ(i + 2) - az
+      const du1 = uv.getX(i + 1) - uv.getX(i)
+      const dv1 = uv.getY(i + 1) - uv.getY(i)
+      const du2 = uv.getX(i + 2) - uv.getX(i)
+      const dv2 = uv.getY(i + 2) - uv.getY(i)
+      const det = du1 * dv2 - du2 * dv1
+      let tx = 1
+      let ty = 0
+      let tz = 0
+      if (Math.abs(det) >= 1e-8) {
+        tx = (dv2 * e1x - dv1 * e2x) / det
+        ty = (dv2 * e1y - dv1 * e2y) / det
+        tz = (dv2 * e1z - dv1 * e2z) / det
+        const length = Math.hypot(tx, ty, tz) || 1
+        tx /= length
+        ty /= length
+        tz /= length
+      }
+      const handed = det < 0 ? -1 : 1
+      for (let corner = 0; corner < 3; corner++) tangent.setXYZW(i + corner, tx, ty, tz, handed)
+    }
+    tangent.needsUpdate = true
+  }
+  return copy
+}
 /** Square metal trim on each top corner. It sits 2 mm proud of the concrete. */
 export const CURB_LIP_M = 0.025
 const CURB_LIP_PROUD_M = 0.002

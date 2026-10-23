@@ -39,6 +39,9 @@ import {
   clampQuarterHeight,
   clampQuarterSteepness,
   clampStairHeight,
+  clampUvRotation,
+  clampUvSize,
+  CURB_TILE_M,
   quarterRun,
   clampStairSteps,
   clampStairWidth,
@@ -267,6 +270,25 @@ function parseMaterials(raw: unknown): Record<string, string> | undefined {
   return Object.keys(materials).length > 0 ? materials : undefined
 }
 
+function parseUv(raw: unknown): MeshObject['uv'] {
+  if (!isRecord(raw)) return undefined
+  const uv: NonNullable<MeshObject['uv']> = {}
+  for (const [slot, value] of Object.entries(raw)) {
+    if (!slot || !isRecord(value)) continue
+    const frame: NonNullable<MeshObject['uv']>[string] = {}
+    if (typeof value.size === 'number' && Number.isFinite(value.size)) {
+      const size = clampUvSize(value.size)
+      if (Math.abs(size - CURB_TILE_M) > 1e-4) frame.size = size
+    }
+    if (typeof value.rotation === 'number' && Number.isFinite(value.rotation)) {
+      const rotation = clampUvRotation(value.rotation)
+      if (Math.abs(rotation) > 1e-4) frame.rotation = rotation
+    }
+    if (frame.size != null || frame.rotation != null) uv[slot] = frame
+  }
+  return Object.keys(uv).length > 0 ? uv : undefined
+}
+
 function parseSounds(raw: unknown): Record<string, string> | undefined {
   if (!isRecord(raw)) return undefined
   const sounds: Record<string, string> = {}
@@ -307,6 +329,8 @@ function parseMesh(raw: Record<string, unknown>, index: number): MeshObject {
   if (materials) mesh.materials = materials
   const sounds = parseSounds(raw.sounds)
   if (sounds) mesh.sounds = sounds
+  const uv = parseUv(raw.uv)
+  if (uv) mesh.uv = uv
   const generator = parseGenerator(raw.generator)
   if (generator) mesh.generator = generator
   return mesh

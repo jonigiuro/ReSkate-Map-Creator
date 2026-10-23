@@ -198,7 +198,18 @@ export interface MeshObject {
   materials?: Record<string, string>
   /** Slot name to a game surface id, such as material_2976. Absent slots keep the sound already on the material. */
   sounds?: Record<string, string>
+  /**
+   * Per material slot on a generated mesh.
+   * Size is how many metres one texture tile covers. Rotation is degrees.
+   */
+  uv?: Record<string, UvFrame>
   sk8: Sk8MeshProps
+}
+
+/** Placement of one generated material. Absent size means the usual 2 m tile. */
+export interface UvFrame {
+  size?: number
+  rotation?: number
 }
 
 export interface GrindObject {
