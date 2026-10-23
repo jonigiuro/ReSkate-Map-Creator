@@ -1193,13 +1193,30 @@ def _clamp_curb_width(value):
     return max(MIN_CURB_WIDTH_M, width)
 
 
-def make_curb_mesh(name, points, width, height, color, tops=None, materials=None, closed=False):
+def _clamp_curb_overhang(value):
+    """Extra width of the concrete top over the bricks, both sides together."""
+    try:
+        overhang = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if overhang != overhang:
+        return 0.0
+    return min(2.0, max(0.0, overhang))
+
+
+def make_curb_mesh(name, points, width, height, color, tops=None, materials=None, closed=False, overhang=0.0):
     """One mitered curb. The top 10 cm is concrete; the body under it is brick.
 
     points are the base centreline, tops the top edge, both local.
+    overhang is how much wider the concrete is than the bricks.
     materials is (brick, concrete).
     """
+    lip = _clamp_curb_overhang(overhang)
+    cap_width = float(width) + lip
     sections, loop = _curb_sections_for(points, float(width) / 2.0, closed)
+    cap_sections, _cap_loop = _curb_sections_for(points, cap_width / 2.0, closed)
+    if len(cap_sections) != len(sections):
+        return None
     if not isinstance(tops, (list, tuple)) or len(tops) != len(points):
         tops = [float(point[1]) + float(height) for point in points]
     verts = []
@@ -1208,7 +1225,9 @@ def make_curb_mesh(name, points, width, height, color, tops=None, materials=None
     slots = []
     left_dist = _ribbon_distances(sections, 0, loop)
     right_dist = _ribbon_distances(sections, 1, loop)
-    across = float(width) / CURB_TILE_M
+    cap_left_dist = _ribbon_distances(cap_sections, 0, loop)
+    cap_right_dist = _ribbon_distances(cap_sections, 1, loop)
+    across = cap_width / CURB_TILE_M
     body_slot = 0
     cap_slot = 1
 
@@ -1238,65 +1257,84 @@ def make_curb_mesh(name, points, width, height, color, tops=None, materials=None
         return (top(section, side)[1] - seam(section, side)[1]) / CURB_TILE_M
 
     segment_count = len(sections) if loop else len(sections) - 1
+    down = (0.0, -1.0, 0.0)
     for i in range(segment_count):
         a = sections[i]
         b = sections[(i + 1) % len(sections)]
+        cap_a = cap_sections[i]
+        cap_b = cap_sections[(i + 1) % len(cap_sections)]
         centre = _vscale(_vadd(_vadd(a[0], a[1]), _vadd(b[0], b[1])), 0.25)
         left = _side_outward(a[0], b[0], centre)
         right = _side_outward(a[1], b[1], centre)
+        cap_left = _side_outward(cap_a[0], cap_b[0], centre)
+        cap_right = _side_outward(cap_a[1], cap_b[1], centre)
         u_l0 = left_dist[i] / CURB_TILE_M
         u_l1 = left_dist[i + 1] / CURB_TILE_M
         u_r0 = right_dist[i] / CURB_TILE_M
         u_r1 = right_dist[i + 1] / CURB_TILE_M
-        top_l0, top_r0 = (u_l0, 0.0), (u_r0, across)
-        top_l1, top_r1 = (u_l1, 0.0), (u_r1, across)
+        c_l0 = cap_left_dist[i] / CURB_TILE_M
+        c_l1 = cap_left_dist[i + 1] / CURB_TILE_M
+        c_r0 = cap_right_dist[i] / CURB_TILE_M
+        c_r1 = cap_right_dist[i + 1] / CURB_TILE_M
+        top_l0, top_r0 = (c_l0, 0.0), (c_r0, across)
+        top_l1, top_r1 = (c_l1, 0.0), (c_r1, across)
         side_l0, side_ls0 = (u_l0, 0.0), (u_l0, body_rise(a, 0))
         side_l1, side_ls1 = (u_l1, 0.0), (u_l1, body_rise(b, 0))
         side_r0, side_rs0 = (u_r0, 0.0), (u_r0, body_rise(a, 1))
         side_r1, side_rs1 = (u_r1, 0.0), (u_r1, body_rise(b, 1))
-        cap_l0, cap_lt0 = (u_l0, 0.0), (u_l0, cap_rise(a, 0))
-        cap_l1, cap_lt1 = (u_l1, 0.0), (u_l1, cap_rise(b, 0))
-        cap_r0, cap_rt0 = (u_r0, 0.0), (u_r0, cap_rise(a, 1))
-        cap_r1, cap_rt1 = (u_r1, 0.0), (u_r1, cap_rise(b, 1))
-        add(body_slot, bottom(a, 0), bottom(b, 0), bottom(b, 1), top_l0, top_l1, top_r1, (0.0, -1.0, 0.0))
-        add(body_slot, bottom(a, 0), bottom(b, 1), bottom(a, 1), top_l0, top_r1, top_r0, (0.0, -1.0, 0.0))
-        add(cap_slot, top(a, 0), top(a, 1), top(b, 1), top_l0, top_r0, top_r1, (0.0, 1.0, 0.0))
-        add(cap_slot, top(a, 0), top(b, 1), top(b, 0), top_l0, top_r1, top_l1, (0.0, 1.0, 0.0))
+        cap_l0, cap_lt0 = (c_l0, 0.0), (c_l0, cap_rise(cap_a, 0))
+        cap_l1, cap_lt1 = (c_l1, 0.0), (c_l1, cap_rise(cap_b, 0))
+        cap_r0, cap_rt0 = (c_r0, 0.0), (c_r0, cap_rise(cap_a, 1))
+        cap_r1, cap_rt1 = (c_r1, 0.0), (c_r1, cap_rise(cap_b, 1))
+        add(body_slot, bottom(a, 0), bottom(b, 0), bottom(b, 1), (u_l0, 0.0), (u_l1, 0.0), (u_r1, across), down)
+        add(body_slot, bottom(a, 0), bottom(b, 1), bottom(a, 1), (u_l0, 0.0), (u_r1, across), (u_r0, across), down)
+        add(cap_slot, top(cap_a, 0), top(cap_a, 1), top(cap_b, 1), top_l0, top_r0, top_r1, (0.0, 1.0, 0.0))
+        add(cap_slot, top(cap_a, 0), top(cap_b, 1), top(cap_b, 0), top_l0, top_r1, top_l1, (0.0, 1.0, 0.0))
         add(body_slot, bottom(a, 0), seam(a, 0), seam(b, 0), side_l0, side_ls0, side_ls1, left)
         add(body_slot, bottom(a, 0), seam(b, 0), bottom(b, 0), side_l0, side_ls1, side_l1, left)
-        add(cap_slot, seam(a, 0), top(a, 0), top(b, 0), cap_l0, cap_lt0, cap_lt1, left)
-        add(cap_slot, seam(a, 0), top(b, 0), seam(b, 0), cap_l0, cap_lt1, cap_l1, left)
+        add(cap_slot, seam(cap_a, 0), top(cap_a, 0), top(cap_b, 0), cap_l0, cap_lt0, cap_lt1, cap_left)
+        add(cap_slot, seam(cap_a, 0), top(cap_b, 0), seam(cap_b, 0), cap_l0, cap_lt1, cap_l1, cap_left)
         add(body_slot, bottom(a, 1), bottom(b, 1), seam(b, 1), side_r0, side_r1, side_rs1, right)
         add(body_slot, bottom(a, 1), seam(b, 1), seam(a, 1), side_r0, side_rs1, side_rs0, right)
-        add(cap_slot, seam(a, 1), seam(b, 1), top(b, 1), cap_r0, cap_r1, cap_rt1, right)
-        add(cap_slot, seam(a, 1), top(b, 1), top(a, 1), cap_r0, cap_rt1, cap_rt0, right)
+        add(cap_slot, seam(cap_a, 1), seam(cap_b, 1), top(cap_b, 1), cap_r0, cap_r1, cap_rt1, cap_right)
+        add(cap_slot, seam(cap_a, 1), top(cap_b, 1), top(cap_a, 1), cap_r0, cap_rt1, cap_rt0, cap_right)
+        add(cap_slot, seam(a, 0), seam(b, 0), seam(cap_b, 0), side_l0, side_l1, cap_l1, down)
+        add(cap_slot, seam(a, 0), seam(cap_b, 0), seam(cap_a, 0), side_l0, cap_l1, cap_l0, down)
+        add(cap_slot, seam(a, 1), seam(cap_b, 1), seam(b, 1), side_r0, cap_r1, side_r1, down)
+        add(cap_slot, seam(a, 1), seam(cap_a, 1), seam(cap_b, 1), side_r0, cap_r0, cap_r1, down)
 
     if not loop:
         start_out = _horiz_dir(points[1], points[0])
         end_out = _horiz_dir(points[-2], points[-1])
         first = sections[0]
         last = sections[-1]
+        cap_first = cap_sections[0]
+        cap_last = cap_sections[-1]
 
-        def end_uvs(section):
+        def end_uvs(section, cap_section):
             return (
                 (0.0, 0.0),
                 (across, 0.0),
                 (across, body_rise(section, 1)),
                 (0.0, body_rise(section, 0)),
-                (across, cap_rise(section, 1)),
-                (0.0, cap_rise(section, 0)),
+                (across, cap_rise(cap_section, 1)),
+                (0.0, cap_rise(cap_section, 0)),
             )
 
-        start_cap = end_uvs(first)
-        end_cap = end_uvs(last)
+        start_cap = end_uvs(first, cap_first)
+        end_cap = end_uvs(last, cap_last)
         add(body_slot, bottom(first, 0), bottom(first, 1), seam(first, 1), start_cap[0], start_cap[1], start_cap[2], start_out)
         add(body_slot, bottom(first, 0), seam(first, 1), seam(first, 0), start_cap[0], start_cap[2], start_cap[3], start_out)
-        add(cap_slot, seam(first, 0), seam(first, 1), top(first, 1), start_cap[0], start_cap[1], start_cap[4], start_out)
-        add(cap_slot, seam(first, 0), top(first, 1), top(first, 0), start_cap[0], start_cap[4], start_cap[5], start_out)
+        add(cap_slot, seam(cap_first, 0), seam(cap_first, 1), top(cap_first, 1), start_cap[0], start_cap[1], start_cap[4], start_out)
+        add(cap_slot, seam(cap_first, 0), top(cap_first, 1), top(cap_first, 0), start_cap[0], start_cap[4], start_cap[5], start_out)
+        add(cap_slot, seam(first, 0), seam(first, 1), seam(cap_first, 1), start_cap[0], start_cap[1], start_cap[2], start_out)
+        add(cap_slot, seam(first, 0), seam(cap_first, 1), seam(cap_first, 0), start_cap[0], start_cap[2], start_cap[3], start_out)
         add(body_slot, bottom(last, 0), seam(last, 1), bottom(last, 1), end_cap[0], end_cap[2], end_cap[1], end_out)
         add(body_slot, bottom(last, 0), seam(last, 0), seam(last, 1), end_cap[0], end_cap[3], end_cap[2], end_out)
-        add(cap_slot, seam(last, 0), top(last, 1), seam(last, 1), end_cap[0], end_cap[4], end_cap[1], end_out)
-        add(cap_slot, seam(last, 0), top(last, 0), top(last, 1), end_cap[0], end_cap[5], end_cap[4], end_out)
+        add(cap_slot, seam(cap_last, 0), top(cap_last, 1), seam(cap_last, 1), end_cap[0], end_cap[4], end_cap[1], end_out)
+        add(cap_slot, seam(cap_last, 0), top(cap_last, 0), top(cap_last, 1), end_cap[0], end_cap[5], end_cap[4], end_out)
+        add(cap_slot, seam(last, 0), seam(cap_last, 1), seam(last, 1), end_cap[0], end_cap[2], end_cap[1], end_out)
+        add(cap_slot, seam(last, 0), seam(cap_last, 0), seam(cap_last, 1), end_cap[0], end_cap[3], end_cap[2], end_out)
     body_mat = materials[0] if materials else None
     cap_mat = materials[1] if materials else None
     obj = _link_mesh(name, verts, faces, color, material=body_mat, loop_uvs=uvs)
@@ -1323,9 +1361,10 @@ def _lip_profile(corner, inward):
     }
 
 
-def make_curb_lip_mesh(name, points, width, height, tops=None, project_root=".", material=None, closed=False):
+def make_curb_lip_mesh(name, points, width, height, tops=None, project_root=".", material=None, closed=False, overhang=0.0):
     """Metal trim on both top corners. A separate object so it can have no collision."""
-    sections, loop = _curb_sections_for(points, float(width) / 2.0, closed)
+    cap_width = float(width) + _clamp_curb_overhang(overhang)
+    sections, loop = _curb_sections_for(points, cap_width / 2.0, closed)
     if len(sections) < 2:
         return None
     if not isinstance(tops, (list, tuple)) or len(tops) != len(points):
@@ -1481,14 +1520,15 @@ def wax_material(project_root):
     return _mark_decal(mat)
 
 
-def make_curb_wax_mesh(name, points, width, height, tops=None, project_root=".", closed=False):
+def make_curb_wax_mesh(name, points, width, height, tops=None, project_root=".", closed=False, overhang=0.0):
     """Top and side decal on each edge. Separate object, so collision can stay off."""
-    sections, loop = _curb_sections_for(points, float(width) / 2.0, closed)
+    cap_width = float(width) + _clamp_curb_overhang(overhang)
+    sections, loop = _curb_sections_for(points, cap_width / 2.0, closed)
     if len(sections) < 2:
         return None
     if not isinstance(tops, (list, tuple)) or len(tops) != len(points):
         tops = [float(point[1]) + float(height) for point in points]
-    reach = min(CURB_WAX_WIDTH_M, float(width) * 0.45)
+    reach = min(CURB_WAX_WIDTH_M, cap_width * 0.45)
     verts = []
     faces = []
     uvs = []
@@ -5384,6 +5424,7 @@ def build(scene):
                     continue
                 width = _clamp_curb_width(gen.get("width") if gen.get("width") is not None else 0.5)
                 height = float(gen.get("height") or 0.5)
+                overhang = _clamp_curb_overhang(gen.get("overhang"))
                 closed = gen.get("closed") is True
                 obj = make_curb_mesh(
                     name,
@@ -5411,7 +5452,11 @@ def build(scene):
                         ),
                     ),
                     closed,
+                    overhang,
                 )
+                if obj is None:
+                    print(f"Skipping curb {name}: could not build the mesh")
+                    continue
                 obj.name = name
                 position = entry.get("position") or [0, 0, 0]
                 apply_transform(
@@ -5446,6 +5491,7 @@ def build(scene):
                             lambda: rail_material(project_root),
                         ),
                         closed,
+                        overhang,
                     )
                     if lip is not None:
                         lip.name = f"{name} lip"
@@ -5475,6 +5521,7 @@ def build(scene):
                     gen.get("tops"),
                     project_root,
                     closed,
+                    overhang,
                 )
                 if wax is not None:
                     wax.name = f"{name} wax"

@@ -230,13 +230,10 @@ function surfaceHeight(point: THREE.Vector3, normal: THREE.Vector3) {
 }
 
 const SUN_OFFSET = new THREE.Vector3(55, 90, -70)
-/** Close work keeps a small sharp shadow. Zoomed out, it stops growing past the neighborhood. */
-const SHADOW_HALF_MIN = 24
-const SHADOW_HALF_MAX = 110
 
 function Sun() {
   const light = useRef<THREE.DirectionalLight>(null)
-  const { camera, controls } = useThree()
+  const { controls } = useThree()
 
   useFrame(() => {
     const sun = light.current
@@ -246,35 +243,9 @@ function Sun() {
     sun.position.copy(focus).add(SUN_OFFSET)
     sun.target.position.copy(focus)
     sun.target.updateMatrixWorld()
-
-    const distance = Math.max(camera.position.distanceTo(focus), 0.25)
-    const half = THREE.MathUtils.clamp(distance * 1.15, SHADOW_HALF_MIN, SHADOW_HALF_MAX)
-    const shadowCamera = sun.shadow.camera
-    if (Math.abs(shadowCamera.right - half) <= 0.75) return
-    shadowCamera.left = -half
-    shadowCamera.right = half
-    shadowCamera.top = half
-    shadowCamera.bottom = -half
-    shadowCamera.updateProjectionMatrix()
   })
 
-  return (
-    <directionalLight
-      ref={light}
-      castShadow
-      intensity={2.6}
-      color="#fff4e0"
-      shadow-mapSize={[2048, 2048]}
-      shadow-bias={-0.0004}
-      shadow-normalBias={0.04}
-      shadow-camera-near={10}
-      shadow-camera-far={320}
-      shadow-camera-left={-SHADOW_HALF_MAX}
-      shadow-camera-right={SHADOW_HALF_MAX}
-      shadow-camera-top={SHADOW_HALF_MAX}
-      shadow-camera-bottom={-SHADOW_HALF_MAX}
-    />
-  )
+  return <directionalLight ref={light} intensity={2.6} color="#fff4e0" />
 }
 
 const _sunFocus = new THREE.Vector3()
@@ -1013,6 +984,7 @@ function MeshItem({
               tops={generator.tops}
               width={generator.width}
               height={generator.height}
+              overhang={generator.overhang ?? 0}
               metalEdge={generator.metalEdge !== false}
               closed={generator.closed === true}
               materials={obj.materials}
@@ -2558,6 +2530,7 @@ function CurbRibbon({
   width,
   height,
   tops,
+  overhang = 0,
   materials,
   metalEdge = true,
   closed = false,
@@ -2567,22 +2540,23 @@ function CurbRibbon({
   width: number
   height: number
   tops?: number[]
+  overhang?: number
   materials?: Record<string, string>
   metalEdge?: boolean
   closed?: boolean
   ghost?: boolean
 }) {
   const parts = useMemo(
-    () => buildCurbGeometry(points, width, height, tops, closed),
-    [points, width, height, tops, closed],
+    () => buildCurbGeometry(points, width, height, tops, closed, overhang),
+    [points, width, height, tops, closed, overhang],
   )
   const lip = useMemo(
-    () => (metalEdge ? buildCurbLipGeometry(points, width, height, tops, closed) : null),
-    [metalEdge, points, width, height, tops, closed],
+    () => (metalEdge ? buildCurbLipGeometry(points, width, height, tops, closed, overhang) : null),
+    [metalEdge, points, width, height, tops, closed, overhang],
   )
   const wax = useMemo(
-    () => buildCurbWaxGeometry(points, width, height, tops, closed),
-    [points, width, height, tops, closed],
+    () => buildCurbWaxGeometry(points, width, height, tops, closed, overhang),
+    [points, width, height, tops, closed, overhang],
   )
   useEffect(
     () => () => {
@@ -3871,7 +3845,6 @@ export function Viewport(props: Props) {
       }}
     >
       <Canvas
-        shadows
         dpr={[1, 1.5]}
         frameloop="demand"
         camera={{ position: [48, 36, 58], fov: 45, near: 0.5, far: 5000 }}

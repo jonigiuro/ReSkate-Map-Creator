@@ -23,6 +23,7 @@ import {
   QUARTER_WIDTH_M,
   STAIR_HEIGHT_M,
   STAIR_WIDTH_M,
+  clampCurbOverhang,
   clampCurbWidth,
   clampStairSteps,
   quarterCornerHeights,
@@ -806,6 +807,7 @@ export default function App() {
           obj.kind === 'mesh' && obj.id === strokeId && obj.generator?.kind === 'curb',
       )
       const keptWidth = existing?.generator?.kind === 'curb' ? existing.generator.width : CURB_WIDTH_M
+      const keptOverhang = existing?.generator?.kind === 'curb' ? existing.generator.overhang : undefined
       const keptEdge = existing?.generator?.kind === 'curb' ? existing.generator.metalEdge : undefined
       const keptClosed = existing?.generator?.kind === 'curb' ? existing.generator.closed : undefined
       const generator = {
@@ -814,6 +816,7 @@ export default function App() {
         tops: local.map((point) => round4(point[1] + CURB_HEIGHT_M)),
         width: keptWidth,
         height: CURB_HEIGHT_M,
+        overhang: keptOverhang,
         metalEdge: keptEdge,
         closed: keptClosed,
       }
@@ -2564,6 +2567,21 @@ export default function App() {
                         if (selected.generator?.kind !== 'curb') return
                         const width = clampCurbWidth(Number(event.target.value), selected.generator.width)
                         patchObject(selected.id, { generator: { ...selected.generator, width } })
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Overhang (m)
+                    <input
+                      type="number"
+                      min={0}
+                      max={2}
+                      step={0.01}
+                      value={selected.generator.overhang ?? 0}
+                      onChange={(event) => {
+                        if (selected.generator?.kind !== 'curb') return
+                        const overhang = clampCurbOverhang(Number(event.target.value), selected.generator.overhang ?? 0)
+                        patchObject(selected.id, { generator: { ...selected.generator, overhang } })
                       }}
                     />
                   </label>

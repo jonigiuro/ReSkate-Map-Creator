@@ -30,6 +30,14 @@ export function clampCurbWidth(value: number, fallback = CURB_WIDTH_M) {
   return Math.max(MIN_CURB_WIDTH_M, value)
 }
 
+/** How far the concrete top sticks out past the bricks, in total, both sides together. */
+export const MAX_CURB_OVERHANG_M = 2
+
+export function clampCurbOverhang(value: number, fallback = 0) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(MAX_CURB_OVERHANG_M, Math.max(0, value))
+}
+
 export function curbSegmentTooShort(start: Vec3, end: Vec3) {
   const dx = end[0] - start[0]
   const dy = end[1] - start[1]
@@ -258,6 +266,7 @@ function curbGeometry(mesh: CurbBuffers) {
 /**
  * One curb from a centreline. The top 10 cm is the concrete cap; everything
  * under that is the brick body. Points are the base, tops the top edge, both local.
+ * `overhang` is how much wider the concrete is than the bricks, split across both sides.
  */
 export function buildCurbGeometry(
   points: Vec3[],
@@ -265,15 +274,25 @@ export function buildCurbGeometry(
   height: number,
   tops?: number[],
   closed = false,
+  overhang = 0,
 ) {
   if (!points || points.length < 2 || width <= 0) return null
-  const { sections, loop } = curbRunSections(points, width / 2, closed)
+  const lip = clampCurbOverhang(overhang)
+  const capWidth = width + lip
+  const bodyRun = curbRunSections(points, width / 2, closed)
+  const capRun = curbRunSections(points, capWidth / 2, closed)
+  if (bodyRun.sections.length !== capRun.sections.length) return null
+  const { sections, loop } = bodyRun
+  const capSections = capRun.sections
   const body = curbBuffers()
   const cap = curbBuffers()
   const topYs = curbTopYs(points, height, tops)
   const leftDist = ribbonDistances(sections, 'left', loop)
   const rightDist = ribbonDistances(sections, 'right', loop)
-  const across = width / CURB_TILE_M
+  const capLeftDist = ribbonDistances(capSections, 'left', loop)
+  const capRightDist = ribbonDistances(capSections, 'right', loop)
+  const across = capWidth / CURB_TILE_M
+  const down = UP.clone().negate()
 
   const bottom = (section: Section, side: 'left' | 'right') => section[side].clone()
   const top = (section: Section, side: 'left' | 'right') => {
@@ -307,17 +326,25 @@ export function buildCurbGeometry(
   for (let i = 0; i < segmentCount; i++) {
     const a = sections[i]
     const b = sections[(i + 1) % sections.length]
+    const capA = capSections[i]
+    const capB = capSections[(i + 1) % capSections.length]
     const centre = a.left.clone().add(a.right).add(b.left).add(b.right).multiplyScalar(0.25)
     const left = sideOutward(a.left, b.left, centre)
     const right = sideOutward(a.right, b.right, centre)
+    const capLeft = sideOutward(capA.left, capB.left, centre)
+    const capRight = sideOutward(capA.right, capB.right, centre)
     const uL0 = leftDist[i] / CURB_TILE_M
     const uL1 = leftDist[i + 1] / CURB_TILE_M
     const uR0 = rightDist[i] / CURB_TILE_M
     const uR1 = rightDist[i + 1] / CURB_TILE_M
-    const topL0: [number, number] = [uL0, 0]
-    const topR0: [number, number] = [uR0, across]
-    const topL1: [number, number] = [uL1, 0]
-    const topR1: [number, number] = [uR1, across]
+    const cL0 = capLeftDist[i] / CURB_TILE_M
+    const cL1 = capLeftDist[i + 1] / CURB_TILE_M
+    const cR0 = capRightDist[i] / CURB_TILE_M
+    const cR1 = capRightDist[i + 1] / CURB_TILE_M
+    const topL0: [number, number] = [cL0, 0]
+    const topR0: [number, number] = [cR0, across]
+    const topL1: [number, number] = [cL1, 0]
+    const topR1: [number, number] = [cR1, across]
     const sideL0: [number, number] = [uL0, 0]
     const sideLS0: [number, number] = [uL0, bodyRise(a, 'left')]
     const sideL1: [number, number] = [uL1, 0]
@@ -326,52 +353,62 @@ export function buildCurbGeometry(
     const sideRS0: [number, number] = [uR0, bodyRise(a, 'right')]
     const sideR1: [number, number] = [uR1, 0]
     const sideRS1: [number, number] = [uR1, bodyRise(b, 'right')]
-    const capL0: [number, number] = [uL0, 0]
-    const capLT0: [number, number] = [uL0, capRise(a, 'left')]
-    const capL1: [number, number] = [uL1, 0]
-    const capLT1: [number, number] = [uL1, capRise(b, 'left')]
-    const capR0: [number, number] = [uR0, 0]
-    const capRT0: [number, number] = [uR0, capRise(a, 'right')]
-    const capR1: [number, number] = [uR1, 0]
-    const capRT1: [number, number] = [uR1, capRise(b, 'right')]
+    const capL0: [number, number] = [cL0, 0]
+    const capLT0: [number, number] = [cL0, capRise(capA, 'left')]
+    const capL1: [number, number] = [cL1, 0]
+    const capLT1: [number, number] = [cL1, capRise(capB, 'left')]
+    const capR0: [number, number] = [cR0, 0]
+    const capRT0: [number, number] = [cR0, capRise(capA, 'right')]
+    const capR1: [number, number] = [cR1, 0]
+    const capRT1: [number, number] = [cR1, capRise(capB, 'right')]
 
-    tri(body, bottom(a, 'left'), bottom(b, 'left'), bottom(b, 'right'), topL0, topL1, topR1, UP.clone().negate())
-    tri(body, bottom(a, 'left'), bottom(b, 'right'), bottom(a, 'right'), topL0, topR1, topR0, UP.clone().negate())
-    tri(cap, top(a, 'left'), top(a, 'right'), top(b, 'right'), topL0, topR0, topR1, UP)
-    tri(cap, top(a, 'left'), top(b, 'right'), top(b, 'left'), topL0, topR1, topL1, UP)
+    tri(body, bottom(a, 'left'), bottom(b, 'left'), bottom(b, 'right'), [uL0, 0], [uL1, 0], [uR1, across], down)
+    tri(body, bottom(a, 'left'), bottom(b, 'right'), bottom(a, 'right'), [uL0, 0], [uR1, across], [uR0, across], down)
+    tri(cap, top(capA, 'left'), top(capA, 'right'), top(capB, 'right'), topL0, topR0, topR1, UP)
+    tri(cap, top(capA, 'left'), top(capB, 'right'), top(capB, 'left'), topL0, topR1, topL1, UP)
     tri(body, bottom(a, 'left'), seam(a, 'left'), seam(b, 'left'), sideL0, sideLS0, sideLS1, left)
     tri(body, bottom(a, 'left'), seam(b, 'left'), bottom(b, 'left'), sideL0, sideLS1, sideL1, left)
-    tri(cap, seam(a, 'left'), top(a, 'left'), top(b, 'left'), capL0, capLT0, capLT1, left)
-    tri(cap, seam(a, 'left'), top(b, 'left'), seam(b, 'left'), capL0, capLT1, capL1, left)
+    tri(cap, seam(capA, 'left'), top(capA, 'left'), top(capB, 'left'), capL0, capLT0, capLT1, capLeft)
+    tri(cap, seam(capA, 'left'), top(capB, 'left'), seam(capB, 'left'), capL0, capLT1, capL1, capLeft)
     tri(body, bottom(a, 'right'), bottom(b, 'right'), seam(b, 'right'), sideR0, sideR1, sideRS1, right)
     tri(body, bottom(a, 'right'), seam(b, 'right'), seam(a, 'right'), sideR0, sideRS1, sideRS0, right)
-    tri(cap, seam(a, 'right'), seam(b, 'right'), top(b, 'right'), capR0, capR1, capRT1, right)
-    tri(cap, seam(a, 'right'), top(b, 'right'), top(a, 'right'), capR0, capRT1, capRT0, right)
+    tri(cap, seam(capA, 'right'), seam(capB, 'right'), top(capB, 'right'), capR0, capR1, capRT1, capRight)
+    tri(cap, seam(capA, 'right'), top(capB, 'right'), top(capA, 'right'), capR0, capRT1, capRT0, capRight)
+    tri(cap, seam(a, 'left'), seam(b, 'left'), seam(capB, 'left'), sideL0, sideL1, capL1, down)
+    tri(cap, seam(a, 'left'), seam(capB, 'left'), seam(capA, 'left'), sideL0, capL1, capL0, down)
+    tri(cap, seam(a, 'right'), seam(capB, 'right'), seam(b, 'right'), sideR0, capR1, sideR1, down)
+    tri(cap, seam(a, 'right'), seam(capA, 'right'), seam(capB, 'right'), sideR0, capR0, capR1, down)
   }
 
   if (!loop) {
     const first = sections[0]
     const last = sections[sections.length - 1]
+    const capFirst = capSections[0]
+    const capLast = capSections[capSections.length - 1]
     const startOut = horizontalDir(points[1], points[0])
     const endOut = horizontalDir(points[points.length - 2], points[points.length - 1])
-    const endUvs = (section: Section) => ({
+    const endUvs = (section: Section, capSection: Section) => ({
       leftBottom: [0, 0] as [number, number],
       rightBottom: [across, 0] as [number, number],
       rightSeam: [across, bodyRise(section, 'right')] as [number, number],
       leftSeam: [0, bodyRise(section, 'left')] as [number, number],
-      rightTop: [across, capRise(section, 'right')] as [number, number],
-      leftTop: [0, capRise(section, 'left')] as [number, number],
+      rightTop: [across, capRise(capSection, 'right')] as [number, number],
+      leftTop: [0, capRise(capSection, 'left')] as [number, number],
     })
-    const startCap = endUvs(first)
-    const endCap = endUvs(last)
+    const startCap = endUvs(first, capFirst)
+    const endCap = endUvs(last, capLast)
     tri(body, bottom(first, 'left'), bottom(first, 'right'), seam(first, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightSeam, startOut)
     tri(body, bottom(first, 'left'), seam(first, 'right'), seam(first, 'left'), startCap.leftBottom, startCap.rightSeam, startCap.leftSeam, startOut)
-    tri(cap, seam(first, 'left'), seam(first, 'right'), top(first, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightTop, startOut)
-    tri(cap, seam(first, 'left'), top(first, 'right'), top(first, 'left'), startCap.leftBottom, startCap.rightTop, startCap.leftTop, startOut)
+    tri(cap, seam(capFirst, 'left'), seam(capFirst, 'right'), top(capFirst, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightTop, startOut)
+    tri(cap, seam(capFirst, 'left'), top(capFirst, 'right'), top(capFirst, 'left'), startCap.leftBottom, startCap.rightTop, startCap.leftTop, startOut)
+    tri(cap, seam(first, 'left'), seam(first, 'right'), seam(capFirst, 'right'), startCap.leftBottom, startCap.rightBottom, startCap.rightSeam, startOut)
+    tri(cap, seam(first, 'left'), seam(capFirst, 'right'), seam(capFirst, 'left'), startCap.leftBottom, startCap.rightSeam, startCap.leftSeam, startOut)
     tri(body, bottom(last, 'left'), seam(last, 'right'), bottom(last, 'right'), endCap.leftBottom, endCap.rightSeam, endCap.rightBottom, endOut)
     tri(body, bottom(last, 'left'), seam(last, 'left'), seam(last, 'right'), endCap.leftBottom, endCap.leftSeam, endCap.rightSeam, endOut)
-    tri(cap, seam(last, 'left'), top(last, 'right'), seam(last, 'right'), endCap.leftBottom, endCap.rightTop, endCap.rightBottom, endOut)
-    tri(cap, seam(last, 'left'), top(last, 'left'), top(last, 'right'), endCap.leftBottom, endCap.leftTop, endCap.rightTop, endOut)
+    tri(cap, seam(capLast, 'left'), top(capLast, 'right'), seam(capLast, 'right'), endCap.leftBottom, endCap.rightTop, endCap.rightBottom, endOut)
+    tri(cap, seam(capLast, 'left'), top(capLast, 'left'), top(capLast, 'right'), endCap.leftBottom, endCap.leftTop, endCap.rightTop, endOut)
+    tri(cap, seam(last, 'left'), seam(capLast, 'right'), seam(last, 'right'), endCap.leftBottom, endCap.rightSeam, endCap.rightBottom, endOut)
+    tri(cap, seam(last, 'left'), seam(capLast, 'left'), seam(capLast, 'right'), endCap.leftBottom, endCap.leftSeam, endCap.rightSeam, endOut)
   }
 
   const bodyMesh = curbGeometry(body)
@@ -408,9 +445,10 @@ export function buildCurbLipGeometry(
   height: number,
   tops?: number[],
   closed = false,
+  overhang = 0,
 ) {
   if (!points || points.length < 2 || width <= 0) return null
-  const { sections, loop } = curbRunSections(points, width / 2, closed)
+  const { sections, loop } = curbRunSections(points, (width + clampCurbOverhang(overhang)) / 2, closed)
   const topYs = curbTopYs(points, height, tops)
   const positions: number[] = []
   const normals: number[] = []
@@ -529,12 +567,14 @@ export function buildCurbWaxGeometry(
   height: number,
   tops?: number[],
   closed = false,
+  overhang = 0,
 ) {
   if (!points || points.length < 2 || width <= 0) return null
-  const { sections, loop } = curbRunSections(points, width / 2, closed)
+  const capWidth = width + clampCurbOverhang(overhang)
+  const { sections, loop } = curbRunSections(points, capWidth / 2, closed)
   if (sections.length < 2) return null
   const topYs = curbTopYs(points, height, tops)
-  const reach = Math.min(CURB_WAX_WIDTH_M, width * 0.45)
+  const reach = Math.min(CURB_WAX_WIDTH_M, capWidth * 0.45)
   const positions: number[] = []
   const normals: number[] = []
   const uvs: number[] = []

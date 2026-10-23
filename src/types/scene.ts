@@ -23,6 +23,8 @@ export interface CurbGenerator {
   tops?: number[]
   width: number
   height: number
+  /** How much wider the concrete top is than the bricks, in metres. Split across both sides. */
+  overhang?: number
   /** Metal trim on both top corners. Absent means the trim is shown. */
   metalEdge?: boolean
   /** Join the last pin back to the first. Needs at least three pins. */

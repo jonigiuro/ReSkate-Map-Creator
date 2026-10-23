@@ -34,6 +34,7 @@ import {
 } from './traffic'
 import { defaultLightTimes, LIGHT_TIMES, parsePropLight } from './lights'
 import {
+  clampCurbOverhang,
   clampCurbWidth,
   clampQuarterHeight,
   clampQuarterSteepness,
@@ -242,12 +243,15 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
   ) {
     tops = raw.tops
   }
+  const overhang =
+    typeof raw.overhang === 'number' && Number.isFinite(raw.overhang) ? clampCurbOverhang(raw.overhang) : 0
   return {
     kind: 'curb' as const,
     points,
     width: clampCurbWidth(width),
     height,
     tops,
+    ...(overhang > 0 ? { overhang } : {}),
     ...(raw.metalEdge === false ? { metalEdge: false as const } : {}),
     ...(raw.closed === true ? { closed: true as const } : {}),
   }
