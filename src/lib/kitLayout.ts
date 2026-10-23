@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 
-/** A drawn tool: a built-in curb, rail, platform, bank, planter, stairs, or traffic lane, or a blend kit from Objects/Generators. */
+/** A drawn tool: a built-in curb, rail, platform, bank, planter, stairs, quarter pipe, or traffic lane, or a blend kit from Objects/Generators. */
 export type DrawGenerator =
   | { kind: 'curb' }
   | { kind: 'rail' }
@@ -8,6 +8,7 @@ export type DrawGenerator =
   | { kind: 'bank' }
   | { kind: 'planter' }
   | { kind: 'stairs' }
+  | { kind: 'quarter_pipe' }
   | { kind: 'traffic'; lane: 'vehicle' | 'bus' | 'pedestrian' }
   | { kind: 'kit'; assetFile: string; label: string }
 

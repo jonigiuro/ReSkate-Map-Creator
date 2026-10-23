@@ -110,6 +110,27 @@ export interface StairsGenerator {
   reversed?: boolean
 }
 
+export type QuarterPipeGenerator = {
+  kind: 'quarter_pipe'
+  /** Foot of the coping, in local space. The curve rolls out from this line. */
+  points: [number, number, number][]
+  /** How far the curve rolls out from the coping, in metres. */
+  width: number
+  /** Default rise. A corner without its own entry uses this. */
+  height: number
+  /** Rise at each coping pin, in metres. */
+  heights?: number[]
+  /**
+   * 0.2–1. The radius is height / steepness.
+   * 1 makes the radius equal the height, so the top of the curve is vertical.
+   */
+  steepness: number
+  /** Join the last pin back to the first. */
+  closed?: boolean
+  /** The curve rolls out to the other side of the pin line. */
+  reversed?: boolean
+}
+
 export type MeshGenerator =
   | CurbGenerator
   | KitGenerator
@@ -118,6 +139,7 @@ export type MeshGenerator =
   | RailGenerator
   | PlanterGenerator
   | StairsGenerator
+  | QuarterPipeGenerator
 
 /** Where a prop lamp sits. Only the placement comes from the blend. */
 export interface PropLamp {

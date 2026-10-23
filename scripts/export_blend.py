@@ -3267,6 +3267,342 @@ def make_wedge_mesh(name, size, color):
     return _link_mesh(name, verts, faces, color)
 
 
+QUARTER_HEIGHT_M = 1.0
+QUARTER_WIDTH_M = 1.0
+QUARTER_DECK_M = 0.5
+QUARTER_STEEPNESS = 1.0
+MIN_QUARTER_HEIGHT_M = 0.15
+MIN_QUARTER_STEEPNESS = 0.2
+MAX_QUARTER_STEEPNESS = 1.0
+QUARTER_ARC_STEPS = 16
+
+
+def _clamp_quarter_height(value, fallback=QUARTER_HEIGHT_M):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(number):
+        return fallback
+    return max(MIN_QUARTER_HEIGHT_M, number)
+
+
+def _quarter_run(height, steepness):
+    rise = _clamp_quarter_height(height)
+    steep = _clamp_quarter_steepness(steepness)
+    return rise * math.sqrt(max(0.0, 2.0 / steep - 1.0))
+
+
+def _clamp_quarter_steepness(value, fallback=QUARTER_STEEPNESS):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(number):
+        return fallback
+    return min(MAX_QUARTER_STEEPNESS, max(MIN_QUARTER_STEEPNESS, number))
+
+
+def _quarter_profile(height, steepness):
+    """s is metres out from the coping. Negative is the fixed deck, positive rolls out."""
+    rise = _clamp_quarter_height(height)
+    deck = QUARTER_DECK_M
+    run = _quarter_run(rise, steepness)
+    radius = (run * run + rise * rise) / (2.0 * rise)
+    samples = []
+    if deck > 1e-4:
+        samples.extend(((-deck, 0.0), (-deck, rise)))
+    else:
+        samples.append((0.0, 0.0))
+    samples.append((0.0, rise))
+    theta = math.acos(min(1.0, max(0.0, 1.0 - rise / radius)))
+    for step in range(1, QUARTER_ARC_STEPS + 1):
+        phi = theta * (1.0 - step / QUARTER_ARC_STEPS)
+        samples.append((max(0.0, run - radius * math.sin(phi)), radius * (1.0 - math.cos(phi))))
+    return samples, run, rise, deck
+
+
+def _quarter_outward(points, index, loop, side):
+    count = len(points)
+    open_end = not loop and (index == 0 or index == count - 1)
+    if open_end:
+        along = _horiz_dir(points[0], points[1]) if index == 0 else _horiz_dir(points[count - 2], points[count - 1])
+        direction = _left_of(along)
+    else:
+        prev = (index - 1 + count) % count
+        nxt = (index + 1) % count
+        incoming = _left_of(_horiz_dir(points[prev], points[index]))
+        outgoing = _left_of(_horiz_dir(points[index], points[nxt]))
+        total = _vadd(incoming, outgoing)
+        if _vdot(total, total) < 1e-8:
+            direction = incoming
+        else:
+            miter = _vnorm(total)
+            if miter is None or _vdot(miter, incoming) < 0.25:
+                direction = incoming
+            else:
+                direction = _vscale(miter, min(1.0 / _vdot(miter, incoming), 4.0))
+    scaled = _vscale(direction, side)
+    if _vdot(scaled, scaled) < 1e-8:
+        return (0.0, 0.0, 1.0)
+    return scaled
+
+
+def _quarter_stations(points, closed, reversed_side):
+    count = len(points)
+    if count < 2:
+        return None
+    loop = closed and count >= 3
+    side = -1.0 if reversed_side else 1.0
+    span = 0.0
+    for index in range(1, count):
+        span += math.hypot(float(points[index][0]) - float(points[index - 1][0]), float(points[index][2]) - float(points[index - 1][2]))
+    if loop:
+        span += math.hypot(float(points[0][0]) - float(points[count - 1][0]), float(points[0][2]) - float(points[count - 1][2]))
+    if span < 0.05:
+        return None
+    stations = []
+    along = 0.0
+    for index, point in enumerate(points):
+        if index > 0:
+            along += math.hypot(float(point[0]) - float(points[index - 1][0]), float(point[2]) - float(points[index - 1][2]))
+        stations.append(
+            {
+                "origin": (float(point[0]), float(point[1]), float(point[2])),
+                "outward": _quarter_outward(points, index, loop, side),
+                "along": along,
+            }
+        )
+    return stations
+
+
+def _quarter_place(station, sample):
+    origin = station["origin"]
+    outward = station["outward"]
+    return (
+        origin[0] + outward[0] * sample[0],
+        origin[1] + sample[1],
+        origin[2] + outward[2] * sample[0],
+    )
+
+
+def _quarter_corner_heights(count, height, heights):
+    fallback = _clamp_quarter_height(height)
+    listed = heights if isinstance(heights, (list, tuple)) and len(heights) == count else None
+    rises = []
+    for index in range(count):
+        if listed is None:
+            rises.append(fallback)
+            continue
+        try:
+            number = float(listed[index])
+        except (TypeError, ValueError):
+            number = fallback
+        rises.append(_clamp_quarter_height(number) if math.isfinite(number) else fallback)
+    return rises
+
+
+def make_quarter_pipe_run_mesh(
+    name,
+    points,
+    width,
+    height,
+    steepness,
+    color,
+    material=None,
+    closed=False,
+    reversed_side=False,
+    transition_material=None,
+    top_material=None,
+    heights=None,
+):
+    """Quarter pipe along a coping line. Steepness 1 makes the top of the curve vertical.
+
+    The transition keeps a corner's extra length on that segment, so the roll does not skew.
+    Slot 0 is the back and sides, slot 1 the transition, and slot 2 the top.
+    """
+    stations = _quarter_stations(points, closed, reversed_side)
+    if not stations:
+        return None
+    rises = _quarter_corner_heights(len(points), height, heights)
+    profiles = [_quarter_profile(rise, steepness)[0] for rise in rises]
+    if any(len(profile) != len(profiles[0]) for profile in profiles):
+        return None
+    coping = 0
+    first_rise = rises[0]
+    for index, sample in enumerate(profiles[0]):
+        if sample[0] >= -1e-4 and abs(sample[1] - first_rise) < 1e-3:
+            coping = index
+            break
+    placed = [[_quarter_place(station, sample) for sample in profiles[index]] for index, station in enumerate(stations)]
+    nominals = []
+    for station, samples in zip(stations, profiles):
+        outward = station["outward"]
+        scale = math.hypot(outward[0], outward[2])
+        nominal = [0.0]
+        for index in range(1, len(samples)):
+            prev = samples[index - 1]
+            current = samples[index]
+            nominal.append(nominal[-1] + math.hypot(scale * (current[0] - prev[0]), current[1] - prev[1]))
+        nominals.append(nominal)
+    along = []
+    for sample in range(len(profiles[0])):
+        distance = [0.0]
+        for index in range(1, len(stations)):
+            distance.append(distance[-1] + math.dist(placed[index - 1][sample], placed[index][sample]))
+        along.append(distance)
+    verts = []
+    faces = []
+    uvs = []
+    slots = []
+    loop_normals = []
+    tile = CURB_TILE_M
+    loop = closed and len(stations) >= 3
+    segments = len(stations) if loop else len(stations) - 1
+
+    def add(slot, a, b, c, ua, ub, uc, outward):
+        before = len(faces)
+        _add_tri(verts, faces, uvs, a, b, c, ua, ub, uc, outward, loop_normals)
+        if len(faces) != before:
+            slots.append(slot)
+
+    def quad(slot, a, b, c, d, ua, ub, uc, ud, outward):
+        add(slot, a, b, c, ua, ub, uc, outward)
+        add(slot, a, c, d, ua, uc, ud, outward)
+
+    def profile_v(station, sample, wrapped, on_curve):
+        nominal = nominals[station]
+        samples = profiles[station]
+        outward = stations[station]["outward"]
+        scale = math.hypot(outward[0], outward[2])
+        closed_span = nominal[-1] + math.hypot(scale * (samples[0][0] - samples[-1][0]), samples[0][1] - samples[-1][1])
+        raw = closed_span if wrapped else nominal[sample]
+        if on_curve:
+            raw -= nominal[max(coping, 0)]
+        return raw / tile
+
+    def along_u(sample, station, origin, closing):
+        if not closing:
+            return along[sample][station] / tile
+        return (along[sample][origin] + math.dist(placed[origin][sample], placed[0][sample])) / tile
+
+    for index in range(segments):
+        nxt = (index + 1) % len(stations)
+        start = stations[index]
+        end = stations[nxt]
+        closing = nxt == 0
+        sample_count = len(profiles[0])
+        for sample in range(sample_count):
+            following = (sample + 1) % sample_count
+            wrapped = following == 0
+            start_samples = profiles[index]
+            end_samples = profiles[nxt]
+            ds = (
+                (start_samples[following][0] - start_samples[sample][0])
+                + (end_samples[following][0] - end_samples[sample][0])
+            ) * 0.5
+            dy = (
+                (start_samples[following][1] - start_samples[sample][1])
+                + (end_samples[following][1] - end_samples[sample][1])
+            ) * 0.5
+            start_dir = _vnorm((start["outward"][0], 0.0, start["outward"][2])) or (0.0, 0.0, 1.0)
+            end_dir = _vnorm((end["outward"][0], 0.0, end["outward"][2])) or (0.0, 0.0, 1.0)
+            outward = (
+                (start_dir[0] + end_dir[0]) * -dy,
+                ds * 2.0,
+                (start_dir[2] + end_dir[2]) * -dy,
+            )
+            if _vdot(outward, outward) < 1e-12:
+                continue
+            on_curve = sample >= coping and not wrapped
+            deck_top = (not wrapped) and coping >= 1 and sample == coping - 1
+            slot = 1 if on_curve else 2 if deck_top else 0
+
+            def transition_uv(station, sample_index):
+                ring = math.dist(placed[index][sample_index], placed[nxt][sample_index])
+                coping_ring = math.dist(placed[index][coping], placed[nxt][coping])
+                extra = ring - coping_ring
+                origin = start["along"]
+                along_pos = origin - extra * 0.5 if station == index else origin + coping_ring + extra * 0.5
+                return (along_pos / tile, profile_v(station, sample_index, False, True))
+
+            def corner_uv(station, sample_index, closing_edge, wrapped_edge):
+                if deck_top or wrapped:
+                    point = placed[station][sample_index]
+                    return (point[0] / tile, point[2] / tile)
+                if on_curve:
+                    return transition_uv(station, sample_index)
+                return (
+                    along_u(sample_index, station, index, closing_edge),
+                    profile_v(station, sample_index, wrapped_edge, False),
+                )
+
+            quad(
+                slot,
+                placed[index][sample],
+                placed[nxt][sample],
+                placed[nxt][following],
+                placed[index][following],
+                corner_uv(index, sample, False, False),
+                corner_uv(nxt, sample, closing, False),
+                corner_uv(nxt, following, closing, wrapped),
+                corner_uv(index, following, False, wrapped),
+                outward,
+            )
+
+    if not loop:
+        def add_cap(station_index, desired):
+            station = stations[station_index]
+            cap_samples = profiles[station_index]
+            foot = _quarter_place(station, (0.0, 0.0))
+            foot_uv = (0.0, 0.0)
+
+            def flat_uv(sample):
+                return (sample[0] / tile, sample[1] / tile)
+
+            if coping >= 2:
+                quad(
+                    0,
+                    _quarter_place(station, cap_samples[0]),
+                    _quarter_place(station, cap_samples[coping - 1]),
+                    _quarter_place(station, cap_samples[coping]),
+                    foot,
+                    flat_uv(cap_samples[0]),
+                    flat_uv(cap_samples[coping - 1]),
+                    flat_uv(cap_samples[coping]),
+                    foot_uv,
+                    desired,
+                )
+            for sample in range(coping, len(cap_samples) - 1):
+                add(
+                    0,
+                    foot,
+                    _quarter_place(station, cap_samples[sample]),
+                    _quarter_place(station, cap_samples[sample + 1]),
+                    foot_uv,
+                    flat_uv(cap_samples[sample]),
+                    flat_uv(cap_samples[sample + 1]),
+                    desired,
+                )
+
+        add_cap(0, _horiz_dir(stations[1]["origin"], stations[0]["origin"]))
+        add_cap(len(stations) - 1, _horiz_dir(stations[-2]["origin"], stations[-1]["origin"]))
+
+    if not faces:
+        return None
+    obj = _link_mesh(name, verts, faces, color, material=material, loop_uvs=uvs, loop_normals=loop_normals)
+    if transition_material is not None or top_material is not None:
+        mesh = obj.data
+        mesh.materials.clear()
+        base = material or placeholder_material(f"{name}_mat", color)
+        mesh.materials.append(base)
+        mesh.materials.append(transition_material or base)
+        mesh.materials.append(top_material or base)
+        for poly, slot in zip(mesh.polygons, slots):
+            poly.material_index = slot
+    return obj
+
+
 def make_quarter_pipe_mesh(name, radius, width, color):
     """Same arc as the editor: base at the origin, opening toward +Z, up is +Y."""
     segments = 14
@@ -5396,6 +5732,72 @@ def build(scene):
                         "wax",
                     )
                     link_only(wax, colls["Map"])
+                continue
+
+            if gen.get("kind") == "quarter_pipe":
+                points = gen.get("points") or []
+                if len(points) < 2:
+                    print(f"Skipping quarter pipe {name}: needs a run")
+                    continue
+                quarter_overrides = dict(overrides or {})
+                quarter_sounds = dict(sounds or {})
+                if not quarter_overrides.get("transition") and quarter_overrides.get("curve"):
+                    quarter_overrides["transition"] = quarter_overrides["curve"]
+                if not quarter_overrides.get("top") and quarter_overrides.get("striped_concrete"):
+                    quarter_overrides["top"] = quarter_overrides["striped_concrete"]
+                if not quarter_overrides.get("walls") and quarter_overrides.get("striped_concrete"):
+                    quarter_overrides["walls"] = quarter_overrides["striped_concrete"]
+                if not quarter_sounds.get("transition") and quarter_sounds.get("curve"):
+                    quarter_sounds["transition"] = quarter_sounds["curve"]
+                if not quarter_sounds.get("top") and quarter_sounds.get("striped_concrete"):
+                    quarter_sounds["top"] = quarter_sounds["striped_concrete"]
+                if not quarter_sounds.get("walls") and quarter_sounds.get("striped_concrete"):
+                    quarter_sounds["walls"] = quarter_sounds["striped_concrete"]
+
+                def quarter_mat(slot):
+                    return slot_material(
+                        project_root,
+                        texture_sets,
+                        quarter_overrides,
+                        quarter_sounds,
+                        slot,
+                        lambda: striped_concrete_material(project_root),
+                    )
+
+                obj = make_quarter_pipe_run_mesh(
+                    name,
+                    points,
+                    gen.get("width"),
+                    gen.get("height"),
+                    gen.get("steepness"),
+                    (0.55, 0.58, 0.62),
+                    quarter_mat("walls"),
+                    closed=gen.get("closed") is True,
+                    reversed_side=gen.get("reversed") is True,
+                    heights=gen.get("heights"),
+                    transition_material=quarter_mat("transition"),
+                    top_material=quarter_mat("top"),
+                )
+                if obj is None:
+                    print(f"Skipping quarter pipe {name}: run is too short")
+                    continue
+                obj.name = name
+                position = entry.get("position") or [0, 0, 0]
+                apply_transform(
+                    obj,
+                    position,
+                    entry.get("rotation") or [0, 0, 0],
+                    entry.get("scale") or [1, 1, 1],
+                )
+                set_sk8_mesh_props(obj, entry.get("sk8"))
+                tag_join_piece(
+                    obj,
+                    "generator_quarter_pipe",
+                    placement_cell(position),
+                    "generator_quarter_pipe",
+                    "generator_quarter_pipe",
+                )
+                link_only(obj, colls["Map"])
                 continue
 
             if gen.get("kind") == "stairs":

@@ -1864,6 +1864,351 @@ export function stairPinLayout(
   })
 }
 
+export const QUARTER_HEIGHT_M = 1
+export const QUARTER_WIDTH_M = 1
+/** Flat platform behind the coping. It does not follow the width control. */
+export const QUARTER_DECK_M = 0.5
+/** 1 keeps the radius equal to the height, so the top of the curve is vertical. */
+export const QUARTER_STEEPNESS = 1
+export const MIN_QUARTER_HEIGHT_M = 0.15
+export const MIN_QUARTER_STEEPNESS = 0.2
+export const MAX_QUARTER_STEEPNESS = 1
+const QUARTER_ARC_STEPS = 16
+
+export function clampQuarterHeight(value: number, fallback = QUARTER_HEIGHT_M) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(MIN_QUARTER_HEIGHT_M, value)
+}
+
+/** How far the curve rolls out. Steepness 1 makes this equal the height. */
+export function quarterRun(height: number, steepness: number) {
+  const rise = clampQuarterHeight(height)
+  const steep = clampQuarterSteepness(steepness)
+  return rise * Math.sqrt(Math.max(0, 2 / steep - 1))
+}
+
+export function clampQuarterWidth(value: number, height = QUARTER_HEIGHT_M) {
+  const rise = clampQuarterHeight(height)
+  const maxRun = quarterRun(rise, MIN_QUARTER_STEEPNESS)
+  if (!Number.isFinite(value)) return quarterRun(rise, QUARTER_STEEPNESS)
+  return Math.min(maxRun, Math.max(rise, value))
+}
+
+/** Steepness that makes the curve roll out exactly this far. */
+export function quarterSteepnessForRun(height: number, run: number) {
+  const rise = clampQuarterHeight(height)
+  const width = Math.max(run, rise)
+  const radius = (width * width + rise * rise) / (2 * rise)
+  return clampQuarterSteepness(rise / radius)
+}
+
+export function clampQuarterSteepness(value: number, fallback = QUARTER_STEEPNESS) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(MAX_QUARTER_STEEPNESS, Math.max(MIN_QUARTER_STEEPNESS, value))
+}
+
+/** Radius of the round transition. Steepness 1 keeps it equal to the height. */
+export function quarterRadius(height: number, steepness: number) {
+  return clampQuarterHeight(height) / clampQuarterSteepness(steepness)
+}
+
+type QuarterSample = { s: number; y: number }
+
+/** Cross-section. s is metres out from the coping: negative is the fixed deck, positive rolls out. */
+function quarterProfile(height: number, steepness: number) {
+  const rise = clampQuarterHeight(height)
+  const deck = QUARTER_DECK_M
+  const run = quarterRun(rise, steepness)
+  const radius = (run * run + rise * rise) / (2 * rise)
+  const samples: QuarterSample[] = []
+  if (deck > 1e-4) {
+    samples.push({ s: -deck, y: 0 }, { s: -deck, y: rise })
+  } else {
+    samples.push({ s: 0, y: 0 })
+  }
+  samples.push({ s: 0, y: rise })
+  const theta = Math.acos(THREE.MathUtils.clamp(1 - rise / radius, 0, 1))
+  for (let step = 1; step <= QUARTER_ARC_STEPS; step += 1) {
+    const phi = theta * (1 - step / QUARTER_ARC_STEPS)
+    samples.push({
+      s: Math.max(0, run - radius * Math.sin(phi)),
+      y: radius * (1 - Math.cos(phi)),
+    })
+  }
+  return { samples, run, rise, deck }
+}
+
+type QuarterStation = { origin: THREE.Vector3; outward: THREE.Vector3; along: number }
+
+function quarterOutward(points: Vec3[], index: number, loop: boolean, side: number) {
+  const count = points.length
+  const openEnd = !loop && (index === 0 || index === count - 1)
+  let dir: THREE.Vector3
+  if (openEnd) {
+    const along =
+      index === 0
+        ? horizontalDir(points[0], points[1])
+        : horizontalDir(points[count - 2], points[count - 1])
+    dir = leftOf(along)
+  } else {
+    const prev = (index - 1 + count) % count
+    const next = (index + 1) % count
+    const incoming = leftOf(horizontalDir(points[prev], points[index]))
+    const outgoing = leftOf(horizontalDir(points[index], points[next]))
+    const sum = incoming.clone().add(outgoing)
+    if (sum.lengthSq() < 1e-8) {
+      dir = incoming
+    } else {
+      const miter = sum.normalize()
+      const denom = miter.dot(incoming)
+      // Stretch the bisector so the curve stays the same width around a corner.
+      dir = denom < 0.25 ? incoming : miter.multiplyScalar(Math.min(1 / denom, 4))
+    }
+  }
+  dir.multiplyScalar(side)
+  if (dir.lengthSq() < 1e-8) return new THREE.Vector3(0, 0, 1)
+  return dir
+}
+
+function quarterStations(points: Vec3[], closed: boolean, reversed: boolean): QuarterStation[] | null {
+  const count = points.length
+  if (count < 2) return null
+  const loop = closed && count >= 3
+  const side = reversed ? -1 : 1
+  let span = 0
+  for (let i = 1; i < count; i += 1) {
+    span += Math.hypot(points[i][0] - points[i - 1][0], points[i][2] - points[i - 1][2])
+  }
+  if (loop) {
+    span += Math.hypot(points[0][0] - points[count - 1][0], points[0][2] - points[count - 1][2])
+  }
+  if (span < 0.05) return null
+  const stations: QuarterStation[] = []
+  let along = 0
+  for (let i = 0; i < count; i += 1) {
+    if (i > 0) {
+      along += Math.hypot(points[i][0] - points[i - 1][0], points[i][2] - points[i - 1][2])
+    }
+    stations.push({
+      origin: new THREE.Vector3(points[i][0], points[i][1], points[i][2]),
+      outward: quarterOutward(points, i, loop, side),
+      along,
+    })
+  }
+  return stations
+}
+
+function quarterPlace(station: QuarterStation, sample: QuarterSample) {
+  return new THREE.Vector3(
+    station.origin.x + station.outward.x * sample.s,
+    station.origin.y + sample.y,
+    station.origin.z + station.outward.z * sample.s,
+  )
+}
+
+/** Rise at each coping pin. A missing entry uses the shared height. */
+export function quarterCornerHeights(points: Vec3[], height: number, heights?: number[]) {
+  const fallback = clampQuarterHeight(height)
+  return points.map((_, index) => {
+    const listed = heights?.[index]
+    return typeof listed === 'number' && Number.isFinite(listed) ? clampQuarterHeight(listed) : fallback
+  })
+}
+
+/** Gold pin on the coping line, orange pin sets that corner's height, teal pin sets the shared roll. */
+export function quarterPinLayout(
+  points: Vec3[],
+  steepness: number,
+  height: number,
+  closed = false,
+  reversed = false,
+  heights?: number[],
+) {
+  if (!points || points.length < 2) return []
+  const rises = quarterCornerHeights(points, height, heights)
+  const loop = closed && points.length >= 3
+  const dirs = loop
+    ? points.map((point, index) => horizontalDir(point, points[(index + 1) % points.length]))
+    : points.slice(1).map((point, index) => horizontalDir(points[index], point))
+  const side = reversed ? -1 : 1
+  return points.map((point, index) => {
+    const rise = rises[index]
+    const left = leftOf(dirs[loop ? index : Math.min(index, dirs.length - 1)]).multiplyScalar(quarterRun(rise, steepness) * side)
+    return {
+      base: point,
+      top: [point[0], point[1] + rise, point[2]] as Vec3,
+      width: [point[0] + left.x, point[1], point[2] + left.z] as Vec3,
+    }
+  })
+}
+
+/**
+ * Quarter pipe along a drawn coping line. The curve starts horizontal at the ground
+ * and steepens toward the coping. Steepness 1 makes that top vertical.
+ * The roll is `transition`, the flat deck is `top`, and the back, underside, and end walls are `walls`.
+ */
+export function buildQuarterPipeGeometry(
+  points: Vec3[],
+  height = QUARTER_HEIGHT_M,
+  steepness = QUARTER_STEEPNESS,
+  closed = false,
+  reversed = false,
+  heights?: number[],
+) {
+  if (!points || points.length < 2) return null
+  const stations = quarterStations(points, closed, reversed)
+  if (!stations) return null
+  const profiles = quarterCornerHeights(points, height, heights).map((rise) => quarterProfile(rise, steepness))
+  const sampleCount = profiles[0].samples.length
+  if (profiles.some((profile) => profile.samples.length !== sampleCount)) return null
+  const walls = freshMesh()
+  const transition = freshMesh()
+  const top = freshMesh()
+  const tile = CURB_TILE_M
+  const coping = profiles[0].samples.findIndex(
+    (sample) => sample.s >= -1e-4 && Math.abs(sample.y - profiles[0].rise) < 1e-3,
+  )
+  const placed = stations.map((station, index) => profiles[index].samples.map((sample) => quarterPlace(station, sample)))
+  // Each corner keeps its own profile length, so a taller end is not squeezed into the short one.
+  // A corner's longer outside is absorbed on that segment, so it does not skew the rest of the roll.
+  const nominals = stations.map((station, stationIndex) => {
+    const samples = profiles[stationIndex].samples
+    const scale = Math.hypot(station.outward.x, station.outward.z)
+    const nominal = [0]
+    for (let step = 1; step < samples.length; step += 1) {
+      const prev = samples[step - 1]
+      const current = samples[step]
+      nominal.push(nominal[step - 1] + Math.hypot(scale * (current.s - prev.s), current.y - prev.y))
+    }
+    return nominal
+  })
+  const along = profiles[0].samples.map((_, sample) => {
+    const distance = [0]
+    for (let index = 1; index < stations.length; index += 1) {
+      distance.push(distance[index - 1] + placed[index - 1][sample].distanceTo(placed[index][sample]))
+    }
+    return distance
+  })
+  const loop = closed && stations.length >= 3
+  const segments = loop ? stations.length : stations.length - 1
+  const profileUv = (station: number, sample: number, wrapped: boolean, onCurve: boolean) => {
+    const nominal = nominals[station]
+    const samples = profiles[station].samples
+    const scale = Math.hypot(stations[station].outward.x, stations[station].outward.z)
+    const closedSpan =
+      nominal[nominal.length - 1] +
+      Math.hypot(scale * (samples[0].s - samples[samples.length - 1].s), samples[0].y - samples[samples.length - 1].y)
+    const raw = wrapped ? closedSpan : nominal[sample]
+    return (onCurve ? raw - nominal[Math.max(coping, 0)] : raw) / tile
+  }
+  const alongUv = (sample: number, station: number, from: number, closing: boolean) => {
+    if (!closing) return along[sample][station] / tile
+    return (along[sample][from] + placed[from][sample].distanceTo(placed[0][sample])) / tile
+  }
+
+  for (let index = 0; index < segments; index += 1) {
+    const next = (index + 1) % stations.length
+    const from = stations[index]
+    const to = stations[next]
+    const closing = next === 0
+    for (let sample = 0; sample < sampleCount; sample += 1) {
+      const following = (sample + 1) % sampleCount
+      const wrapped = following === 0
+      const fromSamples = profiles[index].samples
+      const toSamples = profiles[next].samples
+      const ds = (fromSamples[following].s - fromSamples[sample].s + (toSamples[following].s - toSamples[sample].s)) / 2
+      const dy = (fromSamples[following].y - fromSamples[sample].y + (toSamples[following].y - toSamples[sample].y)) / 2
+      const fromDir = from.outward.clone().setY(0).normalize()
+      const toDir = to.outward.clone().setY(0).normalize()
+      const outward = new THREE.Vector3(
+        (fromDir.x + toDir.x) * -dy,
+        ds * 2,
+        (fromDir.z + toDir.z) * -dy,
+      )
+      if (outward.lengthSq() < 1e-12) continue
+      outward.normalize()
+      const onCurve = coping >= 0 && sample >= coping && !wrapped
+      const deckTop = !wrapped && coping >= 1 && sample === coping - 1
+      const planar = (point: THREE.Vector3): [number, number] => [point.x / tile, point.z / tile]
+      const transitionUv = (station: number, sampleIndex: number): [number, number] => {
+        const ring = placed[index][sampleIndex].distanceTo(placed[next][sampleIndex])
+        const copingRing = placed[index][coping].distanceTo(placed[next][coping])
+        const extra = ring - copingRing
+        const along = station === index ? from.along - extra / 2 : from.along + copingRing + extra / 2
+        return [along / tile, profileUv(station, sampleIndex, false, true)]
+      }
+      const uv = (station: number, sampleIndex: number, closingEdge: boolean, wrappedEdge: boolean): [number, number] => {
+        if (deckTop || wrapped) return planar(placed[station][sampleIndex])
+        if (onCurve) return transitionUv(station, sampleIndex)
+        return [alongUv(sampleIndex, station, index, closingEdge), profileUv(station, sampleIndex, wrappedEdge, false)]
+      }
+      quadMesh(
+        onCurve ? transition : deckTop ? top : walls,
+        placed[index][sample],
+        placed[next][sample],
+        placed[next][following],
+        placed[index][following],
+        uv(index, sample, false, false),
+        uv(next, sample, closing, false),
+        uv(next, following, closing, wrapped),
+        uv(index, following, false, wrapped),
+        outward,
+      )
+    }
+  }
+
+  if (!loop && coping >= 0) {
+    const cap = (stationIndex: number, desired: THREE.Vector3) => {
+      const station = stations[stationIndex]
+      const samples = profiles[stationIndex].samples
+      const foot = quarterPlace(station, { s: 0, y: 0 })
+      const footUv: [number, number] = [0, 0]
+      const flatUv = (sample: QuarterSample): [number, number] => [sample.s / tile, sample.y / tile]
+      if (coping >= 2) {
+        quadMesh(
+          walls,
+          quarterPlace(station, samples[0]),
+          quarterPlace(station, samples[coping - 1]),
+          quarterPlace(station, samples[coping]),
+          foot,
+          flatUv(samples[0]),
+          flatUv(samples[coping - 1]),
+          flatUv(samples[coping]),
+          footUv,
+          desired,
+        )
+      }
+      for (let sample = coping; sample < samples.length - 1; sample += 1) {
+        addTri(
+          walls.positions,
+          walls.normals,
+          walls.uvs,
+          walls.tangents,
+          foot,
+          quarterPlace(station, samples[sample]),
+          quarterPlace(station, samples[sample + 1]),
+          footUv,
+          flatUv(samples[sample]),
+          flatUv(samples[sample + 1]),
+          desired,
+        )
+      }
+    }
+    const start = stations[1].origin.clone().sub(stations[0].origin)
+    start.y = 0
+    const end = stations[stations.length - 1].origin.clone().sub(stations[stations.length - 2].origin)
+    end.y = 0
+    cap(0, start.lengthSq() > 1e-8 ? start.normalize().negate() : new THREE.Vector3(0, 0, -1))
+    cap(stations.length - 1, end.lengthSq() > 1e-8 ? end.normalize() : new THREE.Vector3(0, 0, 1))
+  }
+
+  const wallsGeometry = finishMesh(walls)
+  const transitionGeometry = finishMesh(transition)
+  const topGeometry = finishMesh(top)
+  if (!wallsGeometry || !transitionGeometry || !topGeometry) return null
+  return { walls: wallsGeometry, transition: transitionGeometry, top: topGeometry }
+}
+
 /**
  * Closed concrete stair. The path is the foot of the tall side. Every step is the
  * same depth out to the side, and the treads step down from that side to the floor.

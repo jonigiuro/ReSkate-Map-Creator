@@ -5,6 +5,7 @@ import type {
   MeshGenerator,
   PlanterGenerator,
   StairsGenerator,
+  QuarterPipeGenerator,
   PlatformGenerator,
   RailGenerator,
   GrindObject,
@@ -32,7 +33,17 @@ import {
   TRAFFIC_WIDTH_M,
 } from './traffic'
 import { defaultLightTimes, LIGHT_TIMES, parsePropLight } from './lights'
-import { clampCurbWidth, clampStairHeight, clampStairSteps, clampStairWidth, planterOutlineFromLegacy } from './generators'
+import {
+  clampCurbWidth,
+  clampQuarterHeight,
+  clampQuarterSteepness,
+  clampStairHeight,
+  quarterRun,
+  clampStairSteps,
+  clampStairWidth,
+  planterOutlineFromLegacy,
+  QUARTER_STEEPNESS,
+} from './generators'
 import { STOP_NAME_MAX } from './travelPoints'
 
 const COLLISION_MODES = new Set<CollisionMode>(['none', 'triangle_mesh', 'hull'])
@@ -186,6 +197,35 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
       reversed: raw.reversed === true,
     }
     return stairs
+  }
+  if (raw.kind === 'quarter_pipe') {
+    const points = parsePoints(raw.points)
+    if (!points) return undefined
+    const width = raw.width
+    const height = raw.height
+    if (typeof width !== 'number' || typeof height !== 'number') return undefined
+    if (!Number.isFinite(width) || width < 0 || !Number.isFinite(height) || height <= 0) return undefined
+    const pipeHeight = clampQuarterHeight(height)
+    const pipeSteepness = clampQuarterSteepness(typeof raw.steepness === 'number' ? raw.steepness : QUARTER_STEEPNESS)
+    let heights: number[] | undefined
+    if (
+      Array.isArray(raw.heights) &&
+      raw.heights.length === points.length &&
+      raw.heights.every((value) => typeof value === 'number' && Number.isFinite(value))
+    ) {
+      heights = raw.heights.map((value) => clampQuarterHeight(value))
+    }
+    const pipe: QuarterPipeGenerator = {
+      kind: 'quarter_pipe',
+      points,
+      width: quarterRun(pipeHeight, pipeSteepness),
+      height: pipeHeight,
+      heights,
+      steepness: pipeSteepness,
+      closed: raw.closed === true,
+      reversed: raw.reversed === true,
+    }
+    return pipe
   }
   if (raw.kind !== 'curb') return undefined
   const points = parsePoints(raw.points)

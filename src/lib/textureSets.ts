@@ -157,7 +157,16 @@ export function generatorMaterialSlots(kind: string | undefined): { id: string; 
     ]
   }
   if (kind === 'rail') return [{ id: 'galvanized', label: 'Metal' }]
-  if (kind === 'platform' || kind === 'bank') return [{ id: 'striped_concrete', label: 'Surface' }]
+  if (kind === 'platform' || kind === 'bank') {
+    return [{ id: 'striped_concrete', label: 'Surface' }]
+  }
+  if (kind === 'quarter_pipe') {
+    return [
+      { id: 'transition', label: 'Transition' },
+      { id: 'top', label: 'Top' },
+      { id: 'walls', label: 'Back and sides' },
+    ]
+  }
   if (kind === 'stairs') {
     return [
       { id: 'striped_concrete', label: 'Steps' },

@@ -23,8 +23,17 @@ import {
   MIN_PLATFORM_HEIGHT_M,
   PLANTER_HEIGHT_M,
   PLATFORM_HEIGHT_M,
+  QUARTER_HEIGHT_M,
+  QUARTER_STEEPNESS,
   STAIR_HEIGHT_M,
   STAIR_WIDTH_M,
+  buildQuarterPipeGeometry,
+  clampQuarterHeight,
+  clampQuarterWidth,
+  quarterCornerHeights,
+  quarterPinLayout,
+  quarterRun,
+  quarterSteepnessForRun,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   buildCurbGeometry,
@@ -335,23 +344,39 @@ function TransformGizmo({
   const pointer = useRef({ x: 0, y: 0, ctrl: false })
   const axisRef = useRef<string | null>(null)
   const commitRef = useRef<() => void>(() => {})
+  const yielded = useRef(false)
   const gl = useThree((s) => s.gl)
   const camera = useThree((s) => s.camera)
   const scene = useThree((s) => s.scene)
 
   useEffect(() => {
     const el = gl.domElement
+    const release = () => {
+      const controls = controlsRef.current
+      if (yielded.current && controls) controls.enabled = true
+      yielded.current = false
+      gizmoOwnsPointer.current = false
+    }
     const onPointerDown = (event: PointerEvent) => {
       const controls = controlsRef.current
+      if (yielded.current && controls) {
+        controls.enabled = true
+        yielded.current = false
+      }
       if (event.button !== 0 || !controls?.enabled || controls.dragging) {
+        gizmoOwnsPointer.current = false
+        return
+      }
+      // The gizmo's picker is bigger than the arrows and covers nearby pins.
+      // A click on a pin selects it; an arrow that misses every pin still drags.
+      if (pointerOverEditHandle(event, camera, scene, el)) {
+        controls.enabled = false
+        yielded.current = true
         gizmoOwnsPointer.current = false
         return
       }
       controls.pointerHover(controls.getPointer(event))
       gizmoOwnsPointer.current = controls.axis != null
-    }
-    const onPointerUp = () => {
-      gizmoOwnsPointer.current = false
     }
     const onPointerMove = (event: PointerEvent) => {
       pointer.current.x = event.clientX
@@ -365,19 +390,19 @@ function TransformGizmo({
       if (event.type === 'keyup') reportVertexSnap(null)
     }
     el.addEventListener('pointerdown', onPointerDown, true)
-    el.addEventListener('pointerup', onPointerUp, true)
+    window.addEventListener('pointerup', release, true)
     window.addEventListener('pointermove', onPointerMove, true)
     window.addEventListener('keydown', onKey)
     window.addEventListener('keyup', onKey)
     return () => {
       el.removeEventListener('pointerdown', onPointerDown, true)
-      el.removeEventListener('pointerup', onPointerUp, true)
+      window.removeEventListener('pointerup', release, true)
       window.removeEventListener('pointermove', onPointerMove, true)
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onKey)
-      gizmoOwnsPointer.current = false
+      release()
     }
-  }, [gl, vertices])
+  }, [gl, camera, scene, vertices])
 
   useLayoutEffect(() => {
     const controls = controlsRef.current
@@ -510,6 +535,7 @@ function MeshItem({
   const rail = obj.generator?.kind === 'rail' ? obj.generator : null
   const planter = obj.generator?.kind === 'planter' ? obj.generator : null
   const stairs = obj.generator?.kind === 'stairs' ? obj.generator : null
+  const quarter = obj.generator?.kind === 'quarter_pipe' ? obj.generator : null
   const kit = obj.generator?.kind === 'kit' ? obj.generator : null
   const editing = solo && tool === 'select' && generator != null
   const editingPlatform = solo && tool === 'select' && platform != null
@@ -517,6 +543,7 @@ function MeshItem({
   const editingRail = solo && tool === 'select' && rail != null
   const editingPlanter = solo && tool === 'select' && planter != null
   const editingStairs = solo && tool === 'select' && stairs != null
+  const editingQuarter = solo && tool === 'select' && quarter != null
 
   useEffect(() => {
     if (!solo) {
@@ -598,6 +625,23 @@ function MeshItem({
     const pos = handle.end === 'top' ? pinLayout.top : handle.end === 'width' ? pinLayout.width : pinLayout.base
     g.position.set(pos[0], pos[1], pos[2])
   }, [stairs, handle])
+
+  useLayoutEffect(() => {
+    const g = handleRef.current
+    if (!g || handleDragging.current || !quarter || !handle) return
+    const layout = quarterPinLayout(
+      quarter.points,
+      quarter.steepness,
+      quarter.height,
+      quarter.closed === true,
+      quarter.reversed === true,
+      quarter.heights,
+    )
+    const pinLayout = layout[handle.index]
+    if (!pinLayout) return
+    const pos = handle.end === 'top' ? pinLayout.top : handle.end === 'width' ? pinLayout.width : pinLayout.base
+    g.position.set(pos[0], pos[1], pos[2])
+  }, [quarter, handle])
 
   function commitHeight() {
     if (!generator || !handle) return
@@ -846,6 +890,74 @@ function MeshItem({
     onPatch({ generator: { ...stairs, points } })
   }
 
+  function commitQuarter() {
+    if (!quarter || !handle) return
+    const g = handleRef.current
+    const point = quarter.points[handle.index]
+    if (!g || !point) return
+    if (handle.end === 'top') {
+      const heights = quarterCornerHeights(quarter.points, quarter.height, quarter.heights)
+      heights[handle.index] = clampQuarterHeight(g.position.y - point[1])
+      const edge = quarterPinLayout(
+        quarter.points,
+        quarter.steepness,
+        quarter.height,
+        quarter.closed === true,
+        quarter.reversed === true,
+        heights,
+      )[handle.index]?.top
+      if (edge) g.position.set(edge[0], edge[1], edge[2])
+      onPatch({ generator: { ...quarter, heights: heights.map((value) => round4(value)) } })
+      return
+    }
+    if (handle.end === 'width') {
+      const heights = quarterCornerHeights(quarter.points, quarter.height, quarter.heights)
+      const rise = heights[handle.index]
+      const width = clampQuarterWidth(Math.hypot(g.position.x - point[0], g.position.z - point[2]), rise)
+      const steepness = quarterSteepnessForRun(rise, width)
+      const edge = quarterPinLayout(
+        quarter.points,
+        steepness,
+        quarter.height,
+        quarter.closed === true,
+        quarter.reversed === true,
+        heights,
+      )[handle.index]?.width
+      if (edge) g.position.set(edge[0], edge[1], edge[2])
+      onPatch({
+        generator: {
+          ...quarter,
+          steepness: round4(steepness),
+          width: round4(quarterRun(quarter.height, steepness)),
+        },
+      })
+      return
+    }
+    const points = quarter.points.map((entry) => [entry[0], entry[1], entry[2]] as Vec3)
+    let x = g.position.x
+    let z = g.position.z
+    const keepApart = (anchor: Vec3) => {
+      const dx = x - anchor[0]
+      const dz = z - anchor[2]
+      if (Math.hypot(dx, dz) >= 0.05) return
+      const len = Math.hypot(dx, dz)
+      if (len < 1e-6) {
+        x = anchor[0] + 0.05
+        return
+      }
+      x = anchor[0] + (dx / len) * 0.05
+      z = anchor[2] + (dz / len) * 0.05
+    }
+    const previous = points[handle.index - 1]
+    const next = points[handle.index + 1]
+    if (previous) keepApart(previous)
+    if (next) keepApart(next)
+    const y = g.position.y
+    points[handle.index] = [round4(x), round4(y), round4(z)]
+    g.position.set(x, y, z)
+    onPatch({ generator: { ...quarter, points } })
+  }
+
   return (
     <>
       <group
@@ -925,6 +1037,7 @@ function MeshItem({
                   key={index}
                   position={[corner[0], platform.height, corner[2]]}
                   renderOrder={4}
+                  raycast={editHandleRaycast}
                   userData={{ platformPin: index }}
                   onPointerDown={(event) => {
                     event.stopPropagation()
@@ -1071,6 +1184,51 @@ function MeshItem({
               ))}
             {editingStairs && handle && <group ref={handleRef} />}
           </>
+        ) : quarter?.points ? (
+          <>
+            <QuarterPipeMesh
+              points={quarter.points}
+              height={quarter.height}
+              heights={quarter.heights}
+              steepness={quarter.steepness}
+              closed={quarter.closed === true}
+              reversed={quarter.reversed === true}
+              materials={obj.materials}
+            />
+            {editingQuarter &&
+              quarterPinLayout(
+                quarter.points,
+                quarter.steepness,
+                quarter.height,
+                quarter.closed === true,
+                quarter.reversed === true,
+                quarter.heights,
+              ).map((pin, index) => (
+                <group key={index}>
+                  <StairPinRod from={pin.base} to={pin.top} />
+                  <StairPinRod from={pin.base} to={pin.width} />
+                  <CurbHandleSphere
+                    position={pin.base}
+                    color={handle?.index === index && handle.end === 'bottom' ? '#fff4d6' : '#ffb703'}
+                    handle={{ index, end: 'bottom' }}
+                    onPick={() => setHandle({ index, end: 'bottom' })}
+                  />
+                  <CurbHandleSphere
+                    position={pin.top}
+                    color={handle?.index === index && handle.end === 'top' ? '#fff4d6' : '#ff6b00'}
+                    handle={{ index, end: 'top' }}
+                    onPick={() => setHandle({ index, end: 'top' })}
+                  />
+                  <CurbHandleSphere
+                    position={pin.width}
+                    color={handle?.index === index && handle.end === 'width' ? '#fff4d6' : '#2ec4b6'}
+                    handle={{ index, end: 'width' }}
+                    onPick={() => setHandle({ index, end: 'width' })}
+                  />
+                </group>
+              ))}
+            {editingQuarter && handle && <group ref={handleRef} />}
+          </>
         ) : kit ? (
           <KitRun
             assetFile={kit.assetFile}
@@ -1195,6 +1353,20 @@ function MeshItem({
           vertices
           vertexExclude={ref}
           onCommit={commitStairs}
+          onGestureStart={onGestureStart}
+          onGestureEnd={onGestureEnd}
+        />
+      )}
+      {editingQuarter && handle && (
+        <TransformGizmo
+          target={handleRef}
+          dragging={handleDragging}
+          mode="translate"
+          space="world"
+          snap={snap}
+          vertices
+          vertexExclude={ref}
+          onCommit={commitQuarter}
           onGestureStart={onGestureStart}
           onGestureEnd={onGestureEnd}
         />
@@ -2165,6 +2337,8 @@ function CurbEditPins({
   )
 }
 
+const _handleWorld = new THREE.Vector3()
+
 function CurbHandleSphere({
   position,
   color,
@@ -2176,20 +2350,37 @@ function CurbHandleSphere({
   handle: { index: number; end: 'bottom' | 'top' | 'width' }
   onPick: () => void
 }) {
+  const hit = useRef<THREE.Mesh>(null)
+  const camera = useThree((s) => s.camera)
+  const fit = () => {
+    const mesh = hit.current
+    if (!mesh) return
+    const dist = Math.max(camera.position.distanceTo(mesh.getWorldPosition(_handleWorld)), 0.5)
+    mesh.scale.setScalar(THREE.MathUtils.clamp(dist * 0.012, 0.16, 0.42))
+  }
+  useLayoutEffect(fit)
+  useFrame(fit)
   return (
-    <mesh
-      position={position}
-      renderOrder={4}
-      userData={{ curbHandle: handle }}
-      onPointerDown={(event) => {
-        event.stopPropagation()
-        if (event.button !== 0 || gizmoOwnsPointer.current) return
-        onPick()
-      }}
-    >
-      <sphereGeometry args={[0.11, 16, 12]} />
-      <meshBasicMaterial color={color} toneMapped={false} depthTest={false} />
-    </mesh>
+    <group position={position}>
+      <mesh renderOrder={4} raycast={() => {}}>
+        <sphereGeometry args={[0.11, 16, 12]} />
+        <meshBasicMaterial color={color} toneMapped={false} depthTest={false} />
+      </mesh>
+      <mesh
+        ref={hit}
+        visible={false}
+        raycast={editHandleRaycast}
+        userData={{ curbHandle: handle }}
+        onPointerDown={(event) => {
+          event.stopPropagation()
+          if (event.button !== 0 || gizmoOwnsPointer.current) return
+          onPick()
+        }}
+      >
+        <sphereGeometry args={[1, 12, 8]} />
+        <meshBasicMaterial />
+      </mesh>
+    </group>
   )
 }
 
@@ -2729,6 +2920,66 @@ function StairsMesh({
         <SlotMaterial setId={materials?.concrete} ghost={ghost} fallback="concrete" />
       </mesh>
     </Suspense>
+  )
+}
+
+function QuarterPipeMesh({
+  points,
+  height,
+  heights,
+  steepness,
+  closed,
+  reversed,
+  materials,
+  ghost,
+}: {
+  points: Vec3[]
+  height: number
+  heights?: number[]
+  steepness: number
+  closed?: boolean
+  reversed?: boolean
+  materials?: Record<string, string>
+  ghost?: boolean
+}) {
+  const parts = useMemo(
+    () => buildQuarterPipeGeometry(points, height, steepness, closed === true, reversed === true, heights),
+    [points, height, steepness, closed, reversed, heights],
+  )
+  useEffect(
+    () => () => {
+      parts?.walls?.dispose()
+      parts?.transition?.dispose()
+      parts?.top?.dispose()
+    },
+    [parts],
+  )
+  if (!parts) return null
+  return (
+    <Suspense fallback={null}>
+      <mesh geometry={parts.transition} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.transition ?? materials?.curve} ghost={ghost} fallback="platform" />
+      </mesh>
+      <mesh geometry={parts.top} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.top ?? materials?.striped_concrete} ghost={ghost} fallback="platform" />
+      </mesh>
+      <mesh geometry={parts.walls} castShadow={!ghost} receiveShadow={!ghost}>
+        <SlotMaterial setId={materials?.walls ?? materials?.striped_concrete} ghost={ghost} fallback="platform" />
+      </mesh>
+    </Suspense>
+  )
+}
+
+function QuarterGhost({ pins, to }: { pins: Vec3[]; to: THREE.Vector3 }) {
+  const y = to.y < 0.02 ? 0 : to.y
+  const cursor: Vec3 = [to.x, y, to.z]
+  const last = pins[pins.length - 1]
+  if (curbSegmentTooShort(last, cursor)) return null
+  const preview = pins.length >= 2 ? [pins[pins.length - 2], last, cursor] : [last, cursor]
+  return (
+    <group userData={{ placementGhost: true }}>
+      <QuarterPipeMesh points={preview} height={QUARTER_HEIGHT_M} steepness={QUARTER_STEEPNESS} ghost />
+    </group>
   )
 }
 
@@ -3458,6 +3709,9 @@ function SceneContents(props: Props) {
       {generator?.kind === 'stairs' && pins.length > 0 && generatorPreview && (
         <StairsGhost pins={pins} to={generatorPreview} />
       )}
+      {generator?.kind === 'quarter_pipe' && pins.length > 0 && generatorPreview && (
+        <QuarterGhost pins={pins} to={generatorPreview} />
+      )}
       {generator?.kind === 'traffic' && pins.length > 0 && generatorPreview && (
         <TrafficGhost pins={pins} to={generatorPreview} lane={generator.lane} />
       )}
@@ -3543,8 +3797,28 @@ function isEditHandle(object: THREE.Object3D) {
   let current: THREE.Object3D | null = object
   while (current) {
     const data = current.userData
-    if (data.curbHandle != null || data.platformPin != null || data.bankPin != null) return true
+    if (data.curbHandle != null || data.platformPin != null || data.bankPin != null || data.trafficPin != null) return true
     current = current.parent
+  }
+  return false
+}
+
+const handleRaycaster = new THREE.Raycaster()
+const handlePointer = new THREE.Vector2()
+
+function pointerOverEditHandle(
+  event: PointerEvent,
+  camera: THREE.Camera,
+  scene: THREE.Object3D,
+  element: HTMLElement,
+) {
+  const rect = element.getBoundingClientRect()
+  handlePointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+  handlePointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+  handleRaycaster.setFromCamera(handlePointer, camera)
+  const hits = handleRaycaster.intersectObject(scene, true)
+  for (let i = 0; i < hits.length; i++) {
+    if (isEditHandle(hits[i].object)) return true
   }
   return false
 }

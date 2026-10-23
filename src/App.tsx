@@ -18,10 +18,15 @@ import {
   DEFAULT_STAIR_STEPS,
   PLANTER_HEIGHT_M,
   PLATFORM_HEIGHT_M,
+  QUARTER_HEIGHT_M,
+  QUARTER_STEEPNESS,
+  QUARTER_WIDTH_M,
   STAIR_HEIGHT_M,
   STAIR_WIDTH_M,
   clampCurbWidth,
   clampStairSteps,
+  quarterCornerHeights,
+  quarterRun,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
   bankFrame,
@@ -680,6 +685,13 @@ export default function App() {
     setActiveGenerator((current) => (current?.kind === 'stairs' ? null : { kind: 'stairs' }))
   }
 
+  function toggleQuarterPipe() {
+    setActivePiece(null)
+    setSelection([])
+    clearPins()
+    setActiveGenerator((current) => (current?.kind === 'quarter_pipe' ? null : { kind: 'quarter_pipe' }))
+  }
+
   function toggleTraffic(lane: TrafficLane) {
     setActivePiece(null)
     setSelection([])
@@ -1199,6 +1211,75 @@ export default function App() {
       }
     } else {
       setStatus('Pinned the stair start')
+    }
+    setPins(nextPins)
+    history.remember(before)
+    setError(null)
+  }
+
+  function clickQuarterPipe(point: THREE.Vector3) {
+    const y = point.y < 0.02 ? 0 : point.y
+    const nextPoint: [number, number, number] = [round4(point.x), round4(y), round4(point.z)]
+    const prevPins = history.pinsRef.current
+    const previous = prevPins.at(-1)
+    if (previous && curbSegmentTooShort(previous, nextPoint)) {
+      setStatus('That quarter pipe section is too short.')
+      return
+    }
+    const before = history.checkpoint()
+    const nextPins = [...prevPins, nextPoint]
+    history.pinsRef.current = nextPins
+    if (previous) {
+      const prev = history.sceneRef.current
+      const origin = curbOrigin(nextPins)
+      const local = curbLocalPoints(nextPins, origin)
+      const strokeId = history.strokeIdRef.current
+      const existing = prev.objects.find(
+        (obj): obj is MeshObject =>
+          obj.kind === 'mesh' && obj.id === strokeId && obj.generator?.kind === 'quarter_pipe',
+      )
+      const kept = existing?.generator?.kind === 'quarter_pipe' ? existing.generator : null
+      const keptHeights = kept ? quarterCornerHeights(kept.points, kept.height, kept.heights) : null
+      const generator = {
+        kind: 'quarter_pipe' as const,
+        points: local,
+        height: kept ? kept.height : QUARTER_HEIGHT_M,
+        steepness: kept ? kept.steepness : QUARTER_STEEPNESS,
+        width: kept ? quarterRun(kept.height, kept.steepness) : QUARTER_WIDTH_M,
+        heights: keptHeights ? [...keptHeights, keptHeights[keptHeights.length - 1]].map((value) => round4(value)) : undefined,
+        closed: kept ? kept.closed === true : false,
+        reversed: kept ? kept.reversed === true : false,
+      }
+      if (existing) {
+        applyScene({
+          ...prev,
+          objects: prev.objects.map((obj) =>
+            obj.id === existing.id && obj.kind === 'mesh'
+              ? { ...obj, position: origin, rotation: [0, 0, 0], scale: [1, 1, 1], generator }
+              : obj,
+          ),
+        })
+        setStatus(`Extended quarter pipe to ${curbRunLength(nextPins)} m`)
+      } else {
+        const count = prev.objects.filter((obj) => obj.kind === 'mesh' && obj.generator?.kind === 'quarter_pipe').length
+        const id = uid('mesh')
+        const obj: MeshObject = {
+          id,
+          kind: 'mesh',
+          libraryId: 'generator_quarter_pipe',
+          name: `QuarterPipe_${count + 1}`,
+          position: origin,
+          rotation: [0, 0, 0],
+          scale: [1, 1, 1],
+          generator,
+          sk8: { collision_mode: 'triangle_mesh', hide_from_pause_map: false },
+        }
+        history.strokeIdRef.current = id
+        applyScene({ ...prev, objects: [...prev.objects, obj] })
+        setStatus(`Added quarter pipe, ${curbRunLength(nextPins)} m, ${QUARTER_HEIGHT_M} m tall`)
+      }
+    } else {
+      setStatus('Pinned the quarter pipe start')
     }
     setPins(nextPins)
     history.remember(before)
@@ -1788,7 +1869,7 @@ export default function App() {
           <h2>Library</h2>
           <p className="hint">
             {categoryPath[0] === 'generators'
-              ? 'Click Curbs, Rails, Stairs, or Banks to draw a run. Platforms and planters take a corner on each click. Escape leaves the tool.'
+              ? 'Click Curbs, Rails, Stairs, Banks, or Quarter pipes to draw a run. Platforms and planters take a corner on each click. Escape leaves the tool.'
               : categoryPath[0] === 'interactive'
                 ? 'Click a bus stop or a fast-travel point, then click the map. It stands on the ground. Right-click turns it 90°. Escape leaves the tool.'
                 : categoryPath[0] === 'traffic'
@@ -1834,7 +1915,7 @@ export default function App() {
                   <span>
                     <strong>Generators</strong>
                     <small>
-                      {`${(catalog.kits ?? []).length + 5} generators`}
+                      {`${(catalog.kits ?? []).length + 7} generators`}
                     </small>
                   </span>
                 </button>
@@ -1965,6 +2046,22 @@ export default function App() {
                   <span>
                     <strong>Stairs</strong>
                     <small>{activeGenerator?.kind === 'stairs' ? 'Click the map to draw' : 'Click to draw'}</small>
+                  </span>
+                </button>
+              </li>
+            )}
+            {categoryPath[0] === 'generators' && (
+              <li>
+                <button
+                  type="button"
+                  className={activeGenerator?.kind === 'quarter_pipe' ? 'lib active' : 'lib'}
+                  aria-pressed={activeGenerator?.kind === 'quarter_pipe'}
+                  onClick={toggleQuarterPipe}
+                >
+                  <span className="swatch" style={{ background: '#9aa7b2' }} />
+                  <span>
+                    <strong>Quarter pipes</strong>
+                    <small>{activeGenerator?.kind === 'quarter_pipe' ? 'Click the map to draw' : 'Click to draw'}</small>
                   </span>
                 </button>
               </li>
@@ -2264,6 +2361,8 @@ export default function App() {
                 setStatus('Drag a sphere sideways to move that corner. Up and down sets that corner only.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'stairs') {
                 setStatus('Drag a pin to move the foot of the tall side. The steps rise there and run down toward the outer edge. A top pin sets the height of the whole flight. A side pin sets how far they run.')
+              } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'quarter_pipe') {
+                setStatus('Drag a gold pin to move the coping. An orange pin sets the height of that corner. A teal pin sets how far the whole pipe rolls out.')
               } else if (picked?.kind === 'mesh' && picked.lightRig) {
                 setStatus('X looks the lamp up and down, from -360 to 360 degrees. The housing stays put.')
               } else if (picked?.kind === 'mesh' && picked.generator?.kind === 'kit') {
@@ -2301,6 +2400,7 @@ export default function App() {
               else if (activeGenerator?.kind === 'bank') clickBank(point)
               else if (activeGenerator?.kind === 'planter') clickPlanter(point)
               else if (activeGenerator?.kind === 'stairs') clickStairs(point)
+              else if (activeGenerator?.kind === 'quarter_pipe') clickQuarterPipe(point)
               else if (activeGenerator?.kind === 'rail') clickRail(point)
               else clickCurb(point)
             }}
@@ -2327,6 +2427,8 @@ export default function App() {
               <span>Click the map to drop a corner. The third click builds the planter, and another click adds a corner. Each corner keeps its own base and rim. Escape leaves Planters.</span>
             ) : activeGenerator?.kind === 'stairs' ? (
               <span>Click the map to drop a pin at the foot of the tall side. The next click starts the stairs, and another click adds a section. The steps rise there and run down toward the outer edge, so a pin on the bottom of a platform puts the tall side against the wall. Escape leaves Stairs.</span>
+            ) : activeGenerator?.kind === 'quarter_pipe' ? (
+              <span>Click the map to drop a pin at the foot of the coping. The next click starts the quarter pipe, and another click extends it. The curve rolls out from that line. A 50 cm flat sits behind the coping. Escape leaves Quarter pipes.</span>
             ) : activeGenerator?.kind === 'kit' ? (
               <span>
                 Click the map to drop a pin. The next clicks extend {activeGenerator.label} and turn the corner. Escape leaves the tool.
@@ -2440,6 +2542,8 @@ export default function App() {
                         ? 'PLANTER'
                         : selected.generator?.kind === 'stairs'
                           ? 'STAIRS'
+                          : selected.generator?.kind === 'quarter_pipe'
+                            ? 'QUARTER PIPE'
                       : selected.generator?.kind === 'kit'
                         ? 'KIT'
                         : 'PLACEHOLDER MESH'}
@@ -2634,6 +2738,41 @@ export default function App() {
                     className="ghost"
                     onClick={() => {
                       if (selected.generator?.kind !== 'stairs') return
+                      patchObject(selected.id, {
+                        generator: { ...selected.generator, reversed: !selected.generator.reversed },
+                      })
+                    }}
+                  >
+                    Reverse
+                  </button>
+                  {selected.generator.closed && selected.generator.points.length < 3 && (
+                    <p className="hint">Add a third pin. Two pins cannot close into a loop.</p>
+                  )}
+                </>
+              )}
+              {selected.generator?.kind === 'quarter_pipe' && (
+                <>
+                  <p className="hint">
+                    Drag a gold pin to move the coping. Drag an orange pin to set that corner's height. The other corners stay put. Drag a teal pin to set how far the whole pipe rolls out. The flat top behind the coping stays 50 cm.
+                  </p>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={selected.generator.closed === true}
+                      onChange={(event) => {
+                        if (selected.generator?.kind !== 'quarter_pipe') return
+                        patchObject(selected.id, {
+                          generator: { ...selected.generator, closed: event.target.checked },
+                        })
+                      }}
+                    />
+                    Closed
+                  </label>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      if (selected.generator?.kind !== 'quarter_pipe') return
                       patchObject(selected.id, {
                         generator: { ...selected.generator, reversed: !selected.generator.reversed },
                       })
@@ -3656,6 +3795,12 @@ function duplicateObject(
                 ? {
                     ...source.generator,
                     points: source.generator.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+                  }
+              : source.generator.kind === 'quarter_pipe'
+                ? {
+                    ...source.generator,
+                    points: source.generator.points.map((point) => [point[0], point[1], point[2]] as [number, number, number]),
+                    heights: source.generator.heights?.map((value) => value),
                   }
             : {
                 ...source.generator,
