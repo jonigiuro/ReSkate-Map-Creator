@@ -21,6 +21,7 @@ import type {
   LightTimes,
   TrafficLane,
   TrafficLaneObject,
+  SceneLayer,
   TravelPointObject,
 } from '../types/scene'
 import { GRIND_SURFACE_LABELS } from '../types/scene'
@@ -470,15 +471,50 @@ function parseLight(raw: Record<string, unknown>, index: number): LightObject {
   }
 }
 
+function layerState(raw: Record<string, unknown>) {
+  const state: { layerId?: string; visible?: false; exported?: false } = {}
+  if (typeof raw.layerId === 'string' && raw.layerId) state.layerId = raw.layerId
+  if (raw.visible === false) state.visible = false
+  if (raw.exported === false) state.exported = false
+  return state
+}
+
+function parseLayers(value: unknown): SceneLayer[] {
+  if (!Array.isArray(value)) return []
+  const layers: SceneLayer[] = []
+  const ids = new Set<string>()
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.id !== 'string' || !item.id || ids.has(item.id)) continue
+    if (typeof item.name !== 'string' || !item.name.trim()) continue
+    ids.add(item.id)
+    layers.push({
+      id: item.id,
+      name: item.name.trim(),
+      visible: item.visible !== false,
+      exported: item.exported !== false,
+    })
+  }
+  return layers
+}
+
 function parseObject(value: unknown, index: number): SceneObject {
   if (!isRecord(value)) throw new Error(`Object ${index + 1} is not an object.`)
-  if (value.kind === 'mesh') return parseMesh(value, index)
-  if (value.kind === 'grind') return parseGrind(value, index)
-  if (value.kind === 'spawn') return parseSpawn(value, index)
-  if (value.kind === 'travel_point') return parseTravelPoint(value, index)
-  if (value.kind === 'traffic_lane') return parseTrafficLane(value, index)
-  if (value.kind === 'light') return parseLight(value, index)
-  throw new Error(`Object ${index + 1} has an unknown kind.`)
+  const object =
+    value.kind === 'mesh'
+      ? parseMesh(value, index)
+      : value.kind === 'grind'
+        ? parseGrind(value, index)
+        : value.kind === 'spawn'
+          ? parseSpawn(value, index)
+          : value.kind === 'travel_point'
+            ? parseTravelPoint(value, index)
+            : value.kind === 'traffic_lane'
+              ? parseTrafficLane(value, index)
+              : value.kind === 'light'
+                ? parseLight(value, index)
+                : undefined
+  if (!object) throw new Error(`Object ${index + 1} has an unknown kind.`)
+  return { ...object, ...layerState(value) }
 }
 
 export function parseSceneFile(data: unknown): MapScene {
@@ -489,12 +525,20 @@ export function parseSceneFile(data: unknown): MapScene {
   if (objects.filter((obj) => obj.kind === 'spawn').length > 1) {
     throw new Error('The scene has more than one spawn.')
   }
+  const layers = parseLayers(data.layers)
+  const layerIds = new Set(layers.map((layer) => layer.id))
   return {
     version: 1,
     units: 'meters',
     upAxis: 'Y',
     note: typeof data.note === 'string' ? data.note : '',
-    objects,
+    ...(layers.length > 0 ? { layers } : {}),
+    objects: objects.map((object) => {
+      if (!object.layerId || layerIds.has(object.layerId)) return object
+      const next = { ...object }
+      delete next.layerId
+      return next
+    }),
   }
 }
 

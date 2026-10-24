@@ -180,7 +180,22 @@ export interface PropLight {
   lamps: PropLamp[]
 }
 
-export interface MeshObject {
+/** A named group in the outliner. The eye hides it in the view. Export leaves it out of the blend. */
+export interface SceneLayer {
+  id: string
+  name: string
+  visible: boolean
+  exported: boolean
+}
+
+/** Optional membership shared by every scene object. Absent means shown and exported. */
+interface LayerMembership {
+  layerId?: string
+  visible?: boolean
+  exported?: boolean
+}
+
+export interface MeshObject extends LayerMembership {
   id: string
   kind: 'mesh'
   libraryId: LibraryId
@@ -212,7 +227,7 @@ export interface UvFrame {
   rotation?: number
 }
 
-export interface GrindObject {
+export interface GrindObject extends LayerMembership {
   id: string
   kind: 'grind'
   name: string
@@ -224,7 +239,7 @@ export interface GrindObject {
 /** Native NPC route. Vehicle and bus drive one way. Pedestrians can walk both ways. */
 export type TrafficLane = 'vehicle' | 'bus' | 'pedestrian'
 
-export interface TrafficLaneObject {
+export interface TrafficLaneObject extends LayerMembership {
   id: string
   kind: 'traffic_lane'
   /** Vehicle is cars. Bus is the bus lane. Pedestrian is people on foot. */
@@ -250,7 +265,7 @@ export interface TrafficLaneObject {
   stairs: boolean
 }
 
-export interface SpawnObject {
+export interface SpawnObject extends LayerMembership {
   id: string
   kind: 'spawn'
   name: 'spawn'
@@ -263,7 +278,7 @@ export interface SpawnObject {
  * Bus stop or bare fast-travel point. Export is an Empty named TravelPoint.
  * Local −Z is the facing that becomes the empty's +Y in Blender.
  */
-export interface TravelPointObject {
+export interface TravelPointObject extends LayerMembership {
   id: string
   kind: 'travel_point'
   /** Pause-map label. The game keeps about 35 characters. */
@@ -290,7 +305,7 @@ export type AreaLightMode = 'area' | 'spotlight'
  * Direct light. Export is a Blender point, spot, or area lamp.
  * Local −Y is the beam, which becomes the lamp's −Z in Blender.
  */
-export interface LightObject {
+export interface LightObject extends LayerMembership {
   id: string
   kind: 'light'
   light: LightKind
@@ -326,6 +341,7 @@ export interface MapScene {
   units: 'meters'
   upAxis: 'Y'
   note: string
+  layers?: SceneLayer[]
   objects: SceneObject[]
 }
 

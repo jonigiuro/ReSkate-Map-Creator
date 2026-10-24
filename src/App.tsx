@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { flushSync } from 'react-dom'
 import * as THREE from 'three'
 import { Viewport, type EditorTool, type TransformMode } from './components/Viewport'
+import { LayerOutliner } from './components/LayerOutliner'
 import {
   BUILTIN_LIBRARY_ROOTS,
   EMPTY_CATALOG,
@@ -52,6 +53,7 @@ import { preloadSceneModels, sceneModelFiles } from './lib/preloadModels'
 import { ensureThumbnail, mapPool, missingPreviews, type ThumbTarget } from './lib/thumbnails'
 import { omitMissingAssets, type RemovedAsset } from './lib/missingAssets'
 import { parseSceneFile, sceneFileName } from './lib/sceneFile'
+import { objectExported, setObjectExported, setObjectLayer, setObjectShown } from './lib/layers'
 import { SURFACE_SOUNDS } from './lib/surfaceSounds'
 import {
   TRAFFIC_SPACING_M,
@@ -292,6 +294,90 @@ export default function App() {
       ),
     })
     if (before) history.remember(before)
+  }
+
+  function replaceObject(id: string, next: SceneObject) {
+    const prev = history.sceneRef.current
+    const current = prev.objects.find((object) => object.id === id)
+    if (!current || current === next) return
+    const before = history.checkpoint()
+    applyScene({
+      ...prev,
+      objects: prev.objects.map((object) => (object.id === id ? next : object)),
+    })
+    history.remember(before)
+  }
+
+  function addLayer() {
+    const before = history.checkpoint()
+    const prev = history.sceneRef.current
+    const layers = prev.layers ?? []
+    const names = new Set(layers.map((layer) => layer.name))
+    let index = layers.length + 1
+    let name = `Layer ${index}`
+    while (names.has(name)) {
+      index += 1
+      name = `Layer ${index}`
+    }
+    applyScene({
+      ...prev,
+      layers: [...layers, { id: uid('layer'), name, visible: true, exported: true }],
+    })
+    history.remember(before)
+  }
+
+  function renameLayer(id: string, name: string) {
+    const prev = history.sceneRef.current
+    const layers = prev.layers ?? []
+    if (!layers.some((layer) => layer.id === id && layer.name !== name)) return
+    const before = history.checkpoint()
+    applyScene({
+      ...prev,
+      layers: layers.map((layer) => (layer.id === id ? { ...layer, name } : layer)),
+    })
+    history.remember(before)
+  }
+
+  function toggleLayer(id: string, flag: 'visible' | 'exported') {
+    const prev = history.sceneRef.current
+    const layers = prev.layers ?? []
+    if (!layers.some((layer) => layer.id === id)) return
+    const before = history.checkpoint()
+    applyScene({
+      ...prev,
+      layers: layers.map((layer) => (layer.id === id ? { ...layer, [flag]: !layer[flag] } : layer)),
+    })
+    history.remember(before)
+  }
+
+  function toggleObjectFlag(id: string, flag: 'visible' | 'exported') {
+    const current = history.sceneRef.current.objects.find((object) => object.id === id)
+    if (!current) return
+    replaceObject(
+      id,
+      flag === 'visible' ? setObjectShown(current, current.visible === false) : setObjectExported(current, current.exported === false),
+    )
+  }
+
+  function assignLayer(objectIds: readonly string[], layerId: string | undefined) {
+    const prev = history.sceneRef.current
+    if (layerId && !(prev.layers ?? []).some((layer) => layer.id === layerId)) return
+    const wanted = new Set(objectIds)
+    let count = 0
+    const objects = prev.objects.map((object) => {
+      if (!wanted.has(object.id)) return object
+      const next = setObjectLayer(object, layerId)
+      if (next !== object) count += 1
+      return next
+    })
+    if (count === 0) return
+    const before = history.checkpoint()
+    applyScene({ ...prev, objects })
+    history.remember(before)
+    if (count > 1) {
+      const layerName = layerId ? prev.layers?.find((layer) => layer.id === layerId)?.name : undefined
+      setStatus(layerName ? `Moved ${count} objects to ${layerName}` : `Took ${count} objects out of their layers`)
+    }
   }
 
   function deleteSelected() {
@@ -1388,8 +1474,19 @@ export default function App() {
     }
     const size = Number(chunkSize)
     const chunkM = Number.isFinite(size) && size > 0 ? size : 20
+    const objects = scene.objects.filter((object) => objectExported(object, scene.layers))
+    if (!objects.some((object) => object.kind === 'spawn')) {
+      setError(
+        scene.objects.some((object) => object.kind === 'spawn')
+          ? 'Spawn is turned off for export.'
+          : 'Scene needs a spawn empty.',
+      )
+      setStatus(null)
+      return
+    }
     const payload = {
       ...scene,
+      objects,
       exportOptimize: optimizeExport,
       exportChunkM: chunkM,
     }
@@ -2470,6 +2567,23 @@ export default function App() {
 
         <aside className="panel inspector">
           <h2>Inspector</h2>
+          <LayerOutliner
+            scene={scene}
+            selectedIds={selectedIds}
+            onSelect={(ids) => {
+              setSelection(ids)
+              setTool('select')
+              if (ids.length > 1) {
+                setStatus('Move, rotate, and scale use the center of the selection. Select one piece to edit its pins.')
+              }
+            }}
+            onAddLayer={addLayer}
+            onRenameLayer={renameLayer}
+            onToggleLayer={toggleLayer}
+            onToggleObject={toggleObjectFlag}
+            onAssign={assignLayer}
+          />
+          <div className="inspector-rest">
           {selectedIds.length > 1 && (
             <div className="fields">
               <p className="badge">{selectedIds.length} SELECTED</p>
@@ -3315,7 +3429,7 @@ export default function App() {
               </p>
             </div>
           )}
-
+          </div>
         </aside>
       </div>
       </div>

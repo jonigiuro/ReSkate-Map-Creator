@@ -74,6 +74,7 @@ import {
 import { lightKindFromPiece, lightPlacement, lightPreviewIntensity, parsePropLight } from '../lib/lights'
 import { BUS_STOP_PIECE, isInteractivePiece, travelGuide } from '../lib/travelPoints'
 import { isDecalAsset } from '../lib/assetLibrary'
+import { objectVisible } from '../lib/layers'
 import { buildNextPickingBound, collectPickingBounds, installAcceleratedRaycast } from '../lib/pickingBounds'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
@@ -3605,6 +3606,7 @@ function SceneContents(props: Props) {
       ? (scene.objects.find((obj): obj is LightObject => obj.id === selectedIds[0] && obj.kind === 'light') ??
         null)
       : null
+  const shownLight = activeLight && objectVisible(activeLight, scene.layers) ? activeLight : null
   const multi = selectedIds.length > 1
   const previewY = previewHit ? surfaceHeight(previewHit.point, previewHit.normal) : 0
   const previewRotation = placingInteractive
@@ -3634,11 +3636,12 @@ function SceneContents(props: Props) {
       <hemisphereLight args={['#d5e2ee', '#3a332c', 0.28]} />
       <Sun />
       {/* These two stay mounted. A new light per lamp would rebuild every material shader. */}
-      <ActiveLightPreview obj={activeLight} />
+      <ActiveLightPreview obj={shownLight} />
 
       <Ground onGroundClick={onGroundClick} />
 
       {scene.objects.map((obj) => {
+        if (!objectVisible(obj, scene.layers)) return null
         if (obj.kind === 'mesh') {
           return (
             <MeshItemView
