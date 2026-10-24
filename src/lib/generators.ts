@@ -4,7 +4,7 @@ import type { BankGenerator } from '../types/scene'
 /** Upright curb. Width is the full width across the curb. */
 export const CURB_HEIGHT_M = 0.5
 /** Concrete band under the metal edge. The rest of the curb is the brick body. */
-export const CURB_CAP_M = 0.1
+export const CURB_CAP_M = 0.2
 export const CURB_WIDTH_M = 0.5
 /** Thinnest curb the inspector and a saved map will keep. */
 export const MIN_CURB_WIDTH_M = 0.1
@@ -352,7 +352,7 @@ function curbGeometry(mesh: CurbBuffers) {
 }
 
 /**
- * One curb from a centreline. The top 10 cm is the concrete cap; everything
+ * One curb from a centreline. The top 20 cm is the concrete cap; everything
  * under that is the brick body. Points are the base, tops the top edge, both local.
  * `overhang` is how much wider the concrete is than the bricks, split across both sides.
  */
@@ -2633,6 +2633,14 @@ export function buildStairsGeometry(
 
 /** Round rail along a centreline. Eight flat faces, one of them on top when the run is level. */
 export const RAIL_RADIUS_M = 0.05
+export const MIN_RAIL_RADIUS_M = 0.01
+export const MAX_RAIL_RADIUS_M = 0.5
+
+/** Thickness of the top pipe. Posts stay at their own radius. */
+export function clampRailRadius(value: number, fallback = RAIL_RADIUS_M) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(MAX_RAIL_RADIUS_M, Math.max(MIN_RAIL_RADIUS_M, value))
+}
 /** Vertical post under each pin. Thinner than the rail it holds up. */
 export const RAIL_POST_RADIUS_M = 0.03
 /** How far the pipe runs past the first and last post, along the rail. */

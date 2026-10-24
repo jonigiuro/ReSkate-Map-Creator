@@ -36,6 +36,7 @@ import { defaultLightTimes, LIGHT_TIMES, parsePropLight } from './lights'
 import {
   clampCurbOverhang,
   clampCurbWidth,
+  clampRailRadius,
   clampQuarterHeight,
   clampQuarterSteepness,
   clampStairHeight,
@@ -145,7 +146,7 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
     const points = parsePoints(raw.points)
     if (!points) return undefined
     const radius = raw.radius
-    if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) return undefined
+    if (typeof radius !== 'number' || !Number.isFinite(radius)) return undefined
     let tops: number[] | undefined
     if (
       Array.isArray(raw.tops) &&
@@ -154,7 +155,7 @@ function parseGenerator(raw: unknown): MeshGenerator | undefined {
     ) {
       tops = raw.tops
     }
-    const rail: RailGenerator = { kind: 'rail', points, radius, tops }
+    const rail: RailGenerator = { kind: 'rail', points, radius: clampRailRadius(radius), tops }
     return rail
   }
   if (raw.kind === 'planter') {

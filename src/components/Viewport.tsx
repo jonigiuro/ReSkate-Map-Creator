@@ -74,6 +74,7 @@ import {
 import { lightKindFromPiece, lightPlacement, lightPreviewIntensity, parsePropLight } from '../lib/lights'
 import { BUS_STOP_PIECE, isInteractivePiece, travelGuide } from '../lib/travelPoints'
 import { isDecalAsset } from '../lib/assetLibrary'
+import { buildNextPickingBound, collectPickingBounds, installAcceleratedRaycast } from '../lib/pickingBounds'
 import { LibraryMesh } from './meshes/LibraryMeshes'
 import { KitRun } from './KitRun'
 import {
@@ -1918,9 +1919,20 @@ function PiecePlacementLayer({
     let rightStart: { x: number; y: number } | null = null
     let orbiting = false
 
+    const sample = { x: 0, y: 0, frame: 0 }
     const move = (event: PointerEvent) => {
       if (pieceRef.current) {
-        onPreviewRef.current(surfaceHitFromEvent(event, camera, scene, el, moveSnapRef.current))
+        sample.x = event.clientX
+        sample.y = event.clientY
+        if (!sample.frame) {
+          sample.frame = requestAnimationFrame(() => {
+            sample.frame = 0
+            if (!pieceRef.current) return
+            onPreviewRef.current(
+              surfaceHitFromEvent({ clientX: sample.x, clientY: sample.y }, camera, scene, el, moveSnapRef.current),
+            )
+          })
+        }
       }
       if (!rightStart || orbiting) return
       const dx = event.clientX - rightStart.x
@@ -1991,6 +2003,7 @@ function PiecePlacementLayer({
     el.addEventListener('pointerup', up)
     el.addEventListener('pointerleave', leave)
     return () => {
+      if (sample.frame) cancelAnimationFrame(sample.frame)
       if (placePieceId) el.style.cursor = ''
       el.removeEventListener('pointermove', move, true)
       el.removeEventListener('pointerdown', down, true)
@@ -2254,6 +2267,7 @@ function SelectionGhost({ selectedIds }: { selectedIds: readonly string[] }) {
     [],
   )
   const heldRef = useRef<HeldMesh[]>([])
+  const rootsRef = useRef<THREE.Object3D[]>([])
 
   useEffect(
     () => () => {
@@ -2285,14 +2299,20 @@ function SelectionGhost({ selectedIds }: { selectedIds: readonly string[] }) {
   useLayoutEffect(() => {
     clear()
     const roots = selectionRoots(scene, selectedIds)
+    rootsRef.current = roots
     if (roots.length === 0) return () => {}
     apply(roots.flatMap((root) => collect(root)))
     return clear
   }, [lines, scene, idsKey])
 
   useFrame(() => {
-    const roots = selectionRoots(scene, selectedIds)
+    let roots = rootsRef.current
     if (roots.length === 0) return
+    if (roots.some((root) => !root.parent)) {
+      roots = selectionRoots(scene, selectedIds)
+      rootsRef.current = roots
+      if (roots.length === 0) return
+    }
     const meshes = roots.flatMap((root) => collect(root))
     const held = heldRef.current
     const same = meshes.length === held.length && meshes.every((mesh, index) => mesh === held[index].mesh)
@@ -3483,7 +3503,8 @@ function GeneratorLayer({
       return
     }
     el.style.cursor = 'crosshair'
-    const pointed = (event: PointerEvent) => {
+    const sample = { x: 0, y: 0, ctrl: false, frame: 0 }
+    const pointed = (event: { clientX: number; clientY: number; ctrlKey: boolean }) => {
       if (!event.ctrlKey) {
         reportVertexSnap(null)
         return snapPointFromEvent(event, camera, scene, el, moveSnapRef.current)
@@ -3494,7 +3515,14 @@ function GeneratorLayer({
       return new THREE.Vector3(hit[0], hit[1], hit[2])
     }
     const move = (event: PointerEvent) => {
-      onPreviewRef.current(pointed(event))
+      sample.x = event.clientX
+      sample.y = event.clientY
+      sample.ctrl = event.ctrlKey
+      if (sample.frame) return
+      sample.frame = requestAnimationFrame(() => {
+        sample.frame = 0
+        onPreviewRef.current(pointed({ clientX: sample.x, clientY: sample.y, ctrlKey: sample.ctrl }))
+      })
     }
     const down = (event: PointerEvent) => {
       if (event.button !== 0) return
@@ -3512,6 +3540,7 @@ function GeneratorLayer({
     el.addEventListener('pointerdown', down, true)
     el.addEventListener('pointerleave', leave)
     return () => {
+      if (sample.frame) cancelAnimationFrame(sample.frame)
       el.style.cursor = ''
       el.removeEventListener('pointermove', move, true)
       el.removeEventListener('pointerdown', down, true)
@@ -3943,6 +3972,34 @@ function preferEditHandles(hits: THREE.Intersection[]) {
   return handles.concat(rest)
 }
 
+/** Indexes meshes in the background so a click does not test every triangle. */
+function PickingBounds() {
+  const scene = useThree((s) => s.scene)
+  useEffect(() => {
+    installAcceleratedRaycast()
+    const queue: THREE.BufferGeometry[] = []
+    const queued = new WeakSet<THREE.BufferGeometry>()
+    let stop = false
+    let timer = 0
+    const drain = () => {
+      if (stop) return
+      const more = buildNextPickingBound(queue)
+      timer = window.setTimeout(more ? drain : sweep, more ? 0 : 1000)
+    }
+    const sweep = () => {
+      if (stop) return
+      collectPickingBounds(scene, queue, queued)
+      drain()
+    }
+    sweep()
+    return () => {
+      stop = true
+      window.clearTimeout(timer)
+    }
+  }, [scene])
+  return null
+}
+
 function EditHandlePriority() {
   const set = useThree((s) => s.set)
   const filterRef = useRef(preferEditHandles)
@@ -3966,10 +4023,12 @@ export function Viewport(props: Props) {
       }}
     >
       <Canvas
-        dpr={[1, 1.5]}
+        dpr={[1, 1]}
         frameloop="demand"
+        gl={{ powerPreference: 'high-performance', antialias: true }}
         camera={{ position: [48, 36, 58], fov: 45, near: 0.5, far: 5000 }}
       >
+        <PickingBounds />
         <EditHandlePriority />
         <Skybox />
         <fog attach="fog" args={['#c9dadf', 180, 1100]} />

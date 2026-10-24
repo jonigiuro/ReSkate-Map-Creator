@@ -33,6 +33,7 @@ import {
   quarterRun,
   RAIL_HEIGHT_M,
   RAIL_RADIUS_M,
+  clampRailRadius,
   bankFrame,
   bankLayoutMatches,
   curbLocalPoints,
@@ -883,7 +884,8 @@ export default function App() {
         kind: 'rail' as const,
         points: local,
         tops: local.map((point) => round4(point[1] + RAIL_HEIGHT_M)),
-        radius: RAIL_RADIUS_M,
+        radius:
+          existing?.generator?.kind === 'rail' ? existing.generator.radius : RAIL_RADIUS_M,
       }
       if (existing) {
         applyScene({
@@ -2557,7 +2559,7 @@ export default function App() {
               {selected.generator?.kind === 'curb' && (
                 <>
                   <p className="hint">
-                    The top 10 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move the whole pin. Drag it up or down to set that end's top or base.
+                    The top 20 cm is concrete, with the metal edge and wax. The rest is bricks. Drag a sphere sideways to move the whole pin. Drag it up or down to set that end's top or base.
                   </p>
                   <label>
                     Width (m)
@@ -2620,9 +2622,26 @@ export default function App() {
                 </>
               )}
               {selected.generator?.kind === 'rail' && (
-                <p className="hint">
-                  Drag a sphere sideways to move the whole pin. The top sphere sets the rail. The bottom sphere sets the foot of the post.
-                </p>
+                <>
+                  <p className="hint">
+                    Drag a sphere sideways to move the whole pin. The top sphere sets the rail. The bottom sphere sets the foot of the post.
+                  </p>
+                  <label>
+                    Rail radius (m)
+                    <input
+                      type="number"
+                      min={0.01}
+                      max={0.5}
+                      step={0.005}
+                      value={selected.generator.radius}
+                      onChange={(event) => {
+                        if (selected.generator?.kind !== 'rail') return
+                        const radius = clampRailRadius(Number(event.target.value), selected.generator.radius)
+                        patchObject(selected.id, { generator: { ...selected.generator, radius } })
+                      }}
+                    />
+                  </label>
+                </>
               )}
               {selected.generator?.kind === 'platform' && (
                 <p className="hint">

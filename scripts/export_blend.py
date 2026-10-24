@@ -900,7 +900,7 @@ def _side_outward(p0, p1, centre):
 
 
 CURB_TILE_M = 2.0
-CURB_CAP_M = 0.1
+CURB_CAP_M = 0.2
 
 
 def _uv_frame(raw):
@@ -1258,7 +1258,7 @@ def _clamp_curb_overhang(value):
 
 
 def make_curb_mesh(name, points, width, height, color, tops=None, materials=None, closed=False, overhang=0.0):
-    """One mitered curb. The top 10 cm is concrete; the body under it is brick.
+    """One mitered curb. The top 20 cm is concrete; the body under it is brick.
 
     points are the base centreline, tops the top edge, both local.
     overhang is how much wider the concrete is than the bricks.
@@ -1808,6 +1808,22 @@ def _add_vertical_post(verts, faces, uvs, x, z, y0, y1, radius, sides, loop_norm
             verts, faces, uvs, top, upper[k], upper[k2], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (0.0, 1.0, 0.0),
             loop_normals,
         )
+
+
+RAIL_RADIUS_M = 0.05
+MIN_RAIL_RADIUS_M = 0.01
+MAX_RAIL_RADIUS_M = 0.5
+
+
+def _clamp_rail_radius(value):
+    """Top pipe only. Matches clampRailRadius in the editor."""
+    try:
+        radius = float(value)
+    except (TypeError, ValueError):
+        return RAIL_RADIUS_M
+    if radius != radius:
+        return RAIL_RADIUS_M
+    return max(MIN_RAIL_RADIUS_M, min(MAX_RAIL_RADIUS_M, radius))
 
 
 def make_rail_mesh(name, points, radius, color, material=None, tops=None):
@@ -5608,7 +5624,7 @@ def build(scene):
                 obj = make_rail_mesh(
                     name,
                     points,
-                    float(gen.get("radius") or 0.05),
+                    _clamp_rail_radius(gen.get("radius")),
                     (0.72, 0.74, 0.76),
                     slot_material(
                         project_root,
@@ -5644,7 +5660,7 @@ def build(scene):
                 wax = make_rail_wax_mesh(
                     f"{name} wax",
                     points,
-                    float(gen.get("radius") or 0.05),
+                    _clamp_rail_radius(gen.get("radius")),
                     project_root,
                     gen.get("tops"),
                 )
